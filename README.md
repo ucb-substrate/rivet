@@ -50,3 +50,12 @@ pub struct Step {
     checkpoint: bool,
 }
 ```
+
+An invocation of a Shammer CLI driver might look like this:
+
+```
+cargo r --start=syn.generic_syn --stop=par.floorplan --checkpoint=/tools/C/rahulkumar/decoder-vlsi/pre_generic_syn_db
+```
+
+This would run all steps from the `generic_syn` step of synthesis up to the floorplan step of PAR, using
+the checkpoint at `/tools/C/rahulkumar/decoder-vlsi/pre_generic_syn_db` as a starting point.

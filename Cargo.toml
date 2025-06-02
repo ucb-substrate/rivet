@@ -1,0 +1,10 @@
+[workspace]
+
+resolver = "2"
+members = [
+    "shammer",
+    "pdks/sky130",
+    "tools/genus",
+    "tools/innovus",
+    "tools/chipyard"
+]

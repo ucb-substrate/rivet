@@ -1,0 +1,9 @@
+[package]
+name = "sky130"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shammer = { version = "0.1.0", path = "../../shammer" }
+genus = { version = "0.1.0", path = "../../tools/genus" }
+innovus = { version = "0.1.0", path = "../../tools/innovus" }

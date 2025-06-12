@@ -79,7 +79,12 @@ use std::env;
 #[cfg(test)]
 
 mod tests {
-    use shammer::flow::Step;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use shammer::flow::{Step, Tool, FlowNode};
+
+    use crate::dummytool::DummyTool;
 
     #[test]
     fn test_basic_flow() {
@@ -96,10 +101,15 @@ mod tests {
             checkpoint: true,
         };
 
-        //let flno = FlowNode {
-        //    name : "test".to_string(),
+        let x = DummyTool::new(PathBuf::new());
+
+        let flno = FlowNode {
+            name : "test".to_string(),
+            steps : vec![s1, s2],
+            deps : vec![],
+            tool : Arc::new(x)
             
-        //};
+        };
 
         assert_eq!(2+2, 5)
 

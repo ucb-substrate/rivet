@@ -1,9 +1,12 @@
-use crate::{Step, Tool};
+use shammer::flow::{Step, Tool, FlowNode};
 use std::fs;
+use std::sync::Arc;
+use std::process::Command;
 use std::path::{Path, PathBuf};
 
+
 pub struct DummyTool {
-    word_dir: PathBuf;
+    pub work_dir: PathBuf,
 }
 
 impl DummyTool {
@@ -23,43 +26,36 @@ impl Tool for DummyTool {
            println!("  - Running step: '{}'", step.name);
             println!("    Command: {}", step.command);
 
-            // Execute the command using a bash shell
-            let status = Command::new("./dummyscript.sh")
-                .arg(&step.command) // Pass the step's command as an argument to the script
-                .current_dir(&self.work_dir) // Run command in the tool's work directory
-                .status() // Wait for the command to finish
-                .expect("Failed to execute dummyscript.sh script. Make sure it's in the work_dir and executable.");
+            let status = Command::new(step.command.to_string())
+                .arg(&step.command) 
+                .current_dir(&self.work_dir) 
+                .status() 
+                .expect("Failed");
  
 
             if !status.success() {
-                // If the command failed, print an error and stop.
-                // In a real scenario, you'd want more robust error handling.
                 eprintln!("Error: Step '{}' failed with exit code {}", step.name, status);
-                panic!("Stopping flow due to failed step.");
+                panic!("Stopping flow.");
             }
 
             if step.checkpoint {
-                // The checkpoint command is now just another step,
-                // but we can still have a dedicated function for creating it.
                 self.write_checkpoint(&self.work_dir.join(format!("{}.checkpoint", step.name)));
             }       
         }
     }
 
-    fn write_checkpoint(&self, path: &Path) -> Step {
+    fn write_checkpoint(&self, path: &PathBuf) -> Step {
        let checkpoint_command = format!("echo 'checkpoint data' > {}", path.to_str().unwrap());
         println!("  - Writing checkpoint with command: {}", checkpoint_command);
 
-        // We can return a Step struct representing this action, although
-        // for this dummy tool, we execute it directly.
         Step {
             name: "write_checkpoint".to_string(),
             command: checkpoint_command,
-            checkpoint: true, // This is meta-data about the step itself
+            checkpoint: true, 
         } 
     }
 
-    fn read_checkpoint(&self, path: &Path) -> Step {
+    fn read_checkpoint(&self, path: &PathBuf) -> Step {
         println!("  - Reading checkpoint from: {:?}", path);
         let content = fs::read_to_string(path).expect("Failed to read checkpoint.");
         println!("    Checkpoint content: {}", content.trim());
@@ -70,5 +66,38 @@ impl Tool for DummyTool {
         }
     }
 
+    /// Checkpoint paths for each step.
+    fn checkpoints(&self, steps: Vec<Step>) -> Vec<PathBuf> {
+        unimplemented!();
+    }
+
     
+}
+
+use std::env;
+
+#[cfg(test)]
+
+mod tests {
+    #[test]
+    fn test_basic_flow() {
+
+        let s1 = Step {
+            name: "step 1".to_string(),
+            command: "./dummyscript.sh \" 1  \" > nohup1.out".to_string(),
+            checkpoint: true,
+        };
+
+        let s2 = Step {
+            name : "step 2".to_string(),
+            command : "./dummyscript.sh \" 2  \" > nohup1.out".to_string(),
+            checkpoint: true,
+        };
+
+        let flno = FlowNode {
+            name : "test".to_string(),
+            
+        };
+
+    }
 }

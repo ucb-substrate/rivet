@@ -1,8 +1,10 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 pub struct FlowNode {
-    name: String,
-    tool: Arc<dyn Tool>,
-    steps: Vec<Step>,
-    deps: Vec<Arc<FlowNode>>,
+    pub name: String,
+    pub tool: Arc<dyn Tool>,
+    pub steps: Vec<Step>,
+    pub deps: Vec<Arc<FlowNode>>,
 }
 
 pub trait Tool {
@@ -16,14 +18,14 @@ pub trait Tool {
     fn invoke(&self, steps: Vec<Step>);
 
     /// Writes a checkpoint to the given path.
-    fn write_checkpoint(&self, path: impl AsRef<Path>) -> Step;
+    fn write_checkpoint(&self, path: &PathBuf) -> Step;
 
     /// Reads a checkpoint from the given path.
-    fn read_checkpoint(&self, path: impl AsRef<Path>) -> Step;
+    fn read_checkpoint(&self, path: &PathBuf) -> Step;
 }
 
 pub struct Step {
-    name: String,
-    command: String,
-    checkpoint: bool,
+    pub name: String,
+    pub command: String,
+    pub checkpoint: bool,
 }

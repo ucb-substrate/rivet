@@ -1,4 +1,4 @@
-use shammer::flow::{Step, Tool, FlowNode};
+use shammer::flow::{FlowNode, Tool, Step};
 use std::fs;
 use std::sync::Arc;
 use std::process::Command;
@@ -79,10 +79,12 @@ use std::env;
 #[cfg(test)]
 
 mod tests {
+    use shammer::flow::Step;
+
     #[test]
     fn test_basic_flow() {
 
-        let s1 = Step {
+        let s1 = Step{
             name: "step 1".to_string(),
             command: "./dummyscript.sh \" 1  \" > nohup1.out".to_string(),
             checkpoint: true,
@@ -94,10 +96,12 @@ mod tests {
             checkpoint: true,
         };
 
-        let flno = FlowNode {
-            name : "test".to_string(),
+        //let flno = FlowNode {
+        //    name : "test".to_string(),
             
-        };
+        //};
+
+        assert_eq!(2+2, 5)
 
     }
 }

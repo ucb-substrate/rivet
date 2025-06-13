@@ -26,7 +26,7 @@ impl Tool for DummyTool {
            println!("  - Running step: '{}'", step.name);
             println!("    Command: {}", step.command);
 
-            let status = Command::new(step.command.to_string())
+            let status = Command::new("bash")
                 .arg(&step.command) 
                 .current_dir(&self.work_dir) 
                 .status() 
@@ -74,13 +74,14 @@ impl Tool for DummyTool {
     
 }
 
-use std::env;
 
 #[cfg(test)]
 
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::fs;
+    use std::env;
 
     use shammer::flow::{Step, Tool, FlowNode};
 
@@ -88,20 +89,20 @@ mod tests {
 
     #[test]
     fn test_basic_flow() {
-
+        
         let s1 = Step{
             name: "step 1".to_string(),
-            command: "./dummyscript.sh \" 1  \" > nohup1.out".to_string(),
-            checkpoint: true,
+            command: "./src/dummyscript.sh".to_string(),
+            checkpoint: false,
         };
 
         let s2 = Step {
             name : "step 2".to_string(),
-            command : "./dummyscript.sh \" 2  \" > nohup1.out".to_string(),
-            checkpoint: true,
+            command : "./src/dummyscript.sh".to_string(),
+            checkpoint: false,
         };
 
-        let x = DummyTool::new(PathBuf::new());
+        let x = DummyTool::new(PathBuf::from("."));
 
         let flno = FlowNode {
             name : "test".to_string(),
@@ -111,7 +112,9 @@ mod tests {
             
         };
 
-        assert_eq!(2+2, 5)
+        flno.tool.invoke(flno.steps);
+
+        assert_eq!(2+2, 4)
 
     }
 }

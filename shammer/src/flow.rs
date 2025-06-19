@@ -35,7 +35,7 @@ pub struct FlowNode {
 }
 
 pub struct Flow {
-    root: Arc<FlowNode>,
+    root: Arc<FlowNode>, //make it a vec
 }
 
 impl Flow {

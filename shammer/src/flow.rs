@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub struct FlowNode {
-    pub name: String,
-    pub tool: Arc<dyn Tool>,
-    pub steps: Vec<Step>,
-    pub deps: Vec<Arc<FlowNode>>,
+#[derive(Clone)]
+pub struct Step {
+    name: String,
+    command: String,
+    checkpoint: bool,
 }
 
 pub trait Tool {
@@ -19,14 +19,32 @@ pub trait Tool {
     fn invoke(&self, steps: Vec<Step>);
 
     /// Writes a checkpoint to the given path.
-    fn write_checkpoint(&self, path: &PathBuf) -> Step;
+    fn write_checkpoint(&self, path: &Path) -> Step;
 
     /// Reads a checkpoint from the given path.
-    fn read_checkpoint(&self, path: &PathBuf) -> Step;
+    fn read_checkpoint(&self, path: &Path) -> Step;
 }
 
-pub struct Step {
-    pub name: String,
-    pub command: String,
-    pub checkpoint: bool,
+pub struct FlowNode {
+    name: String,
+    tool: Arc<dyn Tool>,
+    steps: Vec<Step>,
+    deps: Vec<Arc<FlowNode>>,
+}
+
+pub struct Flow {
+    workflow: Vec<Arc<FlowNode>>,
+}
+
+impl Flow {
+    pub fn new(workflow: Vec<Arc<FlowNode>>) -> Self {
+        Flow { workflow }
+    }
+
+    pub fn execute(&self, node: &FlowNode) {
+        node.tool.invoke(node.steps.clone());
+        for dep in &node.deps {
+            self.execute(dep);
+        }
+    }
 }

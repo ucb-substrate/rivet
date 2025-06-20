@@ -1,5 +1,3 @@
-pub mod flow;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -21,10 +19,10 @@ pub trait Tool {
     fn invoke(&self, steps: Vec<Step>);
 
     /// Writes a checkpoint to the given path.
-    fn write_checkpoint(&self, path: impl AsRef<Path>) -> Step;
+    fn write_checkpoint(&self, path: &Path) -> Step;
 
     /// Reads a checkpoint from the given path.
-    fn read_checkpoint(&self, path: impl AsRef<Path>) -> Step;
+    fn read_checkpoint(&self, path: &Path) -> Step;
 }
 
 pub struct FlowNode {
@@ -35,16 +33,16 @@ pub struct FlowNode {
 }
 
 pub struct Flow {
-    root: Arc<FlowNode>, //make it a vec
+    workflow: Vec<Arc<FlowNode>>,
 }
 
 impl Flow {
-    pub fn new(root: Arc<FlowNode>) -> Self {
-        Flow { root }
+    pub fn new(workflow: Vec<Arc<FlowNode>>) -> Self {
+        Flow { workflow }
     }
 
     pub fn execute(&self, node: &FlowNode) {
-        node.tool.invoke(node.steps);
+        node.tool.invoke(node.steps.clone());
         for dep in &node.deps {
             self.execute(dep);
         }

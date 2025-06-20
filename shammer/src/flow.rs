@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Step {
-    name: String,
-    command: String,
-    checkpoint: bool,
+    pub name: String,
+    pub command: String,
+    pub checkpoint: bool,
 }
 
 pub trait Tool {
@@ -19,21 +19,21 @@ pub trait Tool {
     fn invoke(&self, steps: Vec<Step>);
 
     /// Writes a checkpoint to the given path.
-    fn write_checkpoint(&self, path: &Path) -> Step;
+    fn write_checkpoint(&self, path: &PathBuf) -> Step;
 
     /// Reads a checkpoint from the given path.
-    fn read_checkpoint(&self, path: &Path) -> Step;
+    fn read_checkpoint(&self, path: &PathBuf) -> Step;
 }
 
 pub struct FlowNode {
-    name: String,
-    tool: Arc<dyn Tool>,
-    steps: Vec<Step>,
-    deps: Vec<Arc<FlowNode>>,
+    pub name: String,
+    pub tool: Arc<dyn Tool>,
+    pub steps: Vec<Step>,
+    pub deps: Vec<Arc<FlowNode>>,
 }
 
 pub struct Flow {
-    workflow: Vec<Arc<FlowNode>>,
+    pub workflow: Vec<Arc<FlowNode>>,
 }
 
 impl Flow {

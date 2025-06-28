@@ -84,6 +84,14 @@ impl Tool for Genus {
     //     }
     //     return ret;
     // }
+
+    fn checkpoint(&self, step: Step) -> PathBuf {
+        let mut ret = PathBuf::new();
+        ret.push(self.work_dir);
+        ret.push(format!("{}.checkpoint", step.name));
+
+        return ret;
+    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
-# Simplified Hammer (Shammer)
+# Rivet
 
-Shammer is a stripped-down version of Hammer that aims to be very, very simple.
+Rivet is a stripped-down version of Hammer that aims to be very, very simple.
 
-Shammer core contains a minimal feature set for managing flows involving command-based tools:
+Rivet core contains a minimal feature set for managing flows involving command-based tools:
 - Flow tree construction
 - Checkpointing and restarts
 - Freezing dependencies
@@ -14,6 +14,13 @@ Additional features are implemented in PDK/tool plugins. Such features include:
 - TCL templating
 - Design sanity checks
 - Input file bundling
+
+## TODOs
+
+- Think about checkpointing/pinning behavior and implement it
+- Genus/Innovus/Sky130 plugins
+- Move checkpointing logic into rivet
+- Move execution and checkpoint logic into flow.rs
 
 ## Design
 
@@ -52,13 +59,13 @@ pub struct Step {
 }
 ```
 
-An invocation of a Shammer CLI driver might look like this:
+An invocation of a Rivet CLI driver might look like this:
 
 ```
-cargo r --config Shammer.toml par
+cargo r --config Rivet.toml par
 ```
 
-The `Shammer.toml` file contains configuration on which components of the flow to run, where to restart from, etc.
+The `Rivet.toml` file contains configuration on which components of the flow to run, where to restart from, etc.
 For example:
 
 ```toml
@@ -70,8 +77,8 @@ checkpoint = "/tools/C/rahulkumar/decoder-vlsi/pre_generic_syn_db"
 stop = "floorplan"
 ```
 
-In this case, Shammer willrun all steps from the `generic_syn` step of synthesis up to the 
-`floorplan` step of PAR, using the checkpoint at 
+In this case, Rivet willrun all steps from the `generic_syn` step of synthesis up to the
+`floorplan` step of PAR, using the checkpoint at
 `/tools/C/rahulkumar/decoder-vlsi/pre_generic_syn_db` as a starting point.
 
 The TOML can also be used to pin dependencies:

@@ -2,7 +2,7 @@
 
 resolver = "2"
 members = [
-    "shammer",
+    "rivet",
     "pdks/sky130",
     "tools/genus",
     "tools/innovus",

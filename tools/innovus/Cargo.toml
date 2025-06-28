@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-shammer = { version = "0.1.0", path = "../../shammer" }
+rivet = { version = "0.1.0", path = "../../rivet" }

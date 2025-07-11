@@ -1,6 +1,5 @@
 use crate::fs::File;
 use rivet::flow::{Step, Tool};
-use std::collections::HashSet;
 use std::fmt::Debug;
 use std::io::prelude::*;
 use std::path::PathBuf;
@@ -10,26 +9,12 @@ use std::{fs, io};
 #[derive(Debug)]
 pub struct Genus {
     pub work_dir: PathBuf,
-    pub func_list: HashSet<String>,
 }
 
 impl Genus {
     pub fn new(work_dir: impl Into<PathBuf>) -> Self {
         let dir = work_dir.into();
-        let mut helpers = HashSet::new();
-        helpers.insert("init_environment".to_string());
-        helpers.insert("predict_floorplan".to_string());
-        helpers.insert("syn_generic".to_string());
-        helpers.insert("syn_map".to_string());
-        helpers.insert("add_tieoffs".to_string());
-        helpers.insert("write_regs".to_string());
-        helpers.insert("generate_reports".to_string());
-        helpers.insert("write_outputs".to_string());
-
-        Genus {
-            work_dir: dir,
-            func_list: helpers,
-        }
+        Genus { work_dir: dir }
     }
 
     //concatenate steps to a tcl file, syn.tcl file, genus.tcl
@@ -62,23 +47,12 @@ impl Genus {
 
         for step in steps.into_iter() {
             //if step name is in a hashset of helper functions run the helper function instead
-            if self.func_list.contains(&step.name) {
-                match step.name.as_str() {
-                    "init_environment" => self.init_environment(&mut tcl_file)?,
-                    "predict_floorplan" => self.predict_floorplan(&mut tcl_file)?,
-                    "syn_generic" => self.syn_generic(&mut tcl_file)?,
-                    "syn_map" => self.syn_map(&mut tcl_file)?,
-                    "add_tieoffs" => self.add_tieoffs(&mut tcl_file)?,
-                    "write_regs" => self.write_regs(&mut tcl_file)?,
-                    "generate_reports" => self.generate_reports(&mut tcl_file)?,
-                    "write_outputs" => self.write_outputs(&mut tcl_file)?,
-                    "run_genus" => self.run_genus(&mut tcl_file)?,
-                    // This case should not be reached if func_list is correct
-                    _ => panic!("Helper function '{}' is in func_list but not implemented in match statement.", step.name),
-                }
-            } else {
-                writeln!(tcl_file, "puts\"{}\"", step.command.to_string())?;
-                writeln!(tcl_file, "{}", step.command)?;
+
+            writeln!(tcl_file, "puts\"{}\"", step.command.to_string())?;
+            writeln!(tcl_file, "{}", step.command)?;
+            if (step.checkpoint) {
+                //generate tcl for checkpointing
+                self.write_checkpoint(path);
             }
         }
         writeln!(tcl_file, "puts \"{}\"", "quit")?;
@@ -87,15 +61,221 @@ impl Genus {
         Ok(())
     }
 
-    fn init_environment(tcl_file: &mut file) -> bool {}
-    fn predict_floorplan(tcl_file: &mut file) -> bool {}
-    fn syn_generic(tcl_file: &mut file) -> bool {}
-    fn syn_map(tcl_file: &mut file) -> bool {}
-    fn add_tieoffs(tcl_file: &mut file) -> bool {}
-    fn write_regs(tcl_file: &mut file) -> bool {}
-    fn generate_reports(tcl_file: &mut file) -> bool {}
-    fn write_outputs(tcl_file: &mut file) -> bool {}
-    fn run_genus(tcl_file: &mut file) -> bool {}
+    fn init_environment() -> Step {
+        let mut command_init = String::new();
+
+        // --- Clock Gating Setup ---
+        // Corresponds to the "synthesis.clock_gating_mode" == "auto" check
+        command_init.push_str("set_db lp_clock_gating_infer_enable  true\n");
+        command_init.push_str("set_db lp_clock_gating_prefix {CLKGATE}\n");
+        command_init.push_str("set_db lp_insert_clock_gating  true\n");
+        command_init.push_str("set_db lp_clock_gating_register_aware true\n");
+
+        // --- MMMC and Library Setup ---
+        // This path is hardcoded for now, but you would generate and write this file at runtime
+        command_init.push_str(
+            "read_mmmc /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/syn-rundir/mmmc.tcl\n",
+        );
+
+        //need to hardcode the lef file path
+        // In a real implementation, you would need to get the LEF files from your technology configuration
+        command_init.push_str("read_physical -lef {lef_files}\n");
+
+        //this command is ignored for our decoder
+        // In a real implementation, you would need to get the QRC tech files from your technology configuration
+        command_init.push_str("set_db qrc_tech_file {qrc_tech_files}\n");
+
+        // --- HDL Input and Elaboration ---
+        // In a real implementation, you would get the list of RTL files from your configuration
+        // need to accept a parameter of the file path of our verilog
+        command_init.push_str("read_hdl -sv {rtl_files}\n");
+
+        //top module needs to be assigned to the name of our trl file so it is supposed to be
+        //"decoder"
+        command_init.push_str("elaborate {top_module}\n");
+        command_init.push_str("init_design -top {top_module}\n");
+
+        // --- Constraints and Design Settings ---
+        command_init.push_str("report_timing -lint -verbose\n");
+        // In a real implementation, you would read a UPF or CPF file!()
+        // find what are the power_commands in hammer
+        //command_init.push_str("read_upf {power_intent_file}\n");
+        //command_init.push_str("apply_power_intent -summary\n");
+        //
+        command_init.push_str("read_power_intent -cpf /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/syn-rundir/power_spec.cpf\n");
+
+        command_init.push_str("apply_power_intent -summary\n");
+        command_init.push_str("commit_power_intent\n");
+
+        command_init.push_str("set_db root: .auto_ungroup none\n");
+        // This setting would come from your configuration and are not necessary for the decoder
+        //
+        //command_init.push_str("set_db phys_flow_effort high\n");
+        //command_init.push_str("set_db opt_spatial_effort extreme\n");
+
+        // --- "Don't Use" Cells ---
+        // In a real implementation, you would generate a list of "don't use" cells
+        //command_init.push_str("set_dont_use {dont_use_cells}\n");
+
+        Step {
+            name: "init_environment".to_string(),
+            command: command_init,
+            checkpoint: true,
+        }
+    }
+
+    fn predict_floorplan() -> Step {
+        let mut command = String::new();
+        // In a real implementation, this would be based on a setting like
+        // `synthesis.genus.phys_flow_effort`. This example assumes "high" effort.
+
+        command.push_str("set_db invs_temp_dir temp_invs\n");
+        // The innovus binary path would be a configurable parameter.
+        command.push_str("set_db innovus_executable {innovus_bin_path}\n");
+        command.push_str("set_db predict_floorplan_enable_during_generic true\n");
+        command.push_str("set_db physical_force_predict_floorplan true\n");
+        command.push_str("set_db predict_floorplan_use_innovus true\n");
+
+        command.push_str("predict_floorplan\n");
+
+        Step {
+            name: "predict_floorplan".to_string(),
+            command,
+            checkpoint: true,
+        }
+    }
+
+    fn syn_generic() -> Step {
+        let mut command = String::new();
+
+        // Based on `synthesis.genus.phys_flow_effort`.
+        // if synthesis.genus.phys_flow_effort.lower() == "none"
+        command.push_str("syn_generic\n");
+
+        //else append "syn_generic -physical"
+
+        Step {
+            name: "syn_generic".to_string(),
+            command,
+            checkpoint: true,
+        }
+    }
+
+    fn syn_map() -> Step {
+        let mut command = String::new();
+        command.push_str("syn_map\n");
+
+        // This corresponds to `synthesis.genus.phys_flow_effort` = "high"
+        //command.push_str("syn_opt -spatial\n");
+
+        Step {
+            name: "syn_map".to_string(),
+            command,
+            checkpoint: true,
+        }
+    }
+
+    fn add_tieoffs() -> Step {
+        let mut command = String::new();
+
+        command.push_str("set_db message:WSDF-201 .max_print 20\n");
+        command.push_str("set_db use_tiehilo_for_const duplicate\n");
+
+        // The cell names {TIE_HI_CELL} and {TIE_LO_CELL} would be dynamically
+        // retrieved from the technology configuration.
+        //# If MMMC corners specified, get the single lib cell for the active analysis view
+        //Else, Genus will complain that multiple objects match for the cell name
+        //corners = self.get_mmmc_corners()
+        //if corners:
+        //    self.verbose_append("set ACTIVE_SET [string map { .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set } [get_db [get_analysis_views] .name]]")
+        //    self.verbose_append("set HI_TIEOFF [get_db base_cell:{TIE_HI_CELL} .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]".format(TIE_HI_CELL=tie_hi_cell))
+        //    self.verbose_append("set LO_TIEOFF [get_db base_cell:{TIE_LO_CELL} .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]".format(TIE_LO_CELL=tie_lo_cell))
+        //    self.verbose_append("add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose")
+        //else:
+        //    self.verbose_append("add_tieoffs -high {HI_TIEOFF} -low {LO_TIEOFF} -max_fanout 1 -verbose".format(HI_TIEOFF=tie_hi_cell, LO_TIEOFF=tie_lo_cell))
+
+        //right now this is hardcoded since we need some parameters from the mmmc corners and teh
+        //mmmc libraries
+        if true {
+            command.push_str("set ACTIVE_SET [string map { .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set } [get_db [get_analysis_views] .name]]");
+            command.push_str("set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if { .library.library_set.name == $ACTIVE_SET }]");
+            command.push_str("set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if { .library.library_set.name == $ACTIVE_SET }]");
+            command.push_str("add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose");
+        } else {
+            command.push_str(
+                "add_tieoffs -high {TIE_HI_CELL} -low {LO_LO_CELL} -max_fanout 1 -verbose\n",
+            );
+        }
+
+        Step {
+            name: "add_tieoffs".to_string(),
+            command,
+            checkpoint: true,
+        }
+    }
+
+    fn write_regs() -> Step {
+        let mut command = String::new();
+        // This part of the command would be dynamically generated by helper
+        // functions like `child_modules_tcl()` and `write_regs_tcl()` in the
+        // original Python code to find and format register information.
+        command.push_str("# TCL to find and write register information to JSON files\n");
+        command.push_str("set regs [find / -seq_cells]\n");
+        command.push_str("set reg_paths [get_db $regs .name]\n");
+        command.push_str("set fp [open \"find_regs_paths.json\" \"w\"]\n");
+        command.push_str("puts $fp $reg_paths\n");
+        command.push_str("close $fp\n");
+
+        Step {
+            name: "write_regs".to_string(),
+            command,
+            checkpoint: false, // This step doesn't modify the design itself
+        }
+    }
+    fn generate_reports() -> Step {
+        let mut command = String::new();
+        command.push_str("write_reports -directory reports -tag final\n");
+        //command.push_str("report_ple > reports/final_ple.rpt\n");
+        command.push_str(
+            "report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt\n",
+        );
+
+        Step {
+            name: "generate_reports".to_string(),
+            command,
+            checkpoint: false,
+        }
+    }
+
+    fn write_outputs() -> Step {
+        let mut command = String::new();
+
+        // The filenames would use a variable for the top module name.
+        //command.push_str("write_hdl > {top_module}.mapped.v\n");
+        command.push_str("write_hdl > /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/syn-rundir/decoder.mapped.v");
+
+        //command.push_str("write_hdl -exclude_ilm > {top_module}_noilm.mapped.v\n");
+        //command.push_str("write_sdc -view {setup_view_name} > {top_module}.mapped.sdc\n");
+        //command.push_str("write_sdf > {top_module}.mapped.sdf\n");
+        //
+        //// Corresponds to `phys_flow_effort` != "none"
+        //command.push_str("write_db -common\n");
+        //
+        command.push_str("write_template -full -outfile decoder.mapped.scr");
+        command.push_str("write_sdc -view ss_100C_1v60.setup_view > /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/syn-rundir/decoder.mapped.sdc");
+        command.push_str("write_sdf > /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/syn-rundir/decoder.mapped.sdf");
+        command.push_str("write_design -gzip_files decoder");
+
+        Step {
+            name: "write_outputs".to_string(),
+            command,
+            checkpoint: false,
+        }
+    }
+
+    fn run_genus() -> bool {
+        true
+    }
 }
 
 impl Tool for Genus {

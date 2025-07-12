@@ -1,4 +1,3 @@
-use crate::cli::Config;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -7,20 +6,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Deserialize, Debug, Clone)]
-struct Config {
+pub struct Config {
     #[serde(flatten)]
     tools: HashMap<String, ToolConfig>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-struct ToolStart {
+pub struct ToolStart {
     step: String,
     checkpoint: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
-struct ToolConfig {
+pub struct ToolConfig {
     start: Option<ToolStart>, //start from a specified step or start from beginning
     stop: Option<String>,     //end at a specific step or end at the end
     pin: Option<bool>,
@@ -31,36 +30,20 @@ struct ToolConfig {
 pub struct Step {
     pub name: String,
     pub command: String,
-    pub checkpoint: bool,
+    pub checkpoint: Option<PathBuf>,
 }
 
-pub trait Tool: Send + Sync + Debug {
-    /// The tool's work directory.
-    fn work_dir(&self) -> PathBuf;
-
-    /// Checkpoint paths for each step.
-    ///
-    /// e.g. step "syn_generic" gives "post_syn_generic".
-    fn checkpoint(&self, step: Step) -> PathBuf;
-
+pub trait Tool: Debug {
     /// Runs the tool for the given steps.
-    fn invoke(&self, steps: Vec<Step>);
-
-    /// Returns a TCL string that instructs a tool to write a checkpoint to the given path.
-    ///
-    /// e.g. "write_db {path}".
-    fn write_checkpoint(&self, path: &PathBuf) -> Step;
-
-    /// Returns a TCL string that instructs a tool to read a checkpoint to the given path.
-    ///
-    /// e.g. "read_db {path}".
-    fn read_checkpoint(&self, path: &PathBuf) -> Step;
+    fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Step>);
 }
 
 #[derive(Debug)]
 pub struct FlowNode {
     pub name: String,
     pub tool: Arc<dyn Tool>,
+    pub work_dir: PathBuf,
+    pub checkpoint_dir: PathBuf,
     pub steps: Vec<Step>,
     pub deps: Vec<String>,
 }
@@ -74,6 +57,7 @@ impl Flow {
     pub fn new(workflow: HashMap<String, FlowNode>) -> Self {
         Flow { workflow }
     }
+
     /// Recursively executes a node and its dependencies, respecting pins and checkpoints.
     pub fn execute(&self, node: &str, config: &Arc<Config>) {
         let mut executed = HashSet::new();
@@ -110,7 +94,8 @@ impl Flow {
         println!("---> Executing node '{}'", node);
 
         let steps_to_run = get_steps_for_tool(target_node, tool_config);
-        let checkpoint = tool_config.and_then(|c| c.checkpoint.as_ref());
+        let checkpoint =
+            tool_config.and_then(|c| c.start.expect("no tool_start").checkpoint.as_ref()); //fix
 
         if steps_to_run.is_empty() {
             println!(
@@ -120,7 +105,7 @@ impl Flow {
         } else {
             if let Some(cp) = checkpoint {
                 println!("---> Starting from checkpoint: {:?}", cp);
-                let read_checkpoint_step = target_node.tool.read_checkpoint(cp);
+                let read_checkpoint_step = target_node.tool.invoke(,  , steps_to_run);
 
                 // Execute the command from the returned step to restore the state
                 let status = std::process::Command::new("zsh")
@@ -135,6 +120,7 @@ impl Flow {
                 }
             }
             target_node.tool.invoke(steps_to_run);
+            //fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Step>);
         }
 
         println!("---> Finished node '{}'", node);
@@ -153,7 +139,7 @@ fn get_steps_for_tool(node: &FlowNode, config: Option<&ToolConfig>) -> Vec<Step>
     let start_index = tool_config
         .start
         .as_ref()
-        .and_then(|start_name| all_steps.iter().position(|s| &s.name == start_name))
+        .and_then(|start_name| all_steps.iter().position(|s| &s.name == start_name)) //fix
         .unwrap_or(0);
 
     let stop_index = tool_config

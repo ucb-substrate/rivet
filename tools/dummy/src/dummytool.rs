@@ -1,4 +1,4 @@
-use shammer::flow::{Step, Tool};
+use rivet::flow::{Step, Tool};
 use std::fmt::Debug;
 use std::fs;
 use std::path::PathBuf;
@@ -17,11 +17,7 @@ impl DummyTool {
 }
 
 impl Tool for DummyTool {
-    fn work_dir(&self) -> PathBuf {
-        self.work_dir.clone()
-    }
-
-    fn invoke(&self, steps: Vec<Step>) {
+    fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Step>) {
         // let dummyDB_stat = Command::new("zsh")
         //     .arg("-c")
         //     .arg("echo \"start\" >> dummydb.txt")
@@ -32,6 +28,10 @@ impl Tool for DummyTool {
         //             eprintln!("Failed to write checkpoint to file");
         // }
 
+        if let Some(start_checkpoint) = start_checkpoint {
+            let db = std::fs::read_to_string(start_checkpoint).unwrap();
+        }
+
         for step in steps {
             println!("  - Running step: '{}'", step.name);
             println!("    Command: {}", step.command);
@@ -39,7 +39,7 @@ impl Tool for DummyTool {
             let status = Command::new("zsh")
                 .arg("-c")
                 .arg(&step.command)
-                .current_dir(&self.work_dir)
+                .current_dir(&work_dir)
                 .status()
                 .expect("Failed");
 
@@ -84,48 +84,16 @@ impl Tool for DummyTool {
             // }
         }
     }
-
-    fn write_checkpoint(&self, path: &PathBuf) -> Step {
-        let checkpoint_command = format!("cat dummydb.txt > {}", path.to_str().unwrap());
-        println!("  - Writing checkpoint w command: {}", checkpoint_command);
-
-        Step {
-            name: "write_checkpoint".to_string(),
-            command: checkpoint_command,
-            checkpoint: true,
-        }
-    }
-
-    fn read_checkpoint(&self, path: &PathBuf) -> Step {
-        let command = format!("cat {} > dummydb.txt", path.to_str().unwrap());
-        println!("  - Reading checkpoint with command: {}", command);
-        Step {
-            name: "read_checkpoint".to_string(),
-            command,
-            checkpoint: false,
-        }
-    }
-
-    fn checkpoints(&self, steps: Vec<Step>) -> Vec<PathBuf> {
-        let mut ret: Vec<PathBuf> = vec![];
-        for step in steps.into_iter() {
-            if step.checkpoint {
-                ret.push(self.work_dir.join(format!("{}.checkpoint", step.name)))
-            }
-        }
-        return ret;
-    }
 }
 
 #[cfg(test)]
-
 mod tests {
     use std::env;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use shammer::flow::{FlowNode, Step, Tool};
+    use rivet::flow::{FlowNode, Step, Tool};
 
     use crate::dummytool::DummyTool;
 

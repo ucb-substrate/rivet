@@ -17,10 +17,12 @@ Additional features are implemented in PDK/tool plugins. Such features include:
 
 ## TODOs
 
-- Think about checkpointing/pinning behavior and implement it
+- Document checkpointing/pinning behavior and implement it
 - Genus/Innovus/Sky130 plugins
-- Move checkpointing logic into rivet
+- Update checkpointing logic to new API
 - Move execution and checkpoint logic into flow.rs
+- Update Genus templating functions to accept paramters
+- Make functions to write the mmmc.tcl and powerspec files
 
 ## Design
 

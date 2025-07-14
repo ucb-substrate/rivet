@@ -138,7 +138,7 @@ fn get_steps_for_tool(node: &FlowNode, config: Option<&ToolConfig>) -> Vec<Step>
     let start_index = tool_config
         .start
         .as_ref()
-        .and_then(|start_name| all_steps.iter().position(|s| &s.name == start_name)) //fix
+        .and_then(|start_name| all_steps.iter().position(|s| s.name == start_name.step)) //fix(ed)?
         .unwrap_or(0);
 
     let stop_index = tool_config

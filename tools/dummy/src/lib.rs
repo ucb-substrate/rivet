@@ -8,112 +8,119 @@ use std::process::Command;
 pub struct DummyTool;
 
 impl DummyTool {
-    pub fn new(work_dir: impl Into<PathBuf>) -> Self {
-        let dir = work_dir.into();
-        DummyTool { work_dir: dir }
+    pub fn new() -> Self {
+        DummyTool {}
     }
 }
 
 impl Tool for DummyTool {
-    fn work_dir(&self) -> PathBuf {
-        self.work_dir.clone()
-    }
-
-    fn invoke(&self, steps: Vec<Step>) {
-        // let dummyDB_stat = Command::new("zsh")
-        //     .arg("-c")
-        //     .arg("echo \"start\" >> dummydb.txt")
-        //     .current_dir(&self.work_dir)
-        //     .status()
-        //     .expect("Failed");
-        // if !dummyDB_stat.success() {
-        //             eprintln!("Failed to write checkpoint to file");
-        // }
-
-        for step in steps {
-            println!("  - Running step: '{}'", step.name);
-            println!("    Command: {}", step.command);
-
-            let status = Command::new("zsh")
-                .arg("-c")
-                .arg(&step.command)
-                .current_dir(&self.work_dir)
-                .status()
-                .expect("Failed");
-
-            if !status.success() {
-                eprintln!(
-                    "Error: Step '{}' failed with exit code {}",
-                    step.name, status
-                );
-                panic!("Stopping flow.");
-            }
-
-            if step.checkpoint {
-                let temp =
-                    self.write_checkpoint(&self.work_dir.join(format!("{}.checkpoint", step.name)));
-                //let mut file = File::create_new("temp.sh").expect("failed to make temp file");
-                //file.write_all(format!("!/bin/bash\n{}",&temp.command));
-
-                let check_status = Command::new("zsh")
-                    .arg("-c")
-                    .arg(&temp.command)
-                    .current_dir(&self.work_dir)
-                    .status()
-                    .expect("Failed");
-                if !check_status.success() {
-                    eprintln!("Failed to write checkpoint to file");
-                }
-            }
-
-            // if step.checkpoint {
-            //     let check_status = Command::new("bash")
-            //         .arg("-c")
-            //         .arg(format!("echo $dummydummyDB > {}.txt", step.name))
-            //         .current_dir(&self.work_dir)
-            //         .status()
-            //         .expect("failed");
-
-            //     if !check_status.success() {
-            //         eprintln!("Error: Checkpoint Step '{}' failed with exit code {}", step.name, check_status);
-            //         panic!("Stopping flow.");
-            //     }
-
-            // }
-        }
-    }
-
-    fn write_checkpoint(&self, path: &PathBuf) -> Step {
-        let checkpoint_command = format!("cat dummydb.txt > {}", path.to_str().unwrap());
-        println!("  - Writing checkpoint w command: {}", checkpoint_command);
-
-        Step {
-            name: "write_checkpoint".to_string(),
-            command: checkpoint_command,
-            checkpoint: true,
-        }
-    }
-
-    fn read_checkpoint(&self, path: &PathBuf) -> Step {
-        let command = format!("cat {} > dummydb.txt", path.to_str().unwrap());
-        println!("  - Reading checkpoint with command: {}", command);
-        Step {
-            name: "read_checkpoint".to_string(),
-            command,
-            checkpoint: false,
-        }
-    }
-
-    fn checkpoints(&self, steps: Vec<Step>) -> Vec<PathBuf> {
-        let mut ret: Vec<PathBuf> = vec![];
-        for step in steps.into_iter() {
-            if step.checkpoint {
-                ret.push(self.work_dir.join(format!("{}.checkpoint", step.name)))
-            }
-        }
-        return ret;
+    fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Step>) {
+        ///if ()
     }
 }
+
+// impl Tool for DummyTool {
+//     fn work_dir(&self) -> PathBuf {
+//         self.work_dir.clone()
+//     }
+
+//     fn invoke(&self, steps: Vec<Step>) {
+//         // let dummyDB_stat = Command::new("zsh")
+//         //     .arg("-c")
+//         //     .arg("echo \"start\" >> dummydb.txt")
+//         //     .current_dir(&self.work_dir)
+//         //     .status()
+//         //     .expect("Failed");
+//         // if !dummyDB_stat.success() {
+//         //             eprintln!("Failed to write checkpoint to file");
+//         // }
+
+//         for step in steps {
+//             println!("  - Running step: '{}'", step.name);
+//             println!("    Command: {}", step.command);
+
+//             let status = Command::new("zsh")
+//                 .arg("-c")
+//                 .arg(&step.command)
+//                 .current_dir(&self.work_dir)
+//                 .status()
+//                 .expect("Failed");
+
+//             if !status.success() {
+//                 eprintln!(
+//                     "Error: Step '{}' failed with exit code {}",
+//                     step.name, status
+//                 );
+//                 panic!("Stopping flow.");
+//             }
+
+//             if step.checkpoint {
+//                 let temp =
+//                     self.write_checkpoint(&self.work_dir.join(format!("{}.checkpoint", step.name)));
+//                 //let mut file = File::create_new("temp.sh").expect("failed to make temp file");
+//                 //file.write_all(format!("!/bin/bash\n{}",&temp.command));
+
+//                 let check_status = Command::new("zsh")
+//                     .arg("-c")
+//                     .arg(&temp.command)
+//                     .current_dir(&self.work_dir)
+//                     .status()
+//                     .expect("Failed");
+//                 if !check_status.success() {
+//                     eprintln!("Failed to write checkpoint to file");
+//                 }
+//             }
+
+//             // if step.checkpoint {
+//             //     let check_status = Command::new("bash")
+//             //         .arg("-c")
+//             //         .arg(format!("echo $dummydummyDB > {}.txt", step.name))
+//             //         .current_dir(&self.work_dir)
+//             //         .status()
+//             //         .expect("failed");
+
+//             //     if !check_status.success() {
+//             //         eprintln!("Error: Checkpoint Step '{}' failed with exit code {}", step.name, check_status);
+//             //         panic!("Stopping flow.");
+//             //     }
+
+//             // }
+//         }
+//     }
+
+//     fn write_checkpoint(&self, path: &PathBuf) -> Step {
+//         let checkpoint_command = format!("cat dummydb.txt > {}", path.to_str().unwrap());
+//         println!("  - Writing checkpoint w command: {}", checkpoint_command);
+
+//         Step {
+//             name: "write_checkpoint".to_string(),
+//             command: checkpoint_command,
+//             checkpoint: true,
+//         }
+//     }
+
+//     fn read_checkpoint(&self, path: &PathBuf) -> Step {
+//         let command = format!("cat {} > dummydb.txt", path.to_str().unwrap());
+//         println!("  - Reading checkpoint with command: {}", command);
+//         Step {
+//             name: "read_checkpoint".to_string(),
+//             command,
+//             checkpoint: false,
+//         }
+//     }
+
+//     fn checkpoints(&self, steps: Vec<Step>) -> Vec<PathBuf> {
+//         let mut ret: Vec<PathBuf> = vec![];
+//         for step in steps.into_iter() {
+//             if step.checkpoint {
+//                 ret.push(self.work_dir.join(format!("{}.checkpoint", step.name)))
+//             }
+//         }
+//         return ret;
+//     }
+// }
+
+
 
 #[cfg(test)]
 

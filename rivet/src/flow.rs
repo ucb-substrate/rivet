@@ -8,21 +8,21 @@ use std::sync::Arc;
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(flatten)]
-    tools: HashMap<String, ToolConfig>,
+    pub tools: HashMap<String, ToolConfig>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ToolStart {
-    step: String,
-    checkpoint: Option<PathBuf>,
+    pub step: String,
+    pub checkpoint: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct ToolConfig {
-    start: Option<ToolStart>, //start from a specified step or start from beginning
-    stop: Option<String>,     //end at a specific step or end at the end
-    pin: Option<bool>,
+    pub start: Option<ToolStart>, //start from a specified step or start from beginning
+    pub stop: Option<String>,     //end at a specific step or end at the end
+    pub pin: Option<bool>,
     //output_dir: Option<PathBuf>,
 }
 

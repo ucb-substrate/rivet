@@ -43,7 +43,7 @@ impl Cli {
             .flow
             .workflow
             .iter()
-            .find(|n| n.name == self.args.node) //fix
+            .find(|n| n.1.name == self.args.node) //fix(ed)?
             .unwrap_or_else(|| {
                 eprintln!(
                     "Error: Node '{}' not found in the defined flow.",
@@ -51,6 +51,7 @@ impl Cli {
                 );
                 std::process::exit(1);
             });
-        self.flow.execute(start_node, self.config); //fix this
+        self.flow
+            .execute(start_node.0, &Arc::new(self.config.clone())); //fix(ed)?
     }
 }

@@ -21,6 +21,9 @@ impl Tool for DummyTool {
 
         if let Some(start_check_point) = start_checkpoint {
             //there is a start_checkpoint
+
+            println!("Reading from Checkpoint");
+
             let absolute_path = work_dir.join(&start_check_point);
 
             //now need to read from checkpoint
@@ -33,7 +36,12 @@ impl Tool for DummyTool {
                     );
 
                     //get dummy_db_int from this
-                    dummy_db_int = content.parse::<i32>().unwrap();
+                    dummy_db_int = content
+                        .lines()
+                        .next()
+                        .expect("\nFailure while parsing checkpoint file\n")
+                        .parse::<i32>()
+                        .unwrap();
                 }
                 Err(e) => {
                     panic!(
@@ -81,11 +89,19 @@ impl Tool for DummyTool {
                 //get the complete path to the checkpoint file
                 let absolute_checkpoint_path_str =
                     work_dir.join(&step_checkpoint).display().to_string();
+                let checkpoint_path_str = step_checkpoint.display().to_string();
+
+                println!(
+                    "\nCreating checkpoint for step {step_str} at {file_name_str}\n",
+                    step_str = step.name,
+                    file_name_str = absolute_checkpoint_path_str
+                );
+
                 //get checkpointing command
                 let checkpoint_command = format!(
-                    "echo \"{db}\" >> {loc}",
+                    "echo \"{db}\" > {loc}",
                     db = dummy_db_int,
-                    loc = absolute_checkpoint_path_str
+                    loc = checkpoint_path_str
                 );
 
                 let status = Command::new("zsh")
@@ -116,6 +132,7 @@ mod tests {
     use rivet::flow::Config;
     use rivet::flow::Flow;
     use rivet::flow::ToolConfig;
+    use rivet::flow::ToolStart;
     use rivet::flow::{FlowNode, Step, Tool};
 
     use super::*;
@@ -157,8 +174,13 @@ mod tests {
             workflow: HashMap::from([("test_flow_node".to_string(), flno)]),
         };
 
+        let x_start = ToolStart {
+            step: "step_1".to_string(),
+            checkpoint: Some(PathBuf::from("./step_2_checkpt.txt")),
+        };
+
         let x_config = ToolConfig {
-            start: None,
+            start: Some(x_start),
             stop: None,
             pin: None,
         };

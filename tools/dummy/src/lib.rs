@@ -15,7 +15,87 @@ impl DummyTool {
 
 impl Tool for DummyTool {
     fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Step>) {
-        ///if ()
+        use colored::Colorize;
+        println!("Beginning invoking...");
+        if let Some(start_check_point) = start_checkpoint {
+            //there is a start_checkpoint
+            let absolute_path = work_dir.join(&start_check_point);
+
+            //now need to read from checkpoint
+            match fs::read_to_string(&absolute_path) {
+                Ok(content) => {
+                    println!("\nContent of {:?}:\n{}".green(), dummy_file_path, content);
+
+                    //get dummy_db_int from this
+                    let dummy_db_int = content.parse::<i32>().unwrap();
+                }
+                Err(e) => {
+                    panic!(
+                        "\n --> Error reading checkpoint at {:?}: {}\n ".red(),
+                        absolute_path, e
+                    );
+                }
+            }
+        } else {
+            //let the dummy_db_int be 0 if no checkpoint is specified
+            println!("\nNo checkpoint specified.\n");
+            let dummy_db_int: i32 = 0;
+        }
+        for step in steps {
+            println!("  - Running step: '{}'", step.name);
+            println!("    Command: {}", step.command);
+
+            //we parse the command; first character is {+ - *} while the second is an integer
+
+            let operation = step.command.chars().next().unwrap();
+            let command_int = step
+                .command
+                .chars()
+                .skip(1)
+                .collect()
+                .parse::<i32>()
+                .unwrap();
+
+            if operation == "+" {
+                dummy_db_int = dummy_db_int + command_int;
+            } else if operation == "-" {
+                dummy_db_int = dummy_db_int - command_int;
+            } else if operation == "*" {
+                dummy_db_int = dummy_db_int * command_int;
+            } else {
+                panic!(
+                    "\nError: unknown operation {} at {} in step {}".red(),
+                    operation, step.command, step.name
+                );
+            }
+
+            if let Some(step_checkpoint) = step.checkpoint {
+                //get the complete path to the checkpoint file
+                let absolute_checkpoint_path_str =
+                    work_dir.join(&step_checkpoint).display().to_string();
+                //get checkpointing command
+                let checkpoint_command = format!(
+                    "echo \"{}\" >> {loc}",
+                    dummy_db_int,
+                    loc = absolute_checkpoint_path_str
+                );
+
+                let status = Command::new("zsh")
+                    .arg("-c")
+                    .arg(&absolute_checkpoint_path_str)
+                    .current_dir(&work_dir)
+                    .status()
+                    .expect("\nFailed to make checkpoint...\n");
+
+                if !status.success() {
+                    eprintln!(
+                        "Error: Checkpointing at step '{}' failed with exit code {}".red(),
+                        step.name, status
+                    );
+                    panic!("Stopping flow.".red());
+                }
+            }
+        }
     }
 }
 
@@ -119,8 +199,6 @@ impl Tool for DummyTool {
 //         return ret;
 //     }
 // }
-
-
 
 #[cfg(test)]
 

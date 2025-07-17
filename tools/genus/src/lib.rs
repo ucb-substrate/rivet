@@ -1,8 +1,8 @@
 use crate::fs::File;
+use rivet::cadence::*;
 use rivet::flow::{Step, Tool};
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
-use std::io::prelude::*;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
@@ -18,7 +18,6 @@ impl Genus {
         let dir = work_dir.into();
         Genus { work_dir: dir }
     }
-
     //concatenate steps to a tcl file, syn.tcl file, genus.tcl
 
     fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Step>) -> io::Result<()> {
@@ -50,7 +49,7 @@ impl Genus {
         for step in steps.into_iter() {
             writeln!(tcl_file, "puts\"{}\"", step.command.to_string())?;
             writeln!(tcl_file, "{}", step.command)?;
-            if (step.checkpoint) {
+            if (step.checkpoint != None) {
                 //generate tcl for checkpointing
             }
         }
@@ -60,40 +59,13 @@ impl Genus {
         Ok(())
     }
 
-    fn generate_mmmc_script(path: &PathBuf) {
-        let mut mmmc_file = File::create(path);
-
-        //need to work on generated sdc files as well
-        writeln!(
-            mmmc_file,
-            "create_constraint_mode -name {name} {sdc_files_arg} {ilm_sdc_files_arg}",
-        );
-
-        //for corner in corners
-        //create innovus library sets
-        writeln!(
-            mmmc_file,
-            "create_library_set -name {name}_set -timing [list {list}]",
-        );
-        //create Innovus timing conditions
-        writeln!(
-            mmmc_file,
-            "create_timing_condition -name {name}_cond -library_sets [list {name}_set]",
-        );
-        //create Innovus rc corners from qrc tech files
-        writeln!(
-            mmmc_file,
-            "create_rc_corner -name {name}_rc -temperature {tempInCelsius} {qrc}",
-        );
-        //create innovus delay corner
-        writeln!(mmmc_file,"create_delay_corner -name {name}_delay -timing_condition {name}_cond -rc_corner {name}_rc" , );
-        //create the analysis views
-        writeln!(mmmc_file,"create_analysis_view -name {name}_view -delay_corner {name}_delay -constraint_mode {constraint}" , );
-
-        writeln!(mmmc_file,"set_analysis_view -setup {{ {setup_views} }} -hold {{ {hold_views} {extra_views} }} {power}" , );
-    }
-
-    fn init_environment(&self, rtl: &PathBuf, top_module: &String) -> Step {
+    fn init_environment(
+        &self,
+        rtl: &PathBuf,
+        top_module: &String,
+        lef: &PathBuf,
+        qrc: &PathBuf,
+    ) -> Step {
         let mut command = String::new();
 
         //writeln!(&mut command, "hi {}", 1)?; this is example of what to do instead of push_str
@@ -101,7 +73,11 @@ impl Genus {
         // Corresponds to the "synthesis.clock_gating_mode" == "auto" check
 
         writeln!(&mut command, "set_db lp_clock_gating_infer_enable  true");
-        writeln!(&mut command, "set_db lp_clock_gating_prefix {CLKGATE}");
+        writeln!(
+            &mut command,
+            "set_db lp_clock_gating_prefix {}",
+            "CLKGATE".to_string()
+        );
         writeln!(&mut command, "set_db lp_insert_clock_gating  true");
         writeln!(&mut command, "set_db lp_clock_gating_register_aware true");
 
@@ -112,11 +88,14 @@ impl Genus {
         let mmmc_path = self.work_dir.join("mmmc.tcl");
 
         //then we call the mmmc script that writes tcl to the file in the provided file path
-        Genus::generate_mmmc_script(&mmmc_path);
+        generate_mmmc_script(&mmmc_path);
 
         writeln!(&mut command, "read_mmmc {}", mmmc_path.display());
 
         //need to hardcode the lef file path
+        //lef_files = self.technology.read_libs([
+        //hammer_tech.filters.lef_filter
+        //], hammer_tech.HammerTechnologyUtils.to_plain_item)
         // In a real implementation, you would need to get the LEF files from your technology configuration
         writeln!(&mut command, "read_physical -lef {}", lef.display());
 
@@ -132,8 +111,8 @@ impl Genus {
 
         //top module needs to be assigned to the name of our trl file so it is supposed to be
         //"decoder"
-        writeln!(&mut command, "elaborate {top_module}");
-        writeln!(&mut command, "init_design -top {top_module}");
+        writeln!(&mut command, "elaborate {}", top_module);
+        writeln!(&mut command, "init_design -top {}", top_module);
 
         // --- Constraints and Design Settings ---
         writeln!(&mut command, "report_timing -lint -verbose");
@@ -166,14 +145,18 @@ impl Genus {
         }
     }
 
-    fn predict_floorplan() -> Step {
+    fn predict_floorplan(innovus_path: &PathBuf) -> Step {
         let mut command = String::new();
         // In a real implementation, this would be based on a setting like
         // `synthesis.genus.phys_flow_effort`. This example assumes "high" effort.
 
         writeln!(&mut command, "set_db invs_temp_dir temp_invs");
         // The innovus binary path would be a configurable parameter.
-        writeln!(&mut command, "set_db innovus_executable {innovus_bin_path}");
+        writeln!(
+            &mut command,
+            "set_db innovus_executable {}",
+            innovus_path.display()
+        );
         writeln!(
             &mut command,
             "set_db predict_floorplan_enable_during_generic true"

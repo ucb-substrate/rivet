@@ -51,6 +51,11 @@ impl Genus {
             writeln!(tcl_file, "{}", step.command)?;
             if (step.checkpoint != None) {
                 //generate tcl for checkpointing
+                let mut checkpoint_command = String::new();
+
+                writeln!(checkpoint_command, "write_db -to_file pre_{}", step.name);
+                writeln!(tcl_file, "puts\"{}\"", checkpoint_command)?;
+                writeln!(tcl_file, "{}", checkpoint_command)?;
             }
         }
         writeln!(tcl_file, "puts \"{}\"", "quit")?;
@@ -226,10 +231,12 @@ impl Genus {
         //mmmc libraries
         //
         //
+        let tie_hi_cell = "TIEHI";
+        let tie_lo_cell = "TIELO";
         if true {
-            writeln!(&mut command, "set ACTIVE_SET [string map { .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set } [get_db [get_analysis_views] .name]]");
-            writeln!(&mut command, "set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if { .library.library_set.name == $ACTIVE_SET }]");
-            writeln!(&mut command, "set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if { .library.library_set.name == $ACTIVE_SET }]");
+            writeln!(&mut command, "set ACTIVE_SET [string map {{ .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set }} [get_db [get_analysis_views] .name]]");
+            writeln!(&mut command, "set HI_TIEOFF [get_db base_cell:{} .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]", tie_hi_cell);
+            writeln!(&mut command, "set LO_TIEOFF [get_db base_cell:{} .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]", tie_lo_cell);
             writeln!(
                 &mut command,
                 "add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose"
@@ -237,7 +244,7 @@ impl Genus {
         } else {
             writeln!(
                 &mut command,
-                "add_tieoffs -high {TIE_HI_CELL} -low {LO_LO_CELL} -max_fanout 1 -verbose",
+                "add_tieoffs -high {{TIE_HI_CELL}} -low {{LO_LO_CELL}} -max_fanout 1 -verbose",
             );
         }
 
@@ -281,12 +288,14 @@ impl Genus {
         }
     }
 
-    fn write_outputs(top_module: &String) -> Step {
+    fn write_outputs(&self, top_module: &String, corners: Corner) -> Step {
         let mut command = String::new();
 
         // The filenames would use a variable for the top module name.
         //writeln!("write_hdl > {top_module}.mapped.v");
-        writeln!(&mut command, "write_hdl > /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/syn-rundir/decoder.mapped.v");
+        //
+        let mapped_v_path = self.work_dir.join("{top_module}.mapped.v");
+        writeln!(&mut command, "write_hdl > {}", mapped_v_path.display());
 
         //writeln!("write_hdl -exclude_ilm > {top_module}_noilm.mapped.v");
         //writeln!("write_sdc -view {setup_view_name} > {top_module}.mapped.sdc");
@@ -300,16 +309,30 @@ impl Genus {
         // verbose_append("write_template -full -outfile {}.mapped.scr".format(top))
         writeln!(
             &mut command,
-            "write_template -full -outfile decoder.mapped.scr"
+            "write_template -full -outfile {}.mapped.scr",
+            top_module
         );
 
+        //view_name="{cname}.setup_view".format(cname=next(filter(lambda c: c.type is MMMCCornerType.Setup, corners)).name)
+        let view_name = "{corners[0].name}.setup_view";
+        let mapped_sdc_path = self.work_dir.join("{top_module}.mapped.sdc");
         //verbose_append("write_sdc -view {view} > {file}".format(view=view_name, file=self.mapped_sdc_path))
-        writeln!(&mut command, "write_sdc -view ss_100C_1v60.setup_view > /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/syn-rundir/decoder.mapped.sdc");
+        writeln!(
+            &mut command,
+            "write_sdc -view {} > {}",
+            view_name,
+            mapped_sdc_path.display()
+        );
 
         //verbose_append("write_sdf > {run_dir}/{top}.mapped.sdf".format(run_dir=self.run_dir, top=top))
-        writeln!(&mut command, "write_sdf > /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/syn-rundir/decoder.mapped.sdf");
+        writeln!(
+            &mut command,
+            "write_sdf > {}/{}.mapped.sdf",
+            self.work_dir.display(),
+            top_module
+        );
         //verbose_append("write_design -gzip_files {top}".format(top=top))
-        writeln!(&mut command, "write_design -gzip_files decoder");
+        writeln!(&mut command, "write_design -gzip_files {}", top_module);
 
         Step {
             name: "write_outputs".to_string(),

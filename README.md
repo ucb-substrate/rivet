@@ -1,7 +1,5 @@
 # Rivet
 
-Rivet is a stripped-down version of Hammer that aims to be very, very simple.
-
 Rivet core contains a minimal feature set for managing flows involving command-based tools:
 - Flow tree construction
 - Checkpointing and restarts

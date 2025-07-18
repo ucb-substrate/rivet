@@ -1,15 +1,16 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use genus::Genus;
 use indoc::formatdoc;
-use rivet::flow::{Flow, FlowNode};
+use rivet::flow::{Flow, FlowNode, Step};
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-fn set_default_options() -> String {
-    r#"#set_db hdl_error_on_blackbox true
+fn set_default_options() -> Step {
+    Step {
+        name: "set_default_options".into(),
+        command: r#"set_db hdl_error_on_blackbox true
 set_db max_cpus_per_server 12
 set_multi_cpu_usage -local_cpu 12
 set_db super_thread_debug_jobs true
@@ -17,12 +18,26 @@ set_db super_thread_debug_directory super_thread_debug
 set_db lp_clock_gating_infer_enable  true
 set_db lp_clock_gating_prefix  {CLKGATE}
 set_db lp_insert_clock_gating  true
-set_db lp_clock_gating_register_aware true"#
+set_db lp_clock_gating_register_aware true
+set_db root: .auto_ungroup none
+set_db [get_db lib_cells -if {.base_name == ICGX1}] .avoid false
+"#
+        .into(),
+        checkpoint: false,
+    }
 }
 
-fn sky130_cds_mmmc(sky130_cds_path: &str) -> String {
+pub fn sdc() -> String {
+    // Combine contents of clock_constraints_fragment.sdc and pin_constraints_fragment.sdc
+    todo!()
+}
+
+fn sky130_cds_mmmc(sdc_file: impl AsRef<Path>) -> String {
+    let sdc_file = sdc_file.as_ref();
     formatdoc!(
-        r#"puts "create_library_set -name ss_100C_1v60.setup_set -timing [list {sky130_cds_path}/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]"
+        r#"puts "create_constraint_mode -name my_constraint_mode -sdc_files [list /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/clock_constraints_fragment.sdc /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/pin_constraints_fragment.sdc] "
+create_constraint_mode -name my_constraint_mode -sdc_files {sdc_file:?}
+puts "create_library_set -name ss_100C_1v60.setup_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]"
 create_library_set -name ss_100C_1v60.setup_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]
 puts "create_timing_condition -name ss_100C_1v60.setup_cond -library_sets [list ss_100C_1v60.setup_set]"
 create_timing_condition -name ss_100C_1v60.setup_cond -library_sets [list ss_100C_1v60.setup_set]
@@ -57,26 +72,82 @@ set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_v
     )
 }
 
-pub fn genus_syn() -> FlowNode {}
+pub fn read_design_files() -> Step {
+    // Write SDC and mmmc.tcl, run commands up to read_hdl.
+    todo!()
+}
 
-pub fn reference_flow() -> Flow {
-    Flow {
-        workflow: HashMap::from_iter([(
-            "syn",
-            FlowNode {
-                tool: Genus::new(""), // TODO
-            },
-        )]),
+pub fn elaborate(module: &str) -> Step {
+    Step {
+        checkpoint: false,
+        command: format!("elaborate {module}"),
+        name: "elaborate".to_string(),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub fn init_design(module: &str) -> Step {
+    Step {
+        checkpoint: false,
+        command: format!("init_design -top {module}"),
+        name: "init_design".to_string(),
+    }
+}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+pub fn power_intent() -> Step {
+    // Write power_spec.cpf and run power_intent TCL commands.
+    todo!()
+}
+
+pub fn syn_generic() -> Step {
+    Step {
+        checkpoint: true,
+        command: "syn_generic".to_string(),
+        name: "syn_generic".to_string(),
+    }
+}
+
+pub fn syn_map() -> Step {
+    Step {
+        checkpoint: true,
+        command: "syn_map".to_string(),
+        name: "syn_map".to_string(),
+    }
+}
+
+pub fn add_tieoffs() -> Step {
+    todo!()
+}
+
+pub fn write_design() -> Step {
+    // All write TCL commands
+    todo!()
+}
+
+pub fn genus_syn() -> FlowNode {}
+
+pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
+    let work_dir = work_dir.as_ref().to_path_buf();
+    let syn_work_dir = work_dir.join("syn");
+    Flow {
+        nodes: HashMap::from_iter([(
+            "syn",
+            FlowNode {
+                tool: Arc::new(Genus::new(&syn_work_dir)),
+                work_dir: syn_work_dir,
+                checkpoint_dir: syn_work_dir.join("checkpoints"),
+                steps: vec![
+                    set_default_options(),
+                    read_design_files(),
+                    elaborate("decoder"),
+                    init_design("decoder"),
+                    power_intent(),
+                    syn_generic(),
+                    syn_map(),
+                    add_tieoffs(),
+                    write_design(),
+                ],
+                deps: Vec::new(),
+            },
+        )]),
     }
 }

@@ -2,10 +2,12 @@
 
 resolver = "2"
 members = [
+    "examples/decoder",
     "rivet",
     "pdks/sky130",
     "tools/genus",
     "tools/innovus",
     "tools/chipyard",
     "tools/dummy",
+    "examples/decoder",
 ]

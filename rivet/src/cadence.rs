@@ -46,7 +46,7 @@ pub fn generate_mmmc_script(
     for corner in corners.iter() {
         //create innovus library sets
         //let list = get timing libs of corner
-        //
+
         //let tempInCelsius = corner.temperature;
         //let qrc = get_mmmc_qrc(corner);
         //qrc="-qrc_tech {}".format(self.get_mmmc_qrc(corner)) if self.get_mmmc_qrc(corner) != '' else ''
@@ -114,57 +114,54 @@ pub fn generate_mmmc_script(
     true
 }
 
-pub fn power_spec_commands() -> Vec<String> {
-    //power_spec_file = self.create_power_spec()
-    //   power_spec_arg = self.map_power_spec_name()
-    //
-    //   return ["read_power_intent -{arg} {path}".format(arg=power_spec_arg, path=power_spec_file),
-    //           "commit_power_intent"]
-    //
-    //
-    //     def create_power_spec(self) -> str:
-    //    """
-    //    Generate a power specification file for Cadence tools.
-    //    """
-    //
-    //    power_spec_type = str(self.get_setting("vlsi.inputs.power_spec_type"))  # type: str
-    //    power_spec_contents = ""  # type: str
-    //    power_spec_mode = str(self.get_setting("vlsi.inputs.power_spec_mode"))  # type: str
-    //    if power_spec_mode == "empty":
-    //        return ""
-    //    elif power_spec_mode == "auto":
-    //        if power_spec_type == "cpf":
-    //            power_spec_contents = self.cpf_power_specification
-    //        elif power_spec_type == "upf":
-    //            power_spec_contents = self.upf_power_specification
-    //    elif power_spec_mode == "manual":
-    //        power_spec_contents = str(self.get_setting("vlsi.inputs.power_spec_contents"))
-    //    else:
-    //        self.logger.error("Invalid power specification mode '{mode}'; using 'empty'.".format(mode=power_spec_mode))
-    //        return ""
-    //
-    //    # Write the power spec contents to file and include it
-    //    power_spec_file = os.path.join(self.run_dir, "power_spec.{tpe}".format(tpe=power_spec_type))
-    //    self.write_contents_to_path(power_spec_contents, power_spec_file)
-    //
-    //    return power_spec_file
-    //
-    //
-    //def map_power_spec_name(self) -> str:
-    //    """
-    //    Return the CPF or UPF flag name for Cadence tools.
-    //    """
-    //
-    //    power_spec_type = str(self.get_setting("vlsi.inputs.power_spec_type"))  # type: str
-    //    power_spec_arg = ""  # type: str
-    //    if power_spec_type == "cpf":
-    //        power_spec_arg = "cpf"
-    //    elif power_spec_type == "upf":
-    //        power_spec_arg = "1801"
-    //    else:
-    //        self.logger.error(
-    //            "Invalid power specification type '{tpe}'; only 'cpf' or 'upf' supported".format(tpe=power_spec_type))
-    //        return ""
-    //    return power_spec_arg
-    //
+pub fn power_spec_commands(run_dir: &PathBuf, power_spec_type: &String) -> Vec<String> {
+    let power_spec_file = generate_power_spec(power_spec_type.to_string(), run_dir);
+    let mut power_spec_arg = String::new();
+
+    if power_spec_type == "upf" {
+        power_spec_arg = "1801".to_string();
+    } else if power_spec_type == "cpf" {
+        power_spec_arg = "cpf".to_string();
+    } else {
+        power_spec_arg = "".to_string();
+    }
+    let mut power_spec_commands: Vec<String> = Vec::new();
+    power_spec_commands.push(format!(
+        "read_power_intent -{} {}",
+        power_spec_arg,
+        power_spec_file.display()
+    ));
+    power_spec_commands.push("apply_power_intent -summary".to_string());
+    power_spec_commands.push("commit_power_intent".to_string());
+
+    power_spec_commands
+}
+
+fn generate_power_spec(power_spec_type: String, run_dir: &PathBuf, top_module: String) -> PathBuf {
+    let mut power_spec_file_path = run_dir.join("power_spec.{power_spec_type}");
+    let mut power_spec_file = File::create(power_spec_file_path.clone()).unwrap();
+    if power_spec_type == "cpf" {
+        writeln!(power_spec_file, "set_cpf_version 1.0e");
+        writeln!(power_spec_file, "set_hierarchy_separator /");
+        writeln!(power_spec_file, "set_design {}", top_module);
+
+        //create power nets
+        //create ground nets
+        //using a loop
+        writeln!(power_spec_file, "create_power_domain -name AO -default");
+
+        //output.append(f'update_power_domain -name {domain} -primary_power_net {power_nets[0].name} -primary_ground_net {ground_nets[0].name}')
+        writeln!(
+            power_spec_file,
+            "update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS"
+        );
+
+        //create global connections using a loop
+
+        //output.append(f'create_nominal_condition -name {condition} -voltage {nominal_vdd.value}')
+        //output.append(f'create_power_mode -name {mode} -default -domain_conditions {{{domain}@{condition}}}')
+        //
+        writeln!(power_spec_file, "end_design");
+    }
+    power_spec_file_path
 }

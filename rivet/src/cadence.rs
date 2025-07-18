@@ -20,19 +20,19 @@ pub struct Corner {
 //}
 
 pub fn generate_mmmc_script(
-    path: &PathBuf,
+    work_dir: &PathBuf,
     corners: Vec<Corner>,
     constraint_mode_name: String,
     sdc_files_arg: &PathBuf,
     ilm_sdc_files_arg: &PathBuf,
     timing_libs: &PathBuf,
     qrc: &PathBuf,
-) -> bool {
-    let mut mmmc_file = File::create(&path).unwrap();
+) -> String {
+    let mut mmmc_file = String::new();
 
     //need to work on generated sdc files as well
     writeln!(
-        mmmc_file,
+        &mut mmmc_file,
         "create_constraint_mode -name {} {} {}",
         constraint_mode_name,
         sdc_files_arg.display(),
@@ -68,13 +68,13 @@ pub fn generate_mmmc_script(
         );
         //create Innovus timing conditions
         writeln!(
-            mmmc_file,
+            &mut mmmc_file,
             "create_timing_condition -name {}_cond -library_sets [list {}_set]",
             corner.name, corner.name,
         );
         //create Innovus rc corners from qrc tech files
         writeln!(
-            mmmc_file,
+            &mut mmmc_file,
             "create_rc_corner -name {}_rc -temperature {} {}",
             corner.name,
             corner.temperature,
@@ -82,13 +82,13 @@ pub fn generate_mmmc_script(
         );
         //create innovus delay corner
         writeln!(
-            mmmc_file,
+            &mut mmmc_file,
             "create_delay_corner -name {}_delay -timing_condition {}_cond -rc_corner {}_rc",
             corner.name, corner.name, corner.name,
         );
         //create the analysis views
         writeln!(
-            mmmc_file,
+            &mut mmmc_file,
             "create_analysis_view -name {}_view -delay_corner {}_delay -constraint_mode {}",
             corner.name, corner.name, constraint_mode_name,
         );
@@ -103,7 +103,7 @@ pub fn generate_mmmc_script(
         );
     }
     writeln!(
-        mmmc_file,
+        &mut mmmc_file,
         "set_analysis_view -setup {{ {} }} -hold {{ {} {} }} {}",
         setup_views.join(" "),
         hold_views.join(" "),
@@ -111,7 +111,7 @@ pub fn generate_mmmc_script(
         power,
     );
 
-    true
+    mmmc_file
 }
 
 pub fn power_spec_commands(run_dir: &PathBuf, power_spec_type: &String) -> Vec<String> {

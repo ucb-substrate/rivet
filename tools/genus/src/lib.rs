@@ -47,7 +47,7 @@ impl Genus {
         )?;
 
         for step in steps.into_iter() {
-            if (step.checkpoint != None) {
+            if (step.checkpoint == true) {
                 //generate tcl for checkpointing
                 let mut checkpoint_command = String::new();
 
@@ -93,7 +93,15 @@ impl Genus {
         let mmmc_path = self.work_dir.join("mmmc.tcl");
 
         //then we call the mmmc script that writes tcl to the file in the provided file path
-        generate_mmmc_script(&mmmc_path);
+
+        // make generate_mmmc_script return a string not write to a file
+        let script = generate_mmmc_script(&mmmc_path);
+        writeln!(
+            &mut command,
+            r#"cat > {mmmc_path:?} << EOF
+            {script}
+            EOF"#
+        );
 
         writeln!(&mut command, "read_mmmc {}", mmmc_path.display());
 
@@ -423,7 +431,7 @@ impl Tool for Genus {
         self.make_tcl_file(&tcl_path, steps);
 
         let status = Command::new("genus")
-            .args(["-files", tcl_path.into_os_string().into_string(), "-no_gui"])
+            .args(["-files", tcl_path.into_os_string().into_string()., "-no_gui"])
             .current_dir(&self.work_dir)
             .status()
             .expect("Failed to execute syn.tcl");

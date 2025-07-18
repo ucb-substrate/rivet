@@ -1,4 +1,8 @@
+use std::collections::HashMap;
+
+use genus::Genus;
 use indoc::formatdoc;
+use rivet::flow::{Flow, FlowNode};
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
@@ -51,6 +55,19 @@ create_analysis_view -name tt_025C_1v80.extra_view -delay_corner tt_025C_1v80.ex
 puts "set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_view tt_025C_1v80.extra_view } -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"
 set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_view tt_025C_1v80.extra_view } -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"#
     )
+}
+
+pub fn genus_syn() -> FlowNode {}
+
+pub fn reference_flow() -> Flow {
+    Flow {
+        workflow: HashMap::from_iter([(
+            "syn",
+            FlowNode {
+                tool: Genus::new(""), // TODO
+            },
+        )]),
+    }
 }
 
 #[cfg(test)]

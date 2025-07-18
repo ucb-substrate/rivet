@@ -30,17 +30,26 @@ pub struct ToolConfig {
 pub struct Step {
     pub name: String,
     pub command: String,
-    pub checkpoint: Option<PathBuf>,
+    pub checkpoint: bool,
+}
+
+pub struct AnnotatedStep {
+    step: Step,
+    checkpoint_path: PathBuf,
 }
 
 pub trait Tool: Debug {
     /// Runs the tool for the given steps.
-    fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Step>);
+    fn invoke(
+        &self,
+        work_dir: PathBuf,
+        start_checkpoint: Option<PathBuf>,
+        steps: Vec<AnnotatedStep>,
+    );
 }
 
 #[derive(Debug)]
 pub struct FlowNode {
-    pub name: String,
     pub tool: Arc<dyn Tool>,
     pub work_dir: PathBuf,
     pub checkpoint_dir: PathBuf,
@@ -115,6 +124,7 @@ impl Flow {
                 .cloned();
 
             // tool invokes the steps to run, but we need to specify checkpoint that we are running from
+            // TODO: need to change steps_to_run to be configured, go through the steps and fill in the ckecpoints
             target_node.tool.as_ref().invoke(
                 target_node.work_dir.clone(),
                 start_checkpoint,

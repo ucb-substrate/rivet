@@ -19,10 +19,12 @@ Additional features are implemented in PDK/tool plugins. Such features include:
 
 - Document checkpointing/pinning behavior and implement it
 - Genus/Innovus/Sky130 plugins
-- Update checkpointing logic to new API
-- Move execution and checkpoint logic into flow.rs
-- Update Genus templating functions to accept paramters
 - Make functions to write the mmmc.tcl and powerspec files
+- Make function in rivet (flow.rs?) to generate annotated_steps for steps in a flow node.
+- Consider making readlib functions for MMMC so don't hard code anymore.
+- Test the Genus plugin using lab 4 decoder files as reference.
+- Generate sdc files using functions instead of hardcoding path files
+- Get a flow running in primary goal
 
 ## Design
 

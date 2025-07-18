@@ -9,5 +9,4 @@ members = [
     "tools/innovus",
     "tools/chipyard",
     "tools/dummy",
-    "examples/decoder",
 ]

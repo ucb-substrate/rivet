@@ -59,28 +59,28 @@ pub struct FlowNode {
 
 #[derive(Debug)]
 pub struct Flow {
-    pub workflow: HashMap<String, FlowNode>,
+    pub nodes: HashMap<String, FlowNode>,
 }
 
 impl Flow {
-    pub fn new(workflow: HashMap<String, FlowNode>) -> Self {
-        Flow { workflow }
+    pub fn new(nodes: HashMap<String, FlowNode>) -> Self {
+        Flow { nodes }
     }
 
     //So have a bunch of nodes; each of these has a bunch of steps. Want to execute flow, so execute
     //node but also have to deal w dependencies that may or may not be pinned
 
     /// Recursively executes a node and its dependencies, respecting pins and checkpoints.
-    pub fn execute(&self, node: &str, config: &Arc<Config>) {
+    pub fn execute(&self, node: &str, config: &Config) {
         let mut executed = HashSet::new();
         self.execute_inner(node, config, &mut executed);
     }
 
     //recusrively execute each node and dependencies, respecting the pins and checkpoints
     //each node has steps that may or may not be checkpoints
-    fn execute_inner(&self, node: &str, config: &Arc<Config>, executed: &mut HashSet<String>) {
+    fn execute_inner(&self, node: &str, config: &Config, executed: &mut HashSet<String>) {
         let target_node = self
-            .workflow
+            .nodes
             .get(node)
             .expect(&format!("Error: Node {} not found in flow", node));
 
@@ -128,7 +128,16 @@ impl Flow {
             target_node.tool.as_ref().invoke(
                 target_node.work_dir.clone(),
                 start_checkpoint,
-                steps_to_run,
+                steps_to_run
+                    .into_iter()
+                    .map(|step| {
+                        let checkpoint_path = target_node.checkpoint_dir.join(&step.name);
+                        AnnotatedStep {
+                            step,
+                            checkpoint_path,
+                        }
+                    })
+                    .collect(),
             );
         }
 

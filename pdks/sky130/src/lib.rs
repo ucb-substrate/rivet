@@ -1,5 +1,7 @@
 use std::{
     collections::HashMap,
+    fs::File,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -29,7 +31,15 @@ set_db [get_db lib_cells -if {.base_name == ICGX1}] .avoid false
 
 pub fn sdc() -> String {
     // Combine contents of clock_constraints_fragment.sdc and pin_constraints_fragment.sdc
-    todo!()
+
+    formatdoc!(
+        r#"create_clock clk -name clk -period 2.0
+        set_clock_uncertainty 0.01 [get_clocks clk]
+        set_clock_groups -asynchronous  -group {{ clk }}
+        set_load 1.0 [all_outputs]
+        set_input_delay -clock clk 0 [all_inputs]
+        set_output_delay -clock clk 0 [all_outputs]"#
+    )
 }
 
 fn sky130_cds_mmmc(sdc_file: impl AsRef<Path>) -> String {
@@ -74,7 +84,23 @@ set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_v
 
 pub fn read_design_files() -> Step {
     // Write SDC and mmmc.tcl, run commands up to read_hdl.
-    todo!()
+    //read mmmc.tcl
+    //read physical -lef
+    //read_hdl -sv {}
+    //
+    let mut sdc_file = File::create("clock_pin_constraints.sdc");
+    let sdc_path = writeln!(sdc_file, sdc());
+    let mmmc_tcl = sky130_cds_mmmc(sdc_path);
+
+    Step {
+        checkpoint: true,
+        command: r#"
+
+
+            "#
+        .into(),
+        name: "read_design_files".into(),
+    }
 }
 
 pub fn elaborate(module: &str) -> Step {
@@ -115,11 +141,22 @@ pub fn syn_map() -> Step {
 }
 
 pub fn add_tieoffs() -> Step {
-    todo!()
+    Step {
+        checkpoint: true,
+        command: r#"set_db message:WSDF-201 .max_print 20
+        set_db use_tiehilo_for_const duplicate
+        set ACTIVE_SET [string map { .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set } [get_db [get_analysis_views] .name]]
+        set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if { .library.library_set.name == $ACTIVE_SET }]
+        set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if { .library.library_set.name == $ACTIVE_SET }]
+        add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose
+"#.into(),
+        name:"add_tieoffs".into(),
+    }
 }
 
 pub fn write_design() -> Step {
     // All write TCL commands
+    // this includes write regs, write reports, write outputs
     todo!()
 }
 

@@ -114,8 +114,12 @@ pub fn generate_mmmc_script(
     mmmc_file
 }
 
-pub fn power_spec_commands(run_dir: &PathBuf, power_spec_type: &String) -> Vec<String> {
-    let power_spec_file = generate_power_spec(power_spec_type.to_string(), run_dir);
+pub fn power_spec_commands(
+    run_dir: &PathBuf,
+    power_spec_type: &String,
+    module: String,
+) -> Vec<String> {
+    let power_spec_file = generate_power_spec(power_spec_type.to_string(), run_dir, module);
     let mut power_spec_arg = String::new();
 
     if power_spec_type == "upf" {

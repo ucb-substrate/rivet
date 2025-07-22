@@ -1,4 +1,9 @@
+use clap::Parser;
+use rivet::flow::Config;
 use sky130::reference_flow;
+use std::path::PathBuf;
+use std::fs;
+use toml;
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -18,5 +23,5 @@ fn main() {
     let config: Config = toml::from_str(&config_str).expect("Failed to parse config file");
     let work_dir = args.work_dir.unwrap_or("build".into());
     let flow = reference_flow(work_dir);
-    f.flow.execute(args.node, &self.config);
+    flow.execute(args.node., &config);
 }

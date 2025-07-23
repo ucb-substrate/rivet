@@ -1,6 +1,6 @@
 use crate::fs::File;
 use rivet::cadence::*;
-use rivet::flow::{Step, Tool};
+use rivet::flow::{Step, Tool, AnnotatedStep};
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
@@ -20,7 +20,7 @@ impl Genus {
     }
     //concatenate steps to a tcl file, syn.tcl file, genus.tcl
 
-    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Step>) -> io::Result<()> {
+    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<AnnotatedStep>) -> io::Result<()> {
         let file_path = path.join("syn.tcl");
         let mut tcl_file = File::create(&file_path).expect("failed to create syn.tcl file");
 
@@ -46,18 +46,18 @@ impl Genus {
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
-        for step in steps.into_iter() {
-            if (step.checkpoint == true) {
-                //generate tcl for checkpointing
-                let mut checkpoint_command = String::new();
-
-                writeln!(checkpoint_command, "write_db -to_file pre_{}", step.name);
-                writeln!(tcl_file, "puts\"{}\"", checkpoint_command)?;
-                writeln!(tcl_file, "{}", checkpoint_command)?;
-            }
-            writeln!(tcl_file, "puts\"{}\"", step.command.to_string())?;
-            writeln!(tcl_file, "{}", step.command)?;
-        }
+        // for astep in steps.into_iter() {
+        //     if astep.step.checkpoint {
+        //         //generate tcl for checkpointing
+        //         let mut checkpoint_command = String::new();
+        //
+        //         writeln!(checkpoint_command, "write_db -to_file pre_{}", astep.step.name);
+        //         writeln!(tcl_file, "puts\"{}\"", checkpoint_command)?;
+        //         writeln!(tcl_file, "{}", checkpoint_command)?;
+        //     }
+        //     writeln!(tcl_file, "puts\"{}\"", astep.step.command.to_string())?;
+        //     writeln!(tcl_file, "{}", astep.step.command)?;
+        // }
         writeln!(tcl_file, "puts \"{}\"", "quit")?;
         writeln!(tcl_file, "quit")?;
 
@@ -95,7 +95,8 @@ impl Genus {
         //then we call the mmmc script that writes tcl to the file in the provided file path
 
         // make generate_mmmc_script return a string not write to a file
-        let script = generate_mmmc_script(&mmmc_path);
+        // let script = generate_mmmc_script(&mmmc_path, );
+        let script = "".to_string();
         writeln!(
             &mut command,
             r#"cat > {mmmc_path:?} << EOF
@@ -423,15 +424,15 @@ impl Tool for Genus {
     //    self.work_dir.clone()
     //}
     // genus -files syn.tcl -no_gui
-    fn invoke(&self, steps: Vec<Step>) {
+    fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<AnnotatedStep>) {
         let mut tcl_path = PathBuf::new();
-        tcl_path.push(self.work_dir);
+        tcl_path.push(self.work_dir.clone());
         tcl_path.push("syn.tcl");
 
         self.make_tcl_file(&tcl_path, steps);
 
         let status = Command::new("genus")
-            .args(["-files", tcl_path.into_os_string().into_string()., "-no_gui"])
+            .args(["-files", &tcl_path.to_string_lossy(), "-no_gui"])
             .current_dir(&self.work_dir)
             .status()
             .expect("Failed to execute syn.tcl");

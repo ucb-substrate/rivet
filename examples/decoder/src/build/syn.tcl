@@ -11,8 +11,6 @@ set_db lp_clock_gating_register_aware true
 set_db root: .auto_ungroup none
 set_db [get_db lib_cells -if {.base_name == ICGX1}] .avoid false
 
-write_db -to_file pre_read_design_files
-
 puts "create_constraint_mode -name my_constraint_mode -sdc_files [list /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/clock_constraints_fragment.sdc /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/pin_constraints_fragment.sdc] "
 create_constraint_mode -name my_constraint_mode -sdc_files "clock_pin_constraints.sdc"
 puts "create_library_set -name ss_100C_1v60.setup_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]"
@@ -57,7 +55,7 @@ write_db -to_file pre_power_intent
 
 read_power_intent -cpf power_spec.cpf
 apply_power_intent -summary
-Commit_power_intent
+commit_power_intent
 
 write_db -to_file pre_syn_generic
 

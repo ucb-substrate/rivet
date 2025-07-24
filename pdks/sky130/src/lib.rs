@@ -97,8 +97,10 @@ pub fn read_design_files() -> Step {
     writeln!(sdc_file, "{}", sdc());
     let mmmc_tcl = sky130_cds_mmmc(sdc_file_path);
 
+
+    //fix the path fo the sky130 lef in my scratch folder
     Step {
-        checkpoint: true,
+        checkpoint: false,
         command: formatdoc!(r#"
             {mmmc_tcl}
             read_physical -lef {{ /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
@@ -165,7 +167,7 @@ pub fn power_intent() -> Step {
         r#"
         read_power_intent -cpf {power_spec_file_path}
         apply_power_intent -summary
-        Commit_power_intent
+        commit_power_intent
         "#
         ),
         name: "power_intent".into(),

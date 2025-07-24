@@ -27,6 +27,7 @@ fn main() {
     let conf =  ToolConfig {start: None, stop: Some("write_design".to_string()), pin: None};
     tools.insert("Genus".to_string(), conf.clone());
     let config = Config {tools : tools.clone() };
+    //fix hardcoding the pathbuf of the reference flow
     let flow = reference_flow(PathBuf::from("scratch/cs199-cbc/rivet/examples/decoder/src"));
     flow.execute("syn", &config);
 }

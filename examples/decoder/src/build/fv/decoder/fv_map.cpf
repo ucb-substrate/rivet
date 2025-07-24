@@ -1,0 +1,82 @@
+########################################################################################
+#                                                                                      #
+# Created by Genus(TM) Synthesis Solution 21.17-s066_1 on Thu Jul 24 10:30:31 PDT 2025 #
+#                                                                                      #
+########################################################################################
+
+set_cpf_version 1.1
+
+set_hierarchy_separator "/"
+
+set_design decoder
+
+create_nominal_condition -name nominal \
+	 -voltage { 1.8 } \
+	 -ground_voltage { 0 }
+
+create_power_domain -name AO \
+	 -default
+
+create_power_mode -name aon \
+	 -default \
+	 -domain_conditions { AO@nominal }
+
+create_power_nets \
+	 -nets { VDD } \
+	 -voltage 1.8
+
+create_power_nets \
+	 -nets { VPWR } \
+	 -voltage 1.8
+
+create_power_nets \
+	 -nets { VPB } \
+	 -voltage 1.8
+
+create_power_nets \
+	 -nets { vdd } \
+	 -voltage 1.8
+
+create_ground_nets \
+	 -nets { VSS VGND VNB vss }
+
+update_power_domain -name AO \
+	 -primary_power_net VDD \
+	 -primary_ground_net VSS
+
+create_global_connection \
+	 -domain AO \
+	 -net VDD \
+	 -pins { VDD }
+
+create_global_connection \
+	 -domain AO \
+	 -net VPWR \
+	 -pins { VPWR }
+
+create_global_connection \
+	 -domain AO \
+	 -net VPB \
+	 -pins { VPB }
+
+create_global_connection \
+	 -domain AO \
+	 -net vdd \
+	 -pins { vdd }
+
+create_global_connection \
+	 -domain AO \
+	 -net VSS \
+	 -pins { VSS }
+
+create_global_connection \
+	 -domain AO \
+	 -net VGND \
+	 -pins { VGND }
+
+create_global_connection \
+	 -domain AO \
+	 -net VNB \
+	 -pins { VNB }
+
+end_design

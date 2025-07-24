@@ -22,7 +22,9 @@ impl Genus {
 
     fn make_tcl_file(&self, path: &PathBuf, steps: Vec<AnnotatedStep>) -> io::Result<()> {
         // let file_path = path.join("syn.tcl");
-        let mut tcl_file = File::create("/scratch/cs199-cbc/rivet/examples/decoder/src/syn.tcl").expect("failed to create syn.tcl file");
+        //
+        // this filepath is hardcoded since there were some issues with the pathbuf
+        let mut tcl_file = File::create("/scratch/cs199-cbc/rivet/examples/decoder/src/build/syn.tcl").expect("failed to create syn.tcl file");
 
        
         writeln!(
@@ -414,10 +416,12 @@ impl Tool for Genus {
         tcl_path.push("syn.tcl");
 
         self.make_tcl_file(&tcl_path, steps);
-
+        
+        //this genus cli command is also hardcoded since I think there are some issues with the
+        //work_dir input and also the current_dir attribute of the command
         let status = Command::new("genus")
-            .args(["-f", "/scratch/cs199-cbc/rivet/examples/decoder/src/syn.tcl"])
-            .current_dir(&self.work_dir)
+            .args(["-f", "/scratch/cs199-cbc/rivet/examples/decoder/src/build/syn.tcl"])
+            .current_dir("/scratch/cs199-cbc/rivet/examples/decoder/src/build")
             .status()
             .expect("Failed to execute syn.tcl");
 

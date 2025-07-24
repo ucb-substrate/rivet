@@ -34,8 +34,8 @@ pub struct Step {
 }
 
 pub struct AnnotatedStep {
-    step: Step,
-    checkpoint_path: PathBuf,
+    pub step: Step,
+    pub checkpoint_path: PathBuf,
 }
 
 pub trait Tool: Debug {

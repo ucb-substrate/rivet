@@ -21,44 +21,28 @@ impl Genus {
     //concatenate steps to a tcl file, syn.tcl file, genus.tcl
 
     fn make_tcl_file(&self, path: &PathBuf, steps: Vec<AnnotatedStep>) -> io::Result<()> {
-        let file_path = path.join("syn.tcl");
-        let mut tcl_file = File::create(&file_path).expect("failed to create syn.tcl file");
+        // let file_path = path.join("syn.tcl");
+        let mut tcl_file = File::create("/scratch/cs199-cbc/rivet/examples/decoder/src/syn.tcl").expect("failed to create syn.tcl file");
 
-        writeln!(tcl_file, "puts \"{}\"", "set_db hdl_error_on_blackbox true")?;
-        writeln!(tcl_file, "set_db hdl_error_on_blackbox true")?;
-        writeln!(tcl_file, "puts \"{}\"", "set_db max_cpus_per_server 12")?;
-        writeln!(tcl_file, "set_db max_cpus_per_server 12")?;
-        writeln!(tcl_file, "puts \"{}\"", "set_multi_cpu_usage -local_cpu 12")?;
-        writeln!(tcl_file, "set_multi_cpu_usage -local_cpu 12")?;
-        writeln!(
-            tcl_file,
-            "puts \"{}\"",
-            "set_db super_thread_debug_jobs true"
-        )?;
-        writeln!(tcl_file, "set_db super_thread_debug_jobs true")?;
-        writeln!(
-            tcl_file,
-            "puts \"{}\"",
-            "set_db super_thread_debug_directory super_thread_debug"
-        )?;
+       
         writeln!(
             tcl_file,
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
-        // for astep in steps.into_iter() {
-        //     if astep.step.checkpoint {
-        //         //generate tcl for checkpointing
-        //         let mut checkpoint_command = String::new();
-        //
-        //         writeln!(checkpoint_command, "write_db -to_file pre_{}", astep.step.name);
-        //         writeln!(tcl_file, "puts\"{}\"", checkpoint_command)?;
-        //         writeln!(tcl_file, "{}", checkpoint_command)?;
-        //     }
-        //     writeln!(tcl_file, "puts\"{}\"", astep.step.command.to_string())?;
-        //     writeln!(tcl_file, "{}", astep.step.command)?;
-        // }
-        writeln!(tcl_file, "puts \"{}\"", "quit")?;
+        for astep in steps.into_iter() {
+            if astep.step.checkpoint {
+                //generate tcl for checkpointing
+                let mut checkpoint_command = String::new();
+
+                writeln!(checkpoint_command, "write_db -to_file pre_{}", astep.step.name);
+                //writeln!(tcl_file, "puts \"{}\"", checkpoint_command)?;
+                writeln!(tcl_file, "{}", checkpoint_command)?;
+            }
+            // writeln!(tcl_file, "puts\"{}\"", astep.step.command.to_string())?;
+            writeln!(tcl_file, "{}", astep.step.command)?;
+        }
+        // writeln!(tcl_file, "puts \"{}\"", "quit")?;
         writeln!(tcl_file, "quit")?;
 
         Ok(())
@@ -432,7 +416,7 @@ impl Tool for Genus {
         self.make_tcl_file(&tcl_path, steps);
 
         let status = Command::new("genus")
-            .args(["-files", &tcl_path.to_string_lossy(), "-no_gui"])
+            .args(["-f", "/scratch/cs199-cbc/rivet/examples/decoder/src/syn.tcl"])
             .current_dir(&self.work_dir)
             .status()
             .expect("Failed to execute syn.tcl");

@@ -3,7 +3,10 @@ use std::{
     fs::File,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
+    
 };
+use std::fmt::Write as FmtWrite;
 
 use genus::Genus;
 use indoc::formatdoc;
@@ -77,8 +80,8 @@ puts "create_delay_corner -name tt_025C_1v80.extra_delay -timing_condition tt_02
 create_delay_corner -name tt_025C_1v80.extra_delay -timing_condition tt_025C_1v80.extra_cond -rc_corner tt_025C_1v80.extra_rc
 puts "create_analysis_view -name tt_025C_1v80.extra_view -delay_corner tt_025C_1v80.extra_delay -constraint_mode my_constraint_mode"
 create_analysis_view -name tt_025C_1v80.extra_view -delay_corner tt_025C_1v80.extra_delay -constraint_mode my_constraint_mode
-puts "set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_view tt_025C_1v80.extra_view } -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"
-set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_view tt_025C_1v80.extra_view } -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"#
+puts "set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hold_view tt_025C_1v80.extra_view }} -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"
+set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hold_view tt_025C_1v80.extra_view }} -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"#
     )
 }
 
@@ -87,20 +90,22 @@ pub fn read_design_files() -> Step {
     //read mmmc.tcl
     //read physical -lef
     //read_hdl -sv {}
-    //
-    let mut sdc_file = File::create("clock_pin_constraints.sdc");
-    let sdc_path = writeln!(sdc_file, sdc());
-    let mmmc_tcl = sky130_cds_mmmc(sdc_path);
+    
+
+    let sdc_file_path = "clock_pin_constraints.sdc";
+    let mut sdc_file = File::create(sdc_file_path.to_string()).expect("failed to create file");
+    writeln!(sdc_file, "{}", sdc());
+    let mmmc_tcl = sky130_cds_mmmc(sdc_file_path);
 
     Step {
         checkpoint: true,
-        command: r#"
+        command: formatdoc!(r#"
             {mmmc_tcl}
-            read_physical -lef { /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }
-            read_hdl -sv { /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/lab4/decoder.v }
+            read_physical -lef {{ /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
+            read_hdl -sv {{ decoder.v }}
 
             "#
-        .into(),
+        ),
         name: "read_design_files".into(),
     }
 }
@@ -123,9 +128,10 @@ pub fn init_design(module: &str) -> Step {
 
 pub fn power_intent() -> Step {
     // Write power_spec.cpf and run power_intent TCL commands.
-    let mut power_spec_file = File::create("power_spec.cpf");
-    let power_spec_file_path = writeln!(
-        power_spec_file,
+    let power_spec_file_path = "power_spec.cpf";
+    let mut power_spec_file = File::create(power_spec_file_path).expect("failed to create file");
+     writeln!(
+        power_spec_file,"{}",
         formatdoc! {
         r#"
     set_cpf_version 1.0e
@@ -135,7 +141,7 @@ pub fn power_intent() -> Step {
     create_power_nets -nets VPWR -voltage 1.8
     create_power_nets -nets VPB -voltage 1.8
     create_power_nets -nets vdd -voltage 1.8
-    create_ground_nets -nets { VSS VGND VNB vss }
+    create_ground_nets -nets {{ VSS VGND VNB vss }}
     create_power_domain -name AO -default
     update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
     create_global_connection -domain AO -net VDD -pins [list VDD]
@@ -146,7 +152,7 @@ pub fn power_intent() -> Step {
     create_global_connection -domain AO -net VGND -pins [list VGND]
     create_global_connection -domain AO -net VNB -pins [list VNB]
     create_nominal_condition -name nominal -voltage 1.8
-    create_power_mode -name aon -default -domain_conditions {AO@nominal}
+    create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
     end_design
     "#
 
@@ -155,12 +161,13 @@ pub fn power_intent() -> Step {
     //create the power_spec cpf file with the contents hard coded
     Step {
         checkpoint: true,
-        command: r#"
-            read_power_intent -cpf {power_spec_file_path}
-            apply_power_intent -summary
-            Commit_power_intent
+        command: formatdoc!(
+        r#"
+        read_power_intent -cpf {power_spec_file_path}
+        apply_power_intent -summary
+        Commit_power_intent
         "#
-        .into(),
+        ),
         name: "power_intent".into(),
     }
 }
@@ -184,13 +191,13 @@ pub fn syn_map() -> Step {
 pub fn add_tieoffs() -> Step {
     Step {
         checkpoint: true,
-        command: r#"set_db message:WSDF-201 .max_print 20
+        command: formatdoc!(r#"set_db message:WSDF-201 .max_print 20
         set_db use_tiehilo_for_const duplicate
-        set ACTIVE_SET [string map { .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set } [get_db [get_analysis_views] .name]]
-        set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if { .library.library_set.name == $ACTIVE_SET }]
-        set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if { .library.library_set.name == $ACTIVE_SET }]
+        set ACTIVE_SET [string map {{ .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set }} [get_db [get_analysis_views] .name]]
+        set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
+        set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
         add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose
-"#.into(),
+"#),
         name:"add_tieoffs".into(),
     }
 }
@@ -200,7 +207,7 @@ pub fn write_design(module: &str) -> Step {
     // this includes write regs, write reports, write outputs
     Step {
         checkpoint: true,
-        command: r#"
+        command: formatdoc!(r#"
         set write_cells_ir "./find_regs_cells.json"
         set write_cells_ir [open $write_cells_ir "w"]
         puts $write_cells_ir "\["
@@ -209,13 +216,13 @@ pub fn write_design(module: &str) -> Step {
 
         set len [llength $refs]
 
-        for {set i 0} {$i < [llength $refs]} {incr i} {
-            if {$i == $len - 1} {
+        for {{set i 0}} {{$i < [llength $refs]}} {{incr i}} {{
+            if {{$i == $len - 1}} {{
                 puts $write_cells_ir "    \"[lindex $refs $i]\""
-            } else {
+            }} else {{
                 puts $write_cells_ir "    \"[lindex $refs $i]\","
-            }
-        }
+            }}
+        }}
 
         puts $write_cells_ir "\]"
         close $write_cells_ir
@@ -227,51 +234,51 @@ pub fn write_design(module: &str) -> Step {
 
         set len [llength $regs]
 
-        for {set i 0} {$i < [llength $regs]} {incr i} {
-            #regsub -all {/} [lindex $regs $i] . myreg
+        for {{set i 0}} {{$i < [llength $regs]}} {{incr i}} {{
+            #regsub -all {{/}} [lindex $regs $i] . myreg
             set myreg [lindex $regs $i]
-            if {$i == $len - 1} {
+            if {{$i == $len - 1}} {{
                 puts $write_regs_ir "    \"$myreg\""
-            } else {
+            }} else {{
                 puts $write_regs_ir "    \"$myreg\","
-            }
-        }
+            }}
+        }}
 
         puts $write_regs_ir "\]"
 
         close $write_regs_ir
-    puts "write_reports -directory reports -tag final" 
-    write_reports -directory reports -tag final
-    puts "report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt" 
-    report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
+        puts "write_reports -directory reports -tag final" 
+        write_reports -directory reports -tag final
+        puts "report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt" 
+        report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
 
-    puts "write_hdl > {module}.mapped.v" 
-    write_hdl > {module}.mapped.v
-    puts "write_template -full -outfile {module}.mapped.scr" 
-    write_template -full -outfile {module}.mapped.scr
-    puts "write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc" 
-    write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc
-    puts "write_sdf > {module}.mapped.sdf" 
-    write_sdf > {module}.mapped.sdf
-    puts "write_design -gzip_files {module}" 
-    write_design -gzip_files {module}
-            "#.into(),
+        puts "write_hdl > {module}.mapped.v" 
+        write_hdl > {module}.mapped.v
+        puts "write_template -full -outfile {module}.mapped.scr" 
+        write_template -full -outfile {module}.mapped.scr
+        puts "write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc" 
+        write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc
+        puts "write_sdf > {module}.mapped.sdf" 
+        write_sdf > {module}.mapped.sdf
+        puts "write_design -gzip_files {module}" 
+        write_design -gzip_files {module}
+            "#),
             //the paths for write hdl, write sdc, and write sdf need to be fixed
         name: "write_design".into(),
     }
 }
 
-pub fn genus_syn() -> FlowNode {}
+// pub fn genus_syn() -> FlowNode {}
 
 pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
     let work_dir = work_dir.as_ref().to_path_buf();
     let syn_work_dir = work_dir.join("syn");
     Flow {
         nodes: HashMap::from_iter([(
-            "syn",
+            "syn".into(),
             FlowNode {
                 tool: Arc::new(Genus::new(&syn_work_dir)),
-                work_dir: syn_work_dir,
+                work_dir: syn_work_dir.clone(),
                 checkpoint_dir: syn_work_dir.join("checkpoints"),
                 steps: vec![
                     set_default_options(),
@@ -282,7 +289,7 @@ pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
                     syn_generic(),
                     syn_map(),
                     add_tieoffs(),
-                    write_design(),
+                    write_design("decoder"),
                 ],
                 deps: Vec::new(),
             },

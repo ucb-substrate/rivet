@@ -1,12 +1,15 @@
-use crate::fs::File;
-use rivet::cadence::*;
-use rivet::flow::{Step, Tool, AnnotatedStep};
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
+
+use indoc::format_doc;
+use rivet::cadence::*;
+use rivet::flow::{AnnotatedStep, Step, Tool};
+
+use crate::fs::File;
 
 #[derive(Debug)]
 pub struct Genus {
@@ -26,7 +29,6 @@ impl Genus {
         // this filepath is hardcoded since there were some issues with the pathbuf
         let mut tcl_file = File::create(&path).expect("failed to create syn.tcl file");
 
-       
         writeln!(
             tcl_file,
             "set_db super_thread_debug_directory super_thread_debug"
@@ -37,7 +39,11 @@ impl Genus {
                 //generate tcl for checkpointing
                 let mut checkpoint_command = String::new();
 
-                writeln!(checkpoint_command, "write_db -to_file pre_{}", astep.step.name);
+                writeln!(
+                    checkpoint_command,
+                    "write_db -to_file pre_{}",
+                    astep.step.name
+                );
                 //writeln!(tcl_file, "puts \"{}\"", checkpoint_command)?;
                 writeln!(tcl_file, "{}", checkpoint_command)?;
             }
@@ -410,11 +416,16 @@ impl Tool for Genus {
     //    self.work_dir.clone()
     //}
     // genus -files syn.tcl -no_gui
-    fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<AnnotatedStep>) {
+    fn invoke(
+        &self,
+        work_dir: PathBuf,
+        start_checkpoint: Option<PathBuf>,
+        steps: Vec<AnnotatedStep>,
+    ) {
         let mut tcl_path = work_dir.clone().join("syn.tcl");
 
         self.make_tcl_file(&tcl_path, steps);
-        
+
         //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command
         let status = Command::new("genus")
@@ -428,8 +439,70 @@ impl Tool for Genus {
             panic!("Stopped flow");
         }
     }
+}
 
+pub fn set_default_options() -> Step {
+    Step {
+        name: "set_default_options".into(),
+        command: r#"
+            set_db hdl_error_on_blackbox true
+            set_db max_cpus_per_server 12
+            set_multi_cpu_usage -local_cpu 12
+            set_db super_thread_debug_jobs true
+            set_db super_thread_debug_directory super_thread_debug
+            set_db lp_clock_gating_infer_enable  true
+            set_db lp_clock_gating_prefix  {CLKGATE}
+            set_db lp_insert_clock_gating  true
+            set_db lp_clock_gating_register_aware true
+            set_db root: .auto_ungroup none
+"#
+        .into(),
+        checkpoint: false,
+    }
+}
 
+pub fn dont_avoid_lib_cells(base_name: &str) -> Step {
+    Step {
+        name: format!("dont_avoid_lib_cells_{base_name}"),
+        command: format_doc!(
+            r#"set_db [get_db lib_cells -if {.base_name == {base_name}}] .avoid false"#,
+        ),
+        checkpoint: false,
+    }
+}
+
+pub struct MmmcCorner {
+    name: String,
+    libs: Vec<PathBuf>,
+    temperature: f64,
+}
+
+pub fn mmmc(sdc_file: impl AsRef<Path>, corners: Vec<MmmcCorner>) -> String {
+    let sdc_file = sdc_file.as_ref();
+    //the sdc files need their paths not hardcoded to the chipyard directory
+    let mut mmmc = String::new();
+    for corner in corners {
+        let library_set_name = format!("{}.set", corner.name);
+        writeln!(
+            &mut mmmc,
+            "create_constraint_mode -name my_constraint_mode -sdc_files [list {sdc_file:?}]"
+        )
+        .unwrap();
+        write!(&mut mmmc, "create_library_set -name TODO").unwrap();
+        for lib in corner.libs {
+            write!(&mut mmmc, " {lib:?}").unwrap();
+        }
+        writeln!(&mut mmmc, "]").unwrap();
+        writeln!(&mut mmmc, "TODO").unwrap();
+    }
+    format_doc!(
+        r#"
+            create_library_set -name ss_100C_1v60.setup_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]
+            create_rc_corner -name ss_100C_1v60.setup_rc -temperature 100.0
+            create_delay_corner -name ss_100C_1v60.setup_delay -timing_condition ss_100C_1v60.setup_cond -rc_corner ss_100C_1v60.setup_rc
+            create_analysis_view -name ss_100C_1v60.setup_view -delay_corner ss_100C_1v60.setup_delay -constraint_mode my_constraint_mode
+        "#
+    )
 }
 
 #[cfg(test)]

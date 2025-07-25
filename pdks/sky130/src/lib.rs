@@ -4,6 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
+    fs,
     
 };
 use std::fmt::Write as FmtWrite;
@@ -85,15 +86,15 @@ set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hol
     )
 }
 
-pub fn read_design_files() -> Step {
+pub fn read_design_files(work_dir: &PathBuf) -> Step {
     // Write SDC and mmmc.tcl, run commands up to read_hdl.
     //read mmmc.tcl
     //read physical -lef
     //read_hdl -sv {}
     
 
-    let sdc_file_path = "clock_pin_constraints.sdc";
-    let mut sdc_file = File::create(sdc_file_path.to_string()).expect("failed to create file");
+    let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
+    let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
     writeln!(sdc_file, "{}", sdc());
     let mmmc_tcl = sky130_cds_mmmc(sdc_file_path);
 
@@ -128,10 +129,10 @@ pub fn init_design(module: &str) -> Step {
     }
 }
 
-pub fn power_intent() -> Step {
+pub fn power_intent(work_dir: &PathBuf) -> Step {
     // Write power_spec.cpf and run power_intent TCL commands.
-    let power_spec_file_path = "power_spec.cpf";
-    let mut power_spec_file = File::create(power_spec_file_path).expect("failed to create file");
+    let power_spec_file_path = work_dir.join("power_spec.cpf");
+    let mut power_spec_file = File::create(&power_spec_file_path).expect("failed to create file");
      writeln!(
         power_spec_file,"{}",
         formatdoc! {
@@ -161,11 +162,12 @@ pub fn power_intent() -> Step {
         }
     );
     //create the power_spec cpf file with the contents hard coded
+    let power_spec_file_string = power_spec_file_path.display();
     Step {
         checkpoint: true,
         command: formatdoc!(
         r#"
-        read_power_intent -cpf {power_spec_file_path}
+        read_power_intent -cpf {power_spec_file_string}
         apply_power_intent -summary
         commit_power_intent
         "#
@@ -274,7 +276,8 @@ pub fn write_design(module: &str) -> Step {
 
 pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
     let work_dir = work_dir.as_ref().to_path_buf();
-    let syn_work_dir = work_dir.join("syn");
+    let syn_work_dir = work_dir.join("syn_rundir");
+    fs::create_dir(&syn_work_dir);
     Flow {
         nodes: HashMap::from_iter([(
             "syn".into(),
@@ -284,10 +287,10 @@ pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
                 checkpoint_dir: syn_work_dir.join("checkpoints"),
                 steps: vec![
                     set_default_options(),
-                    read_design_files(),
+                    read_design_files(&syn_work_dir),
                     elaborate("decoder"),
                     init_design("decoder"),
-                    power_intent(),
+                    power_intent(&syn_work_dir),
                     syn_generic(),
                     syn_map(),
                     add_tieoffs(),

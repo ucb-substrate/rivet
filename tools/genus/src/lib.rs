@@ -24,7 +24,7 @@ impl Genus {
         // let file_path = path.join("syn.tcl");
         //
         // this filepath is hardcoded since there were some issues with the pathbuf
-        let mut tcl_file = File::create("/scratch/cs199-cbc/rivet/examples/decoder/src/build/syn.tcl").expect("failed to create syn.tcl file");
+        let mut tcl_file = File::create(&path).expect("failed to create syn.tcl file");
 
        
         writeln!(
@@ -411,17 +411,15 @@ impl Tool for Genus {
     //}
     // genus -files syn.tcl -no_gui
     fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<AnnotatedStep>) {
-        let mut tcl_path = PathBuf::new();
-        tcl_path.push(self.work_dir.clone());
-        tcl_path.push("syn.tcl");
+        let mut tcl_path = work_dir.clone().join("syn.tcl");
 
         self.make_tcl_file(&tcl_path, steps);
         
         //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command
         let status = Command::new("genus")
-            .args(["-f", "/scratch/cs199-cbc/rivet/examples/decoder/src/build/syn.tcl"])
-            .current_dir("/scratch/cs199-cbc/rivet/examples/decoder/src/build")
+            .args(["-f", tcl_path.to_str().unwrap()])
+            .current_dir(work_dir)
             .status()
             .expect("Failed to execute syn.tcl");
 
@@ -431,34 +429,7 @@ impl Tool for Genus {
         }
     }
 
-    //fn checkpoint(&self, step: Step) -> PathBuf {
-    //    let mut ret = PathBuf::new();
-    //    ret.push(self.work_dir);
-    //    ret.push(format!("{}.checkpoint", step.name));
-    //
-    //    return ret;
-    //}
 
-    // fn write_checkpoint(&self, path: &PathBuf) -> Step {
-    //     let checkpoint_command = format!("write_db -to_file {}", path.to_str().unwrap());
-    //     println!("  - Writing checkpoint w command: {}", checkpoint_command);
-
-    //     Step {
-    //         name: format!("write_checkpoint_to_{}", path.to_str().unwrap()).to_string(),
-    //         command: checkpoint_command,
-    //         checkpoint: true,
-    //     }
-    // }
-
-    // fn read_checkpoint(&self, path: &PathBuf) -> Step {
-    //     let command = format!("read_db", path.to_str().unwrap());
-    //     println!("  - Reading checkpoint with command: {}", command);
-    //     Step {
-    //         name: "read_checkpoint".to_string(),
-    //         command,
-    //         checkpoint: false,
-    //     }
-    // }
 }
 
 #[cfg(test)]

@@ -86,17 +86,19 @@ set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hol
     )
 }
 
-pub fn read_design_files(work_dir: &PathBuf) -> Step {
+pub fn read_design_files(syn_work_dir: &PathBuf, work_dir: &PathBuf) -> Step {
     // Write SDC and mmmc.tcl, run commands up to read_hdl.
     //read mmmc.tcl
     //read physical -lef
     //read_hdl -sv {}
     
 
-    let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
+    let sdc_file_path = syn_work_dir.join("clock_pin_constraints.sdc");
     let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
     writeln!(sdc_file, "{}", sdc());
     let mmmc_tcl = sky130_cds_mmmc(sdc_file_path);
+    let decoder_file_path = work_dir.join("decoder.v");
+    let decoder_string = decoder_file_path.display() ;
 
 
     //fix the path fo the sky130 lef in my scratch folder
@@ -105,12 +107,13 @@ pub fn read_design_files(work_dir: &PathBuf) -> Step {
         command: formatdoc!(r#"
             {mmmc_tcl}
             read_physical -lef {{ /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
-            read_hdl -sv {{ decoder.v }}
+            read_hdl -sv {decoder_string}
 
             "#
         ),
         name: "read_design_files".into(),
     }
+    //
 }
 
 pub fn elaborate(module: &str) -> Step {
@@ -287,7 +290,7 @@ pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
                 checkpoint_dir: syn_work_dir.join("checkpoints"),
                 steps: vec![
                     set_default_options(),
-                    read_design_files(&syn_work_dir),
+                    read_design_files(&syn_work_dir, &work_dir),
                     elaborate("decoder"),
                     init_design("decoder"),
                     power_intent(&syn_work_dir),

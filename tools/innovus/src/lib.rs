@@ -82,11 +82,79 @@ impl Innovus {
                 set_db design_top_routing_layer 6
                 set_db design_flow_effort standard
                 set_db design_power_effort low
-                write_db pre_sky130_innovus_settings
-                ln -sfn pre_sky130_innovus_settings latest
                "#
             ),
             name: "innovus_settings".into(),
+        }
+    }
+
+    pub fn sky130_innovus_settings() -> Step {
+        Step {
+            checkpoint: true,
+            command: formatdoc!(
+                r#"
+                ln -sfn pre_sky130_innovus_settings latest
+
+                "#
+            ),
+            name: "sky130_innovus_settings".into(),
+        }
+    }
+
+ 
+
+    pub fn floorplan_design(&self) -> Step {
+        //create a pathbuf that is the {work_dir}/floorplan.tcl
+        //write this command "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }" to this file
+        //source it in the floorplan_design step
+        let floorplan_tcl_path = self.work_dir.join("floorplan.tcl");
+        let mut floorplan_tcl_file = File::create(&floorplan_tcl_path).expect("failed to create file");
+        writeln!(floorplan_tcl_file, "{}", "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }");
+        let floorplan_path_string = floorplan_tcl_path.display();
+
+
+        let power_spec_file_path = self.work_dir.join("power_spec.cpf");
+        let mut power_spec_file = File::create(&power_spec_file_path).expect("failed to create file");
+        writeln!(
+            power_spec_file,
+            "{}",
+            formatdoc! {
+            r#"
+            set_cpf_version 1.0e
+            set_hierarchy_separator /
+            set_design decoder
+            create_power_nets -nets VDD -voltage 1.8
+            create_power_nets -nets VPWR -voltage 1.8
+            create_power_nets -nets VPB -voltage 1.8
+            create_power_nets -nets vdd -voltage 1.8
+            create_ground_nets -nets {{ VSS VGND VNB vss }}
+            create_power_domain -name AO -default
+            update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
+            create_global_connection -domain AO -net VDD -pins [list VDD]
+            create_global_connection -domain AO -net VPWR -pins [list VPWR]
+            create_global_connection -domain AO -net VPB -pins [list VPB]
+            create_global_connection -domain AO -net vdd -pins [list vdd]
+            create_global_connection -domain AO -net VSS -pins [list VSS]
+            create_global_connection -domain AO -net VGND -pins [list VGND]
+            create_global_connection -domain AO -net VNB -pins [list VNB]
+            create_nominal_condition -name nominal -voltage 1.8
+            create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
+            end_design
+            "#
+            }
+        );
+        let power_spec_file_string = power_spec_file_path.display();
+        Step {
+            checkpoint: true,
+            command: formatdoc!(
+                r#"
+                source -echo -verbose {floorplan_path_string} 
+                read_power_intent -cpf {power_spec_file_string}
+                commit_power_intent
+
+                "#
+            ),
+            name: "floorplan_design".into(),
         }
     }
 }

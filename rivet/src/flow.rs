@@ -90,7 +90,8 @@ impl Flow {
         }
 
         //evaluate all the dependency nodes first
-        println!("Evaluating node '{}'...", node);
+        use colored::Colorize;
+        println!("{}", format!("\n{main_str} '{node_str}'...\n", main_str = "Evaluating node".green(), node_str = node.green()));
 
         for dependency in &target_node.deps {
             self.execute_inner(dependency, config, executed);
@@ -141,13 +142,18 @@ impl Flow {
             );
         }
 
-        println!("---> Finished node '{}'", node);
+        let temp_str = format!("{main_str} '{node_str}'", main_str = "--> Finished node".green(), node_str = node.green());
+        println!("\n{}\n", temp_str);
         executed.insert(node.to_string());
     }
 }
 
 /// Filters the steps for a tool based on the `start` and `stop` keys in the config.
 fn get_steps_for_tool(node: &FlowNode, config: Option<&ToolConfig>) -> Vec<Step> {
+    
+    use colored::Colorize;
+    println!("{}", "\nGetting steps for tool...".blue());
+    
     let all_steps = &node.steps;
     let tool_config = match config {
         Some(tc) => tc,

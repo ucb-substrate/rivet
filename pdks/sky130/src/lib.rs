@@ -106,7 +106,7 @@ pub fn read_design_files(syn_work_dir: &PathBuf, work_dir: &PathBuf) -> Step {
         checkpoint: false,
         command: formatdoc!(r#"
             {mmmc_tcl}
-            read_physical -lef {{ /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
+            read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
             read_hdl -sv {decoder_string}
 
             "#
@@ -273,7 +273,7 @@ pub fn write_design(module: &str) -> Step {
             //the paths for write hdl, write sdc, and write sdf need to be fixed
         name: "write_design".into(),
     }
-}
+}   
 
 // pub fn genus_syn() -> FlowNode {}
 
@@ -281,6 +281,7 @@ pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
     let work_dir = work_dir.as_ref().to_path_buf();
     let syn_work_dir = work_dir.join("syn_rundir");
     fs::create_dir(&syn_work_dir);
+    //print!("{}", syn_work_dir.join("checkpoints").into_os_string().into_string().expect("print fail"));
     Flow {
         nodes: HashMap::from_iter([(
             "syn".into(),
@@ -303,4 +304,5 @@ pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
             },
         )]),
     }
+
 }

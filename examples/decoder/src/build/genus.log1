@@ -1,0 +1,126 @@
+Cadence Genus(TM) Synthesis Solution.
+Copyright 2023 Cadence Design Systems, Inc. All rights reserved worldwide.
+Cadence and the Cadence logo are registered trademarks and Genus is a trademark
+of Cadence Design Systems, Inc. in the United States and other countries.
+
+[16:39:10.318881] Configured Lic search path (21.01-s002): 5280@license-srv.eecs.berkeley.edu
+
+Version: 21.17-s066_1, built Wed Mar 15 09:43:30 PDT 2023
+Options: -files /scratch/cs199-cby/rivet/examples/decoder/src/build/syn.tcl 
+Date:    Thu Jul 24 16:39:10 2025
+Host:    eda-4.EECS.Berkeley.EDU (x86_64 w/Linux 4.18.0-553.60.1.el8_10.x86_64) (48cores*96cpus*1physical cpu*AMD EPYC 9454 48-Core Processor 1024KB) (791773140KB)
+PID:     933005
+OS:      Red Hat Enterprise Linux release 8.10 (Ootpa)
+
+
+[16:39:11.032042] Periodic Lic check successful
+[16:39:11.032051] Feature usage summary:
+[16:39:11.032051] Genus_Synthesis
+Checking out license: Genus_Synthesis
+
+
+***********************************************************************************************************
+***********************************************************************************************************
+
+
+
+Loading tool scripts...
+Finished loading tool scripts (7 seconds elapsed).
+
+#@ Processing -files option
+@genus 1> source /scratch/cs199-cby/rivet/examples/decoder/src/build/syn.tcl
+#@ Begin verbose source /scratch/cs199-cby/rivet/examples/decoder/src/build/syn.tcl
+@file(syn.tcl) 1: set_db super_thread_debug_directory super_thread_debug
+  Setting attribute of root '/': 'super_thread_debug_directory' = super_thread_debug
+@file(syn.tcl) 2: set_db hdl_error_on_blackbox true
+  Setting attribute of root '/': 'hdl_error_on_blackbox' = true
+@file(syn.tcl) 3: set_db max_cpus_per_server 12
+  Setting attribute of root '/': 'max_cpus_per_server' = 12
+@file(syn.tcl) 4: set_multi_cpu_usage -local_cpu 12
+@file(syn.tcl) 5: set_db super_thread_debug_jobs true
+  Setting attribute of root '/': 'super_thread_debug_jobs' = true
+@file(syn.tcl) 6: set_db super_thread_debug_directory super_thread_debug
+  Setting attribute of root '/': 'super_thread_debug_directory' = super_thread_debug
+@file(syn.tcl) 7: set_db lp_clock_gating_infer_enable  true
+  Setting attribute of root '/': 'lp_clock_gating_infer_enable' = true
+@file(syn.tcl) 8: set_db lp_clock_gating_prefix  {CLKGATE}
+  Setting attribute of root '/': 'lp_clock_gating_prefix' = CLKGATE
+@file(syn.tcl) 9: set_db lp_insert_clock_gating  true
+  Setting attribute of root '/': 'lp_insert_clock_gating' = true
+@file(syn.tcl) 10: set_db lp_clock_gating_register_aware true
+  Setting attribute of root '/': 'lp_clock_gating_register_aware' = true
+@file(syn.tcl) 11: set_db root: .auto_ungroup none
+  Setting attribute of root '/': 'auto_ungroup' = none
+@file(syn.tcl) 12: set_db [get_db lib_cells -if {.base_name == ICGX1}] .avoid false
+@file(syn.tcl) 14: puts "create_constraint_mode -name my_constraint_mode -sdc_files [list /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/clock_constraints_fragment.sdc /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/pin_constraints_fragment.sdc] "
+create_constraint_mode -name my_constraint_mode -sdc_files /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/clock_constraints_fragment.sdc /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/pin_constraints_fragment.sdc 
+@file(syn.tcl) 15: create_constraint_mode -name my_constraint_mode -sdc_files "clock_pin_constraints.sdc"
+@file(syn.tcl) 16: puts "create_library_set -name ss_100C_1v60.setup_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]"
+create_library_set -name ss_100C_1v60.setup_set -timing /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib
+@file(syn.tcl) 17: create_library_set -name ss_100C_1v60.setup_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]
+@file(syn.tcl) 18: puts "create_timing_condition -name ss_100C_1v60.setup_cond -library_sets [list ss_100C_1v60.setup_set]"
+create_timing_condition -name ss_100C_1v60.setup_cond -library_sets ss_100C_1v60.setup_set
+@file(syn.tcl) 19: create_timing_condition -name ss_100C_1v60.setup_cond -library_sets [list ss_100C_1v60.setup_set]
+@file(syn.tcl) 20: puts "create_rc_corner -name ss_100C_1v60.setup_rc -temperature 100.0 "
+create_rc_corner -name ss_100C_1v60.setup_rc -temperature 100.0 
+@file(syn.tcl) 21: create_rc_corner -name ss_100C_1v60.setup_rc -temperature 100.0
+@file(syn.tcl) 22: puts "create_delay_corner -name ss_100C_1v60.setup_delay -timing_condition ss_100C_1v60.setup_cond -rc_corner ss_100C_1v60.setup_rc"
+create_delay_corner -name ss_100C_1v60.setup_delay -timing_condition ss_100C_1v60.setup_cond -rc_corner ss_100C_1v60.setup_rc
+@file(syn.tcl) 23: create_delay_corner -name ss_100C_1v60.setup_delay -timing_condition ss_100C_1v60.setup_cond -rc_corner ss_100C_1v60.setup_rc
+@file(syn.tcl) 24: puts "create_analysis_view -name ss_100C_1v60.setup_view -delay_corner ss_100C_1v60.setup_delay -constraint_mode my_constraint_mode"
+create_analysis_view -name ss_100C_1v60.setup_view -delay_corner ss_100C_1v60.setup_delay -constraint_mode my_constraint_mode
+@file(syn.tcl) 25: create_analysis_view -name ss_100C_1v60.setup_view -delay_corner ss_100C_1v60.setup_delay -constraint_mode my_constraint_mode
+@file(syn.tcl) 26: puts "create_library_set -name ff_n40C_1v95.hold_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib]"
+create_library_set -name ff_n40C_1v95.hold_set -timing /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib
+@file(syn.tcl) 27: create_library_set -name ff_n40C_1v95.hold_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib]
+@file(syn.tcl) 28: puts "create_timing_condition -name ff_n40C_1v95.hold_cond -library_sets [list ff_n40C_1v95.hold_set]"
+create_timing_condition -name ff_n40C_1v95.hold_cond -library_sets ff_n40C_1v95.hold_set
+@file(syn.tcl) 29: create_timing_condition -name ff_n40C_1v95.hold_cond -library_sets [list ff_n40C_1v95.hold_set]
+@file(syn.tcl) 30: puts "create_rc_corner -name ff_n40C_1v95.hold_rc -temperature -40.0 "
+create_rc_corner -name ff_n40C_1v95.hold_rc -temperature -40.0 
+@file(syn.tcl) 31: create_rc_corner -name ff_n40C_1v95.hold_rc -temperature -40.0
+@file(syn.tcl) 32: puts "create_delay_corner -name ff_n40C_1v95.hold_delay -timing_condition ff_n40C_1v95.hold_cond -rc_corner ff_n40C_1v95.hold_rc"
+create_delay_corner -name ff_n40C_1v95.hold_delay -timing_condition ff_n40C_1v95.hold_cond -rc_corner ff_n40C_1v95.hold_rc
+@file(syn.tcl) 33: create_delay_corner -name ff_n40C_1v95.hold_delay -timing_condition ff_n40C_1v95.hold_cond -rc_corner ff_n40C_1v95.hold_rc
+@file(syn.tcl) 34: puts "create_analysis_view -name ff_n40C_1v95.hold_view -delay_corner ff_n40C_1v95.hold_delay -constraint_mode my_constraint_mode"
+create_analysis_view -name ff_n40C_1v95.hold_view -delay_corner ff_n40C_1v95.hold_delay -constraint_mode my_constraint_mode
+@file(syn.tcl) 35: create_analysis_view -name ff_n40C_1v95.hold_view -delay_corner ff_n40C_1v95.hold_delay -constraint_mode my_constraint_mode
+@file(syn.tcl) 36: puts "create_library_set -name tt_025C_1v80.extra_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib]"
+create_library_set -name tt_025C_1v80.extra_set -timing /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib
+@file(syn.tcl) 37: create_library_set -name tt_025C_1v80.extra_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib]
+@file(syn.tcl) 38: puts "create_timing_condition -name tt_025C_1v80.extra_cond -library_sets [list tt_025C_1v80.extra_set]"
+create_timing_condition -name tt_025C_1v80.extra_cond -library_sets tt_025C_1v80.extra_set
+@file(syn.tcl) 39: create_timing_condition -name tt_025C_1v80.extra_cond -library_sets [list tt_025C_1v80.extra_set]
+@file(syn.tcl) 40: puts "create_rc_corner -name tt_025C_1v80.extra_rc -temperature 25.0 "
+create_rc_corner -name tt_025C_1v80.extra_rc -temperature 25.0 
+@file(syn.tcl) 41: create_rc_corner -name tt_025C_1v80.extra_rc -temperature 25.0
+@file(syn.tcl) 42: puts "create_delay_corner -name tt_025C_1v80.extra_delay -timing_condition tt_025C_1v80.extra_cond -rc_corner tt_025C_1v80.extra_rc"
+create_delay_corner -name tt_025C_1v80.extra_delay -timing_condition tt_025C_1v80.extra_cond -rc_corner tt_025C_1v80.extra_rc
+@file(syn.tcl) 43: create_delay_corner -name tt_025C_1v80.extra_delay -timing_condition tt_025C_1v80.extra_cond -rc_corner tt_025C_1v80.extra_rc
+@file(syn.tcl) 44: puts "create_analysis_view -name tt_025C_1v80.extra_view -delay_corner tt_025C_1v80.extra_delay -constraint_mode my_constraint_mode"
+create_analysis_view -name tt_025C_1v80.extra_view -delay_corner tt_025C_1v80.extra_delay -constraint_mode my_constraint_mode
+@file(syn.tcl) 45: create_analysis_view -name tt_025C_1v80.extra_view -delay_corner tt_025C_1v80.extra_delay -constraint_mode my_constraint_mode
+@file(syn.tcl) 46: puts "set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_view tt_025C_1v80.extra_view } -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"
+set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_view tt_025C_1v80.extra_view } -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view
+@file(syn.tcl) 47: set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_view tt_025C_1v80.extra_view } -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view
+
+Threads Configured:3
+Info    : Created nominal operating condition. [LBR-412]
+        : Operating condition '_nominal_' was created for the PVT values (1.000000, 1.620000, 125.000000) in library 'sky130_ss_1.62_125_nldm.lib'.
+        : The nominal operating condition is represented, either by the nominal PVT values specified in the library source (via nom_process,nom_voltage and nom_temperature respectively), or by the default PVT values (1.0,1.0,1.0).
+Warning : Unusable clock gating integrated cell found at the time of loading libraries. This warning happens because a particular library cell is defined as 'clock_gating_integrated_cell', but 'dont_use' attribute is defined as true in the liberty library. To make Genus use this cell for clock gating insertion, 'dont_use' attribute should be set to false. [LBR-101]
+        : Clock gating integrated cell name: 'ICGX1'
+        : To make the cell usable, change the value of 'dont_use' attribute to false.
+Info    : Set default library domain. [LBR-109]
+        : The default library domain is 'library_domain:ss_100C_1v60.setup_cond'.
+@file(syn.tcl) 48: read_physical -lef { /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }
+Error   : File error. [FILE-100] [read_physical]
+        : Cannot open file '/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef'. Permission denied.
+        : Make sure that the file is a readable regular file and has the specified name.
+#@ End verbose source /scratch/cs199-cby/rivet/examples/decoder/src/build/syn.tcl
+1
+Encountered problems processing file: /scratch/cs199-cby/rivet/examples/decoder/src/build/syn.tcl
+WARNING: This version of the tool is 862 days old.
+
+Another Ctrl-C within 1 second will terminate the tool.
+CURRENT RESOURCES: RT {elapsed: 247s, ST: 5s, FG: 5s, CPU: 0.6%}, MEM {curr: 0.9G, peak: 1.0G, phys curr: 0.4G, phys peak: 0.4G}, SYS {load: 0.2, cpu: 96, total: 755.1G, free: 742.9G}

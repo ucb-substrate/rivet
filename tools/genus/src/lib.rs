@@ -20,7 +20,7 @@ impl Genus {
     }
     //concatenate steps to a tcl file, syn.tcl file, genus.tcl
 
-    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<AnnotatedStep>) -> io::Result<()> {
+    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<AnnotatedStep>, checkpoint_dir : Option<PathBuf>, work_dir: PathBuf) -> io::Result<()> {
         // let file_path = path.join("syn.tcl");
         //
         // this filepath is hardcoded since there were some issues with the pathbuf
@@ -32,12 +32,24 @@ impl Genus {
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
+        if let Some(actual_checkpt_dir) = checkpoint_dir {
+            //there is actually a checkpoint to read from
+            use colored::Colorize;
+            println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
+            let complete_checkpoint_path = work_dir.join(actual_checkpt_dir);
+            writeln!(tcl_file, "{}", format!("read_db {}", complete_checkpoint_path.into_os_string().into_string().expect("Failed to read from checkpoint path")));
+        }
+
         for astep in steps.into_iter() {
+            use colored::Colorize;
+            println!("\n--> Parsing step: {}\n", astep.step.name.green());
             if astep.step.checkpoint {
                 //generate tcl for checkpointing
                 let mut checkpoint_command = String::new();
 
-                writeln!(checkpoint_command, "write_db -to_file pre_{}", astep.step.name);
+                let mut checkpoint_file = astep.checkpoint_path.into_os_string().into_string().expect("Failed to create checkpoint file");
+                //before had write_db -to_file pre_{astep.step.name} -> no checkpt dir 
+                writeln!(checkpoint_command, "write_db -to_file {cdir}.cpf", cdir = checkpoint_file);
                 //writeln!(tcl_file, "puts \"{}\"", checkpoint_command)?;
                 writeln!(tcl_file, "{}", checkpoint_command)?;
             }
@@ -46,7 +58,10 @@ impl Genus {
         }
         // writeln!(tcl_file, "puts \"{}\"", "quit")?;
         writeln!(tcl_file, "quit")?;
+        use colored::Colorize;
 
+        let temp_str = format!("{}", "\nFinished creating tcl file\n".green());
+        println!("{}", temp_str);
         Ok(())
     }
 
@@ -413,7 +428,7 @@ impl Tool for Genus {
     fn invoke(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<AnnotatedStep>) {
         let mut tcl_path = work_dir.clone().join("syn.tcl");
 
-        self.make_tcl_file(&tcl_path, steps);
+        self.make_tcl_file(&tcl_path, steps, start_checkpoint, work_dir.clone());
         
         //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command

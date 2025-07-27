@@ -82,7 +82,7 @@ pub fn read_design_files(syn_work_dir: &PathBuf, work_dir: &PathBuf) -> Step {
     //fix the path fo the sky130 lef in my scratch folder
     Step {
         checkpoint: false,
-        //the sky130 cache too is hardcoded
+        //the sky130 cache filepath is hardcoded
         command: formatdoc!(
             r#"
             {mmmc_tcl}

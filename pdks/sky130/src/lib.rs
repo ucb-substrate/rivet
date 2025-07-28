@@ -1,37 +1,16 @@
+use std::fmt::Write as FmtWrite;
 use std::{
     collections::HashMap,
+    fs,
     fs::File,
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
-    fs,
-    
 };
-use std::fmt::Write as FmtWrite;
 
-use genus::Genus;
+use genus::{dont_avoid_lib_cells, Genus};
 use indoc::formatdoc;
 use rivet::flow::{Flow, FlowNode, Step};
-
-pub fn set_default_options() -> Step {
-    Step {
-        name: "set_default_options".into(),
-        command: r#"set_db hdl_error_on_blackbox true
-set_db max_cpus_per_server 12
-set_multi_cpu_usage -local_cpu 12
-set_db super_thread_debug_jobs true
-set_db super_thread_debug_directory super_thread_debug
-set_db lp_clock_gating_infer_enable  true
-set_db lp_clock_gating_prefix  {CLKGATE}
-set_db lp_insert_clock_gating  true
-set_db lp_clock_gating_register_aware true
-set_db root: .auto_ungroup none
-set_db [get_db lib_cells -if {.base_name == ICGX1}] .avoid false
-"#
-        .into(),
-        checkpoint: false,
-    }
-}
 
 pub fn sdc() -> String {
     // Combine contents of clock_constraints_fragment.sdc and pin_constraints_fragment.sdc
@@ -48,6 +27,7 @@ pub fn sdc() -> String {
 
 fn sky130_cds_mmmc(sdc_file: impl AsRef<Path>) -> String {
     let sdc_file = sdc_file.as_ref();
+    //the sdc files need their paths not hardcoded to the chipyard directory
     formatdoc!(
         r#"puts "create_constraint_mode -name my_constraint_mode -sdc_files [list /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/clock_constraints_fragment.sdc /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/pin_constraints_fragment.sdc] "
 create_constraint_mode -name my_constraint_mode -sdc_files {sdc_file:?}
@@ -91,20 +71,20 @@ pub fn read_design_files(syn_work_dir: &PathBuf, work_dir: &PathBuf) -> Step {
     //read mmmc.tcl
     //read physical -lef
     //read_hdl -sv {}
-    
 
     let sdc_file_path = syn_work_dir.join("clock_pin_constraints.sdc");
     let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
     writeln!(sdc_file, "{}", sdc());
     let mmmc_tcl = sky130_cds_mmmc(sdc_file_path);
     let decoder_file_path = work_dir.join("decoder.v");
-    let decoder_string = decoder_file_path.display() ;
-
+    let decoder_string = decoder_file_path.display();
 
     //fix the path fo the sky130 lef in my scratch folder
     Step {
         checkpoint: false,
-        command: formatdoc!(r#"
+        //the sky130 cache filepath is hardcoded
+        command: formatdoc!(
+            r#"
             {mmmc_tcl}
             read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
             read_hdl -sv {decoder_string}
@@ -136,8 +116,9 @@ pub fn power_intent(work_dir: &PathBuf) -> Step {
     // Write power_spec.cpf and run power_intent TCL commands.
     let power_spec_file_path = work_dir.join("power_spec.cpf");
     let mut power_spec_file = File::create(&power_spec_file_path).expect("failed to create file");
-     writeln!(
-        power_spec_file,"{}",
+    writeln!(
+        power_spec_file,
+        "{}",
         formatdoc! {
         r#"
     set_cpf_version 1.0e
@@ -161,7 +142,6 @@ pub fn power_intent(work_dir: &PathBuf) -> Step {
     create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
     end_design
     "#
-
         }
     );
     //create the power_spec cpf file with the contents hard coded
@@ -169,7 +149,7 @@ pub fn power_intent(work_dir: &PathBuf) -> Step {
     Step {
         checkpoint: true,
         command: formatdoc!(
-        r#"
+            r#"
         read_power_intent -cpf {power_spec_file_string}
         apply_power_intent -summary
         commit_power_intent
@@ -198,14 +178,16 @@ pub fn syn_map() -> Step {
 pub fn add_tieoffs() -> Step {
     Step {
         checkpoint: true,
-        command: formatdoc!(r#"set_db message:WSDF-201 .max_print 20
+        command: formatdoc!(
+            r#"set_db message:WSDF-201 .max_print 20
         set_db use_tiehilo_for_const duplicate
         set ACTIVE_SET [string map {{ .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set }} [get_db [get_analysis_views] .name]]
         set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
         set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
         add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose
-"#),
-        name:"add_tieoffs".into(),
+"#
+        ),
+        name: "add_tieoffs".into(),
     }
 }
 
@@ -214,7 +196,8 @@ pub fn write_design(module: &str) -> Step {
     // this includes write regs, write reports, write outputs
     Step {
         checkpoint: true,
-        command: formatdoc!(r#"
+        command: formatdoc!(
+            r#"
         set write_cells_ir "./find_regs_cells.json"
         set write_cells_ir [open $write_cells_ir "w"]
         puts $write_cells_ir "\["
@@ -254,23 +237,24 @@ pub fn write_design(module: &str) -> Step {
         puts $write_regs_ir "\]"
 
         close $write_regs_ir
-        puts "write_reports -directory reports -tag final" 
+        puts "write_reports -directory reports -tag final"
         write_reports -directory reports -tag final
-        puts "report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt" 
+        puts "report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt"
         report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
 
-        puts "write_hdl > {module}.mapped.v" 
+        puts "write_hdl > {module}.mapped.v"
         write_hdl > {module}.mapped.v
-        puts "write_template -full -outfile {module}.mapped.scr" 
+        puts "write_template -full -outfile {module}.mapped.scr"
         write_template -full -outfile {module}.mapped.scr
-        puts "write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc" 
+        puts "write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc"
         write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc
-        puts "write_sdf > {module}.mapped.sdf" 
+        puts "write_sdf > {module}.mapped.sdf"
         write_sdf > {module}.mapped.sdf
-        puts "write_design -gzip_files {module}" 
+        puts "write_design -gzip_files {module}"
         write_design -gzip_files {module}
-            "#),
-            //the paths for write hdl, write sdc, and write sdf need to be fixed
+            "#
+        ),
+        //the paths for write hdl, write sdc, and write sdf need to be fixed
         name: "write_design".into(),
     }
 }   
@@ -291,6 +275,7 @@ pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
                 checkpoint_dir: syn_work_dir.join("checkpoints"),
                 steps: vec![
                     set_default_options(),
+                    dont_avoid_lib_cells("ICGX1"),
                     read_design_files(&syn_work_dir, &work_dir),
                     elaborate("decoder"),
                     init_design("decoder"),

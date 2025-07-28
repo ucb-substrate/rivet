@@ -88,33 +88,19 @@ impl Innovus {
         }
     }
 
-    pub fn sky130_innovus_settings() -> Step {
-        Step {
-            checkpoint: true,
-            command: formatdoc!(
-                r#"
-                ln -sfn pre_sky130_innovus_settings latest
-
-                "#
-            ),
-            name: "sky130_innovus_settings".into(),
-        }
-    }
-
- 
-
     pub fn floorplan_design(&self) -> Step {
         //create a pathbuf that is the {work_dir}/floorplan.tcl
         //write this command "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }" to this file
         //source it in the floorplan_design step
         let floorplan_tcl_path = self.work_dir.join("floorplan.tcl");
-        let mut floorplan_tcl_file = File::create(&floorplan_tcl_path).expect("failed to create file");
+        let mut floorplan_tcl_file =
+            File::create(&floorplan_tcl_path).expect("failed to create file");
         writeln!(floorplan_tcl_file, "{}", "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }");
         let floorplan_path_string = floorplan_tcl_path.display();
 
-
         let power_spec_file_path = self.work_dir.join("power_spec.cpf");
-        let mut power_spec_file = File::create(&power_spec_file_path).expect("failed to create file");
+        let mut power_spec_file =
+            File::create(&power_spec_file_path).expect("failed to create file");
         writeln!(
             power_spec_file,
             "{}",

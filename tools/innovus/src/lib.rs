@@ -152,6 +152,7 @@ impl Innovus {
         }
     }
 
+    //todo
     fn place_tap_cells() -> Step {
         Step {
             checkpoint: true,
@@ -160,16 +161,24 @@ impl Innovus {
         }
     }
 
-    fn place_pins() -> Step {
+    fn power_straps() -> Step {
+        Step {
+            checkpoint: true,
+            command: todo!(),
+            name: "power_straps".into(),
+        }
+    }
+
+    fn place_pins(top_layer: &str, bot_layer: &str) -> Step {
         let mut place_pins_commands = String::new();
         writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true");
         writeln!(
             place_pins_commands,
-            "set_db assign_pins_promoted_macro_bottom_layer {}"
+            "set_db assign_pins_promoted_macro_bottom_layer {bot_layer}"
         );
         writeln!(
             place_pins_commands,
-            "set_db assign_pins_promoted_macro_top_layer {}"
+            "set_db assign_pins_promoted_macro_top_layer {top_layer}"
         );
 
         writeln!(place_pins_commands, "set all_ppins \"\" ");
@@ -212,11 +221,12 @@ impl Innovus {
     }
 
     fn add_fillers(filler_cells: Vec<String>) -> Step {
+        let cells = format!("\"{}\"", filler_cells.join(" "));
         Step {
             checkpoint: true,
             command: formatdoc!(
                 r#"
-                set_db add_fillers_cells {}
+                set_db add_fillers_cells {cells}
                 add_fillers
                 "#
             ),
@@ -308,7 +318,8 @@ impl Innovus {
         }
     }
 
-    fn write_design(par_rundir: &PathBuf, module: &str) -> Step {
+    fn write_design(rundir: &PathBuf, module: &str) -> Step {
+        let par_rundir = rundir.display();
         Step {
             checkpoint: true,
             command: formatdoc!(

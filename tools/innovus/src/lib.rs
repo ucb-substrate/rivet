@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::{fs, io};
 
@@ -45,20 +45,28 @@ impl Innovus {
             }
             writeln!(tcl_file, "{}", astep.step.command)?;
         }
-        writeln!(tcl_file, "quit")?;
+        writeln!(tcl_file, "exit")?;
 
         Ok(())
     }
 
-    fn read_design_files() -> Step {
+    fn read_design_files(syn_work_dir: &PathBuf, work_dir: &PathBuf, module: &str) -> Step {
+        let sdc_file_path = syn_work_dir.join("clock_pin_constraints.sdc");
+        let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
+        writeln!(sdc_file, "{}", sdc());
+        let mmmc_tcl = mmmc(sdc_file_path);
+        let module_file_path = work_dir.join("{module}.v");
+        let module_string = module_file_path.display();
+
+        //fix the path fo the sky130 lef in my scratch folder
         Step {
             checkpoint: false,
             //the sky130 cache filepath is hardcoded
             command: formatdoc!(
                 r#"
-                read_physical -lef {{ /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
+                read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
                 {mmmc_tcl}
-                read_netlist {decoder_string} -top {module}
+                read_netlist {module_string} -top {module}
                 "#
             ),
             name: "read_design_files".into(),
@@ -143,13 +151,196 @@ impl Innovus {
             name: "floorplan_design".into(),
         }
     }
+
+    fn place_tap_cells() -> Step {
+        Step {
+            checkpoint: true,
+            command: "".into(),
+            name: "place_tap_cells".into(),
+        }
+    }
+
+    fn place_pins() -> Step {
+        let mut place_pins_commands = String::new();
+        writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true");
+        writeln!(
+            place_pins_commands,
+            "set_db assign_pins_promoted_macro_bottom_layer {}"
+        );
+        writeln!(
+            place_pins_commands,
+            "set_db assign_pins_promoted_macro_top_layer {}"
+        );
+
+        writeln!(place_pins_commands, "set all_ppins \"\" ");
+
+        //for pin in pin assignments
+
+        //currently hardcoded for decoder
+        //probably can have parameters for this command
+        writeln!(place_pins_commands,"edit_pin -fixed_pin -pin * -hinst decoder -spread_type range -layer {{ met4 }} -side bottom -start {{ 30 0 }} -end {{ 0 0 }}");
+
+        writeln!(place_pins_commands, "if {{[llength $all_ppins] ne 0}} {{assign_io_pins -move_fixed_pin -pins [get_db $all_ppins .net.name]}}");
+        writeln!(
+            place_pins_commands,
+            "set_db assign_pins_edit_in_batch false"
+        );
+
+        Step {
+            checkpoint: true,
+            command: place_pins_commands,
+            name: "place_pins".into(),
+        }
+    }
+
+    fn place_opt_design() -> Step {
+        Step {
+            checkpoint: true,
+            command: formatdoc!(
+                r#"
+                set unplaced_pins [get_db ports -if {{.place_status == unplaced}}]
+                if {{$unplaced_pins ne ""}} {{
+                    print_message -error "Some pins remain unplaced, which will cause invalid placement and routing. These are the unplaced pins: $unplaced_pins"
+                    exit 2
+                }}
+                set_db opt_enable_podv2_clock_opt_flow true
+                place_opt_design
+            "#
+            ),
+            name: "place_opt_design".into(),
+        }
+    }
+
+    fn add_fillers(filler_cells: Vec<String>) -> Step {
+        Step {
+            checkpoint: true,
+            command: formatdoc!(
+                r#"
+                set_db add_fillers_cells {}
+                add_fillers
+                "#
+            ),
+            name: "add_fillers".into(),
+        }
+    }
+
+    fn route_design() -> Step {
+        Step {
+            checkpoint: true,
+            command: formatdoc!(
+                r#"
+            puts "set_db design_express_route true" 
+            set_db design_express_route true
+            puts "route_design" 
+            route_design
+            "#
+            ),
+            name: "route_design".into(),
+        }
+    }
+
+    fn opt_design() -> Step {
+        Step {
+            checkpoint: true,
+            command: formatdoc!(
+                r#"
+                    set_db opt_post_route_hold_recovery auto
+                    set_db opt_post_route_fix_si_transitions true
+                    set_db opt_verbose true
+                    set_db opt_detail_drv_failure_reason true
+                    set_db opt_sequential_genus_restructure_report_failure_reason true
+                    opt_design -post_route -setup -hold -expanded_views -timing_debug_report
+                "#
+            ),
+            name: "opt_design".into(),
+        }
+    }
+
+    //needs to be updated to be hierarchal
+    fn write_regs() -> Step {
+        Step {
+            checkpoint: true,
+            command: formatdoc!(
+                r#"
+            set write_cells_ir "./find_regs_cells.json"
+            set write_cells_ir [open $write_cells_ir "w"]
+            puts $write_cells_ir "\["
+
+            set refs [get_db [get_db lib_cells -if .is_sequential==true] .base_name]
+
+            set len [llength $refs]
+
+            for {{set i 0}} {{$i < [llength $refs]}} {{incr i}} {{
+                if {{$i == $len - 1}} {{
+                    puts $write_cells_ir "    \"[lindex $refs $i]\""
+                }} else {{
+                    puts $write_cells_ir "    \"[lindex $refs $i]\","
+                }}
+            }}
+
+            puts $write_cells_ir "\]"
+            close $write_cells_ir
+            set write_regs_ir "./find_regs_paths.json"
+            set write_regs_ir [open $write_regs_ir "w"]
+            puts $write_regs_ir "\["
+
+            set regs [get_db [get_db [all_registers -edge_triggered -output_pins] -if .direction==out] .name]
+
+            set len [llength $regs]
+
+            for {{set i 0}} {{$i < [llength $regs]}} {{incr i}} {{
+                #regsub -all {{/}} [lindex $regs $i] . myreg
+                set myreg [lindex $regs $i]
+                if {{$i == $len - 1}} {{
+                    puts $write_regs_ir "    \"$myreg\""
+                }} else {{
+                    puts $write_regs_ir "    \"$myreg\","
+                }}
+            }}
+
+            puts $write_regs_ir "\]"
+
+            close $write_regs_ir
+            "#
+            ),
+            //the paths for write hdl, write sdc, and write sdf need to be fixed
+            name: "write_regs".into(),
+        }
+    }
+
+    fn write_design(par_rundir: &PathBuf, module: &str) -> Step {
+        Step {
+            checkpoint: true,
+            command: formatdoc!(
+                r#"
+                set_db timing_enable_simultaneous_setup_hold_mode true
+
+
+                write_db {module}_FINAL -def -verilog
+                set_db write_stream_virtual_connection false
+                connect_global_net VDD -type net -net_base_name VPWR
+                connect_global_net VDD -type net -net_base_name VPB
+                connect_global_net VDD -type net -net_base_name vdd
+                connect_global_net VSS -type net -net_base_name VGND
+                connect_global_net VSS -type net -net_base_name VNB
+                connect_global_net VSS -type net -net_base_name vss
+                write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{  }} 
+                write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{  }}
+                write_stream -mode ALL -format stream -map_file /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/hammer/hammer/technology/sky130/sky130_lefpin.map -uniquify_cell_names -merge { /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds }  {par_rundir}/{module}.gds
+                write_sdf -max_view ss_100C_1v60.setup_view -min_view ff_n40C_1v95.hold_view -typical_view tt_025C_1v80.extra_view {par_rundir}/{module}.par.sdf
+                set_db extract_rc_coupled true
+                extract_rc
+                write_parasitics -spef_file {par_rundir}/{module}.ss_100C_1v60.par.spef -rc_corner ss_100C_1v60.setup_rc
+                write_parasitics -spef_file {par_rundir}/{module}.ff_n40C_1v95.par.spef -rc_corner ff_n40C_1v95.hold_rc
+                write_parasitics -spef_file {par_rundir}/{module}.tt_025C_1v80.par.spef -rc_corner tt_025C_1v80.extra_rc
+                "#
+            ),
+            name: "write_design".into(),
+        }
+    }
 }
 
 impl Tool for Innovus {
-    //fn work_dir(&self) -> PathBuf {
-    //    self.work_dir.clone()
-    //}
-    // Innovus -files par.tcl -no_gui
     fn invoke(
         &self,
         work_dir: PathBuf,
@@ -188,4 +379,17 @@ pub fn set_default_options() -> Step {
         .into(),
         checkpoint: false,
     }
+}
+
+pub fn sdc() -> String {
+    // Combine contents of clock_constraints_fragment.sdc and pin_constraints_fragment.sdc
+
+    formatdoc!(
+        r#"create_clock clk -name clk -period 2.0
+            set_clock_uncertainty 0.01 [get_clocks clk]
+            set_clock_groups -asynchronous  -group {{ clk }}
+            set_load 1.0 [all_outputs]
+            set_input_delay -clock clk 0 [all_inputs]
+            set_output_delay -clock clk 0 [all_outputs]"#
+    )
 }

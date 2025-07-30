@@ -85,6 +85,29 @@ pub fn sky130_innovus_settings() -> Step {
     }
 }
 
+fn sky130_connect_nets() -> Step {
+    Step {
+        checkpoint: true,
+        command: formatdoc!(
+            r#"
+            connect_global_net VDD -type pg_pin -pin_base_name VPWR -all -auto_tie -netlist_override
+            connect_global_net VDD -type net    -net_base_name VPWR -all -netlist_override
+            connect_global_net VDD -type pg_pin -pin_base_name VPB -all -auto_tie -netlist_override
+            connect_global_net VDD -type net    -net_base_name VPB -all -netlist_override
+            connect_global_net VDD -type pg_pin -pin_base_name vdd -all -auto_tie -netlist_override
+            connect_global_net VDD -type net    -net_base_name vdd -all -netlist_override
+            connect_global_net VSS -type pg_pin -pin_base_name VGND -all -auto_tie -netlist_override
+            connect_global_net VSS -type net    -net_base_name VGND -all -netlist_override
+            connect_global_net VSS -type pg_pin -pin_base_name VNB -all -auto_tie -netlist_override
+            connect_global_net VSS -type net    -net_base_name VNB -all -netlist_override
+            connect_global_net VSS -type pg_pin -pin_base_name vss -all -auto_tie -netlist_override
+            connect_global_net VSS -type net    -net_base_name vss -all -netlist_override
+            "#
+        ),
+        name: "sky130_connect_nets".into(),
+    }
+}
+
 fn sky130_cds_mmmc(sdc_file: impl AsRef<Path>) -> String {
     let sdc_file = sdc_file.as_ref();
     //the sdc files need their paths not hardcoded to the chipyard directory

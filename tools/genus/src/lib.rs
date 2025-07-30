@@ -436,16 +436,16 @@ pub struct MmmcCorner {
 }
 
 pub fn mmmc(sdc_file: impl AsRef<Path>, corners: Vec<MmmcCorner>) -> String {
-    let sdc_file = sdc_file.as_ref();
     //the sdc files need their paths not hardcoded to the chipyard directory
+    let sdc_file = sdc_file.as_ref();
+    writeln!(
+        &mut mmmc,
+        "create_constraint_mode -name my_constraint_mode -sdc_files [list {sdc_file:?}]"
+    )
+    .unwrap();
     let mut mmmc = String::new();
     for corner in corners {
         let library_set_name = format!("{}.set", corner.name);
-        writeln!(
-            &mut mmmc,
-            "create_constraint_mode -name my_constraint_mode -sdc_files [list {sdc_file:?}]"
-        )
-        .unwrap();
         write!(&mut mmmc, "create_library_set -name TODO").unwrap();
         for lib in corner.libs {
             write!(&mut mmmc, " {lib:?}").unwrap();

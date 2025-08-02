@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 rivet = { version = "0.1.0", path = "../../rivet" }
 indoc = "2"
+colored = "2"

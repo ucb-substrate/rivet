@@ -23,7 +23,13 @@ impl Innovus {
     }
     //concatenate steps to a tcl file, par.tcl file, Innovus.tcl
 
-    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<AnnotatedStep>) -> io::Result<()> {
+    fn make_tcl_file(
+        &self,
+        path: &PathBuf,
+        steps: Vec<AnnotatedStep>,
+        checkpoint_dir: Option<PathBuf>,
+        work_dir: PathBuf,
+    ) -> io::Result<()> {
         let mut tcl_file = File::create(&path).expect("failed to create par.tcl file");
 
         writeln!(
@@ -31,27 +37,58 @@ impl Innovus {
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
+        if let Some(actual_checkpt_dir) = checkpoint_dir {
+            //there is actually a checkpoint to read from
+            use colored::Colorize;
+            println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
+            let complete_checkpoint_path = work_dir.join(actual_checkpt_dir);
+            writeln!(
+                tcl_file,
+                "{}",
+                format!(
+                    "read_db {}",
+                    complete_checkpoint_path
+                        .into_os_string()
+                        .into_string()
+                        .expect("Failed to read from checkpoint path")
+                )
+            );
+        }
+
         for astep in steps.into_iter() {
+            use colored::Colorize;
+            println!("\n--> Parsing step: {}\n", astep.step.name.green());
             if astep.step.checkpoint {
                 //generate tcl for checkpointing
                 let mut checkpoint_command = String::new();
 
+                let mut checkpoint_file = astep
+                    .checkpoint_path
+                    .into_os_string()
+                    .into_string()
+                    .expect("Failed to create checkpoint file");
+                //before had write_db -to_file pre_{astep.step.name} -> no checkpt dir
                 writeln!(
                     checkpoint_command,
-                    "write_db -to_file pre_{}",
-                    astep.step.name
+                    "write_db -to_file {cdir}.cpf",
+                    cdir = checkpoint_file
                 );
+
                 writeln!(tcl_file, "{}", checkpoint_command)?;
             }
             writeln!(tcl_file, "{}", astep.step.command)?;
         }
-        writeln!(tcl_file, "exit")?;
+        // writeln!(tcl_file, "puts \"{}\"", "quit")?;
+        writeln!(tcl_file, "quit")?;
+        use colored::Colorize;
 
+        let temp_str = format!("{}", "\nFinished creating tcl file\n".green());
+        println!("{}", temp_str);
         Ok(())
     }
 
-    fn read_design_files(syn_work_dir: &PathBuf, work_dir: &PathBuf, module: &str) -> Step {
-        let sdc_file_path = syn_work_dir.join("clock_pin_constraints.sdc");
+    fn read_design_files(par_work_dir: &PathBuf, work_dir: &PathBuf, module: &str) -> Step {
+        let sdc_file_path = par_work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc());
         let mmmc_tcl = mmmc(sdc_file_path);
@@ -64,10 +101,10 @@ impl Innovus {
             //the sky130 cache filepath is hardcoded
             command: formatdoc!(
                 r#"
-                read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
-                {mmmc_tcl}
-                read_netlist {module_string} -top {module}
-                "#
+                    read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
+                    {mmmc_tcl}
+                    read_netlist {module_string} -top {module}
+                    "#
             ),
             name: "read_design_files".into(),
         }
@@ -152,7 +189,7 @@ impl Innovus {
         }
     }
 
-    //todo
+    //todo for non cadence standard cells which come pretapped
     fn place_tap_cells() -> Step {
         Step {
             checkpoint: true,
@@ -161,15 +198,46 @@ impl Innovus {
         }
     }
 
+    //was thinking of creating a layer struct that you can pass a vec into which has attributes
+    //which are lined up with the tcl commands
     fn power_straps() -> Step {
         Step {
             checkpoint: true,
-            command: todo!(),
+            command: formatdoc!(
+                r#"
+
+                # Power strap definition for layer met1 (rails):
+
+                # should be .14
+                set_db add_stripes_stacked_via_top_layer met1
+                set_db add_stripes_stacked_via_bottom_layer met1
+                set_db add_stripes_spacing_from_block 4.000
+                add_stripes -nets {{VDD VSS}} -layer met1 -direction horizontal -start_offset -.2 -width .4 -spacing 3.74 -set_to_set_distance 8.28 -start_from bottom -switch_layer_over_obs false -max_same_layer_jog_length 2 -pad_core_ring_top_layer_limit met5 -pad_core_ring_bottom_layer_limit met1 -block_ring_top_layer_limit met5 -block_ring_bottom_layer_limit met1 -use_wire_group 0 -snap_wire_center_to_grid none
+
+                # Power strap definition for layer met4:
+
+                set_db add_stripes_stacked_via_top_layer met4
+                set_db add_stripes_stacked_via_bottom_layer met1
+                set_db add_stripes_trim_antenna_back_to_shape {{stripe}}
+                set_db add_stripes_spacing_from_block 2.000
+                add_stripes -create_pins 0 -block_ring_bottom_layer_limit met4 -block_ring_top_layer_limit met1 -direction vertical -layer met4 -nets {{VSS VDD}} -pad_core_ring_bottom_layer_limit met1 -set_to_set_distance 75.90 -spacing 3.66 -switch_layer_over_obs 0 -width 1.86 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 0] + 7.35]
+
+                # Power strap definition for layer met5:
+
+                set_db add_stripes_stacked_via_top_layer met5
+                set_db add_stripes_stacked_via_bottom_layer met4
+                set_db add_stripes_trim_antenna_back_to_shape {{stripe}}
+                set_db add_stripes_spacing_from_block 2.000
+                add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {{VSS VDD}} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]
+            "#
+            ),
             name: "power_straps".into(),
         }
     }
 
-    fn place_pins(top_layer: &str, bot_layer: &str) -> Step {
+    //possibly want to create a pin struct to pass in as a vec of pins which leads to the tcl
+    //commands for editing pins and so on
+    fn place_pins(top_layer: &str, bot_layer: &str, module: &str) -> Step {
         let mut place_pins_commands = String::new();
         writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true");
         writeln!(
@@ -187,7 +255,7 @@ impl Innovus {
 
         //currently hardcoded for decoder
         //probably can have parameters for this command
-        writeln!(place_pins_commands,"edit_pin -fixed_pin -pin * -hinst decoder -spread_type range -layer {{ met4 }} -side bottom -start {{ 30 0 }} -end {{ 0 0 }}");
+        writeln!(place_pins_commands,"edit_pin -fixed_pin -pin * -hinst {module} -spread_type range -layer {{ met4 }} -side bottom -start {{ 30 0 }} -end {{ 0 0 }}");
 
         writeln!(place_pins_commands, "if {{[llength $all_ppins] ne 0}} {{assign_io_pins -move_fixed_pin -pins [get_db $all_ppins .net.name]}}");
         writeln!(
@@ -335,8 +403,8 @@ impl Innovus {
                 connect_global_net VSS -type net -net_base_name VGND
                 connect_global_net VSS -type net -net_base_name VNB
                 connect_global_net VSS -type net -net_base_name vss
-                write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{  }} 
-                write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{  }}
+                write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{{}}} 
+                write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{{}}}
                 write_stream -mode ALL -format stream -map_file /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/hammer/hammer/technology/sky130/sky130_lefpin.map -uniquify_cell_names -merge { /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds }  {par_rundir}/{module}.gds
                 write_sdf -max_view ss_100C_1v60.setup_view -min_view ff_n40C_1v95.hold_view -typical_view tt_025C_1v80.extra_view {par_rundir}/{module}.par.sdf
                 set_db extract_rc_coupled true
@@ -358,11 +426,11 @@ impl Tool for Innovus {
         start_checkpoint: Option<PathBuf>,
         steps: Vec<AnnotatedStep>,
     ) {
-        let mut tcl_path = work_dir.clone().join("par.tcl");
+        let tcl_path = work_dir.clone().join("par.tcl");
 
-        self.make_tcl_file(&tcl_path, steps);
+        self.make_tcl_file(&tcl_path, steps, start_checkpoint, work_dir.clone());
 
-        //this Innovus cli command is also hardcoded since I think there are some issues with the
+        //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command
         let status = Command::new("innovus")
             .args(["-f", tcl_path.to_str().unwrap()])
@@ -375,32 +443,4 @@ impl Tool for Innovus {
             panic!("Stopped flow");
         }
     }
-}
-
-//needs a parameter for the node process size
-pub fn set_default_options() -> Step {
-    Step {
-        name: "set_default_options".into(),
-        command: r#"
-        set_db design_process_node 130
-        set_multi_cpu_usage -local_cpu 12
-        set_db timing_analysis_cppr both
-        set_db timing_analysis_type ocv
-        "#
-        .into(),
-        checkpoint: false,
-    }
-}
-
-pub fn sdc() -> String {
-    // Combine contents of clock_constraints_fragment.sdc and pin_constraints_fragment.sdc
-
-    formatdoc!(
-        r#"create_clock clk -name clk -period 2.0
-            set_clock_uncertainty 0.01 [get_clocks clk]
-            set_clock_groups -asynchronous  -group {{ clk }}
-            set_load 1.0 [all_outputs]
-            set_input_delay -clock clk 0 [all_inputs]
-            set_output_delay -clock clk 0 [all_outputs]"#
-    )
 }

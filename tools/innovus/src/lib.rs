@@ -1,13 +1,13 @@
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
 use indoc::formatdoc;
-use rivet::cadence::*;
 use rivet::flow::{AnnotatedStep, Step, Tool};
+use rust_decimal::Decimal;
 
 use crate::fs::File;
 
@@ -386,6 +386,7 @@ impl Innovus {
         }
     }
 
+    //prob add a parameter of a list of excluded cells
     fn write_design(rundir: &PathBuf, module: &str) -> Step {
         let par_rundir = rundir.display();
         Step {
@@ -443,4 +444,105 @@ impl Tool for Innovus {
             panic!("Stopped flow");
         }
     }
+}
+
+pub fn sdc() -> String {
+    // Combine contents of clock_constraints_fragment.sdc and pin_constraints_fragment.sdc
+
+    formatdoc!(
+        r#"create_clock clk -name clk -period 2.0
+            set_clock_uncertainty 0.01 [get_clocks clk]
+            set_clock_groups -asynchronous  -group {{ clk }}
+            set_load 1.0 [all_outputs]
+            set_input_delay -clock clk 0 [all_inputs]
+            set_output_delay -clock clk 0 [all_outputs]"#
+    )
+}
+
+pub struct MmmcCorner {
+    name: String,
+    libs: Vec<PathBuf>,
+    temperature: Decimal,
+}
+
+pub fn mmmc(
+    sdc_file: impl AsRef<Path>,
+    corners: Vec<MmmcCorner>,
+    setup: Vec<String>,
+    hold: Vec<String>,
+    dynamic: String,
+    leakage: String,
+) -> String {
+    // Ensure that setup, hold, dynamic, and leakage corners are defined in `corners`.
+    for corner in setup.iter().chain(hold.iter()).chain([&dynamic, &leakage]) {
+        assert!(
+            corners.iter().any(|c| c.name == *corner),
+            "corner referenced but not defined in the list of MMMC corners"
+        );
+    }
+
+    //the sdc files need their paths not hardcoded to the chipyard directory
+    let sdc_file = sdc_file.as_ref();
+    let mut mmmc = String::new();
+    let constraint_mode_name = "my_constraint_mode";
+    writeln!(
+        &mut mmmc,
+        "create_constraint_mode -name {constraint_mode_name} -sdc_files [list {sdc_file:?}]"
+    )
+    .unwrap();
+
+    for corner in corners.iter() {
+        let library_set_name = format!("{}.set", corner.name);
+        let timing_cond_name = format!("{}.cond", corner.name);
+        let rc_corner_name = format!("{}.rc", corner.name);
+        let delay_corner_name = format!("{}.delay", corner.name);
+        let analysis_view_name = format!("{}.view", corner.name);
+        write!(
+            &mut mmmc,
+            "create_library_set -name {library_set_name} -timing [list"
+        )
+        .unwrap();
+        for lib in corner.libs.iter() {
+            write!(&mut mmmc, " {lib:?}").unwrap();
+        }
+        writeln!(&mut mmmc, "]").unwrap();
+
+        writeln!(&mut mmmc, "create_timing_condition -name {timing_cond_name} -library_sets [list {library_set_name}]").unwrap();
+        writeln!(
+            &mut mmmc,
+            "create_rc_corner -name {rc_corner_name} -temperature {}",
+            corner.temperature
+        )
+        .unwrap();
+
+        writeln!(
+            &mut mmmc,
+            "create_delay_corner -name {delay_corner_name} -timing_condition {timing_cond_name} -rc_corner {rc_corner_name}",
+        )
+        .unwrap();
+
+        writeln!(
+            &mut mmmc,
+            "create_analysis_view -name {analysis_view_name} -delay_corner {delay_corner_name} -constraint_mode {constraint_mode_name}",
+        )
+        .unwrap();
+    }
+
+    write!(&mut mmmc, "set_analysis_view -setup {{").unwrap();
+    for corner in setup.iter() {
+        write!(&mut mmmc, " {corner}.view").unwrap();
+    }
+    write!(&mut mmmc, " }}").unwrap();
+    write!(&mut mmmc, " -hold {{").unwrap();
+    for corner in hold.iter() {
+        write!(&mut mmmc, " {corner}.view").unwrap();
+    }
+    write!(&mut mmmc, " }}").unwrap();
+    writeln!(
+        &mut mmmc,
+        " -dynamic {dynamic}.view -leakage {leakage}.view"
+    )
+    .unwrap();
+
+    mmmc
 }

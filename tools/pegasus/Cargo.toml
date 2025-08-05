@@ -1,5 +1,5 @@
 [package]
-name = "innovus"
+name = "pegasus"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,5 +7,3 @@ edition = "2021"
 rivet = { version = "0.1.0", path = "../../rivet" }
 indoc = "2"
 colored = "2"
-rust_decimal = "1"
-rust_decimal_macros = "1"

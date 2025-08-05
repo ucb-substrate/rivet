@@ -475,38 +475,3 @@ pub fn mmmc(
 
     mmmc
 }
-
-//#[cfg(test)]
-//
-//mod tests {
-//    use std::env;
-//    use std::fs;
-//    use std::path::PathBuf;
-//    use std::sync::Arc;
-//
-//    use rivet::flow::{FlowNode, Step, Tool};
-//
-//    use crate::Genus;
-//
-//    #[test]
-//    fn test_basic_flow() {
-//        let genus: Arc<dyn Tool> = Arc::new(Genus::new(PathBuf::from(".")));
-//        let genus_steps = vec![
-//            Genus::init_environment(),
-//            Genus::syn_generic(),
-//            Genus::syn_map(),
-//            Genus::add_tieoffs(),
-//            Genus::generate_reports(),
-//            Genus::write_outputs(),
-//        ];
-//
-//        let basic = FlowNode {
-//            name: "Genus".to_string(),
-//            tool: Arc::clone(&genus),
-//            steps: genus_steps,
-//            deps: vec![],
-//        };
-//
-//        genus.invoke(basic.steps);
-//    }
-//}

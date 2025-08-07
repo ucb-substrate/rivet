@@ -14,14 +14,16 @@ use crate::fs::File;
 pub struct Pegasus {
     pub work_dir: PathBuf,
     pub func: String,
+    pub module: String,
 }
 
 impl Pegasus {
-    pub fn new(work_dir: impl Into<PathBuf>, func: String) -> Self {
+    pub fn new(work_dir: impl Into<PathBuf>, func: String, module: String) -> Self {
         let dir = work_dir.into();
         Pegasus {
             work_dir: dir,
             func: func,
+            module: module,
         }
     }
 
@@ -94,11 +96,13 @@ impl Tool for Pegasus {
         steps: Vec<AnnotatedStep>,
     ) {
         let ctl_path = work_dir.clone().join("{}.ctl");
+        let schematic = format!("./{}.spice", self.module);
+        let layout = format!("./{}.gds", self.module);
 
         if self.func == "lvs" {
             let status = Command::new("pegasus")
                 .args(["-f", ctl_path.to_str().unwrap()])
-                .current_dir(work_dir)
+                .current_dir(work_dir.clone())
                 .status()
                 .expect("Failed to execute pegasus");
 
@@ -113,16 +117,16 @@ impl Tool for Pegasus {
                     "-rc_data",
                     "-ui_data",
                     "-source_cdl",
-                    "../custom_dff.spice",
+                    &schematic,
                     "-gds",
-                    "../custom_dff.gds",
+                    &layout,
                     "-source_top_cell",
-                    "custom_dff",
+                    &self.module,
                     "-layout_top_cell",
-                    "custom_dff",
+                    &self.module,
                     "/home/ff/eecs251b/sky130/sky130_cds/sky130_release_0.0.4/Sky130_LVS/sky130.lvs.pvl",
                 ])
-                .current_dir(work_dir)
+                .current_dir(work_dir.clone())
                 .status()
                 .expect("Failed to execute pegasus for LVS");
 
@@ -142,13 +146,13 @@ impl Tool for Pegasus {
                     "12",
                     "-license_dp_continue",
                     "-gds",
-                    "../custom_dff.gds",
+                    &layout,
                     "-top_cell",
-                    "custom_dff",
+                    &self.module,
                     "-ui_data",
                     "/home/ff/eecs251b/sky130/sky130_cds/sky130_release_0.0.4/Sky130_DRC/sky130_rev_0.0_1.0.drc.pvl",
                 ])
-                .current_dir(work_dir)
+                .current_dir(work_dir.clone())
                 .status()
                 .expect("Failed to execute pegasus for DRC");
 

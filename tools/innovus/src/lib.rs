@@ -200,6 +200,7 @@ impl Innovus {
 
     //was thinking of creating a layer struct that you can pass a vec into which has attributes
     //which are lined up with the tcl commands
+
     fn power_straps() -> Step {
         Step {
             checkpoint: true,
@@ -545,4 +546,19 @@ pub fn mmmc(
     .unwrap();
 
     mmmc
+}
+
+pub struct Layer {
+    top: String,
+    bot: String,
+    spacing: Decimal,
+    trim_antenna: bool,
+    add_stripes_command: String,
+}
+
+pub struct PinAssignment {
+    module: String,
+    layer: String,
+    start: i64,
+    end: i64,
 }

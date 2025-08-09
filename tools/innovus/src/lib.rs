@@ -87,11 +87,11 @@ impl Innovus {
         Ok(())
     }
 
-    fn read_design_files(par_work_dir: &PathBuf, work_dir: &PathBuf, module: &str) -> Step {
+    fn read_design_files(par_work_dir: &PathBuf, work_dir: &PathBuf, module: &str, mmmc_conf: MmmcConfig) -> Step {
         let sdc_file_path = par_work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc());
-        let mmmc_tcl = mmmc(sdc_file_path);
+        let mmmc_tcl = mmmc(mmmc_conf);
         let module_file_path = work_dir.join("{module}.v");
         let module_string = module_file_path.display();
 
@@ -200,11 +200,7 @@ impl Innovus {
 
     //was thinking of creating a layer struct that you can pass a vec into which has attributes
     //which are lined up with the tcl commands
-
-    fn power_straps() -> Step {
-        Step {
-            checkpoint: true,
-            command: formatdoc!(
+    /*formatdoc!(
                 r#"
 
                 # Power strap definition for layer met1 (rails):
@@ -231,14 +227,31 @@ impl Innovus {
                 set_db add_stripes_spacing_from_block 2.000
                 add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {{VSS VDD}} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]
             "#
-            ),
+            ) */
+
+    fn power_straps(straps: Vec<Layer>) -> Step {
+        let mut definitions = String::new();
+        for strap in straps.into_iter() {
+            writeln!(&mut definitions, "set_db add_stripes_stacked_via_top_layer {}", strap.top);
+            writeln!(&mut definitions, "set_db add_stripes_stacked_via_bottom_layer {}", strap.bot);
+
+            if strap.trim_antenna {
+                writeln!(&mut definitions, "set_db add_stripes_trim_antenna_back_to_shape {{stripe}}");
+            }
+            writeln!(&mut definitions, "set_db add_stripes_spacing_from_block {}", strap.spacing.to_string());
+            writeln!(&mut definitions, "{}", strap.add_stripes_command);
+        }
+
+        Step {
+            checkpoint: true,
+            command: definitions.into(),
             name: "power_straps".into(),
         }
     }
 
     //possibly want to create a pin struct to pass in as a vec of pins which leads to the tcl
     //commands for editing pins and so on
-    fn place_pins(top_layer: &str, bot_layer: &str, module: &str) -> Step {
+    fn place_pins(top_layer: &str, bot_layer: &str, module: &str, assignments: Vec<PinAssignment>) -> Step {
         let mut place_pins_commands = String::new();
         writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true");
         writeln!(
@@ -253,10 +266,12 @@ impl Innovus {
         writeln!(place_pins_commands, "set all_ppins \"\" ");
 
         //for pin in pin assignments
-
+        for assignment in assignments.into_iter() {
+            writeln!(place_pins_commands, "edit_pin -fixed_pin -pin {} -hinst {} {} {} {} {} {} {} {} {}", assignment.pins, assignment.module, assignment.patterns, assignment.layer, assignment.side, assignment.start, assignment.end, assignment.assign, assignment.width, assignment.depth);
+        }
         //currently hardcoded for decoder
         //probably can have parameters for this command
-        writeln!(place_pins_commands,"edit_pin -fixed_pin -pin * -hinst {module} -spread_type range -layer {{ met4 }} -side bottom -start {{ 30 0 }} -end {{ 0 0 }}");
+        //writeln!(place_pins_commands,"edit_pin -fixed_pin -pin * -hinst {module} -spread_type range -layer {{ met4 }} -side bottom -start {{ 30 0 }} -end {{ 0 0 }}");
 
         writeln!(place_pins_commands, "if {{[llength $all_ppins] ne 0}} {{assign_io_pins -move_fixed_pin -pins [get_db $all_ppins .net.name]}}");
         writeln!(
@@ -395,8 +410,6 @@ impl Innovus {
             command: formatdoc!(
                 r#"
                 set_db timing_enable_simultaneous_setup_hold_mode true
-
-
                 write_db {module}_FINAL -def -verilog
                 set_db write_stream_virtual_connection false
                 connect_global_net VDD -type net -net_base_name VPWR
@@ -405,8 +418,8 @@ impl Innovus {
                 connect_global_net VSS -type net -net_base_name VGND
                 connect_global_net VSS -type net -net_base_name VNB
                 connect_global_net VSS -type net -net_base_name vss
-                write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{{}}} 
-                write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{{}}}
+                write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{{""}}} 
+                write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{{""}}}
                 write_stream -mode ALL -format stream -map_file /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/hammer/hammer/technology/sky130/sky130_lefpin.map -uniquify_cell_names -merge { /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds }  {par_rundir}/{module}.gds
                 write_sdf -max_view ss_100C_1v60.setup_view -min_view ff_n40C_1v95.hold_view -typical_view tt_025C_1v80.extra_view {par_rundir}/{module}.par.sdf
                 set_db extract_rc_coupled true
@@ -466,24 +479,27 @@ pub struct MmmcCorner {
     temperature: Decimal,
 }
 
-pub fn mmmc(
-    sdc_file: impl AsRef<Path>,
+pub struct MmmcConfig {
+    sdc_file: AsRef<Path>,
     corners: Vec<MmmcCorner>,
     setup: Vec<String>,
     hold: Vec<String>,
     dynamic: String,
-    leakage: String,
+    leakage: String, 
+}
+pub fn mmmc(
+    config: MmmcConfig, 
 ) -> String {
     // Ensure that setup, hold, dynamic, and leakage corners are defined in `corners`.
-    for corner in setup.iter().chain(hold.iter()).chain([&dynamic, &leakage]) {
+    for corner in config.setup.iter().chain(config.hold.iter()).chain([&config.dynamic, &config.leakage]) {
         assert!(
-            corners.iter().any(|c| c.name == *corner),
+            config.corners.iter().any(|c| c.name == *corner),
             "corner referenced but not defined in the list of MMMC corners"
         );
     }
 
     //the sdc files need their paths not hardcoded to the chipyard directory
-    let sdc_file = sdc_file.as_ref();
+    let sdc_file = config.sdc_file.as_ref();
     let mut mmmc = String::new();
     let constraint_mode_name = "my_constraint_mode";
     writeln!(
@@ -492,7 +508,7 @@ pub fn mmmc(
     )
     .unwrap();
 
-    for corner in corners.iter() {
+    for corner in config.corners.iter() {
         let library_set_name = format!("{}.set", corner.name);
         let timing_cond_name = format!("{}.cond", corner.name);
         let rc_corner_name = format!("{}.rc", corner.name);
@@ -530,18 +546,20 @@ pub fn mmmc(
     }
 
     write!(&mut mmmc, "set_analysis_view -setup {{").unwrap();
-    for corner in setup.iter() {
+    for corner in config.setup.iter() {
         write!(&mut mmmc, " {corner}.view").unwrap();
     }
     write!(&mut mmmc, " }}").unwrap();
     write!(&mut mmmc, " -hold {{").unwrap();
-    for corner in hold.iter() {
+    for corner in config.hold.iter() {
         write!(&mut mmmc, " {corner}.view").unwrap();
     }
     write!(&mut mmmc, " }}").unwrap();
     writeln!(
         &mut mmmc,
-        " -dynamic {dynamic}.view -leakage {leakage}.view"
+        " -dynamic {}.view -leakage {}.view",
+        config.dynamic,
+        config.leakage,
     )
     .unwrap();
 
@@ -557,8 +575,14 @@ pub struct Layer {
 }
 
 pub struct PinAssignment {
+    pins: String,
     module: String,
+    patterns: String,
     layer: String,
-    start: i64,
-    end: i64,
+    side: String,
+    start: String,
+    end: String,
+    assign: String,
+    width: String,
+    depth: String,
 }

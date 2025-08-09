@@ -93,7 +93,12 @@ impl Genus {
         Ok(())
     }
 
-    pub fn read_design_files(syn_work_dir: &PathBuf, work_dir: &PathBuf, module: &str) -> Step {
+    pub fn read_design_files(
+        syn_work_dir: &PathBuf,
+        work_dir: &PathBuf,
+        module: &str,
+        mmmc_conf: MmmcConfig,
+    ) -> Step {
         // Write SDC and mmmc.tcl, run commands up to read_hdl.
         //read mmmc.tcl
         //read physical -lef
@@ -102,7 +107,7 @@ impl Genus {
         let sdc_file_path = syn_work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc());
-        let mmmc_tcl = mmmc(sdc_file_path);
+        let mmmc_tcl = mmmc(mmmc_conf);
         let module_file_path = work_dir.join("{module}.v");
         let module_string = module_file_path.display();
 
@@ -394,24 +399,31 @@ pub struct MmmcCorner {
     temperature: Decimal,
 }
 
-pub fn mmmc(
-    sdc_file: impl AsRef<Path>,
+pub struct MmmcConfig {
+    sdc_file: PathBuf,
     corners: Vec<MmmcCorner>,
     setup: Vec<String>,
     hold: Vec<String>,
     dynamic: String,
     leakage: String,
-) -> String {
+}
+
+pub fn mmmc(config: MmmcConfig) -> String {
     // Ensure that setup, hold, dynamic, and leakage corners are defined in `corners`.
-    for corner in setup.iter().chain(hold.iter()).chain([&dynamic, &leakage]) {
+    for corner in config
+        .setup
+        .iter()
+        .chain(config.hold.iter())
+        .chain([&config.dynamic, &config.leakage])
+    {
         assert!(
-            corners.iter().any(|c| c.name == *corner),
+            config.corners.iter().any(|c| c.name == *corner),
             "corner referenced but not defined in the list of MMMC corners"
         );
     }
 
     //the sdc files need their paths not hardcoded to the chipyard directory
-    let sdc_file = sdc_file.as_ref();
+    let sdc_file = config.sdc_file;
     let mut mmmc = String::new();
     let constraint_mode_name = "my_constraint_mode";
     writeln!(
@@ -420,7 +432,7 @@ pub fn mmmc(
     )
     .unwrap();
 
-    for corner in corners.iter() {
+    for corner in config.corners.iter() {
         let library_set_name = format!("{}.set", corner.name);
         let timing_cond_name = format!("{}.cond", corner.name);
         let rc_corner_name = format!("{}.rc", corner.name);
@@ -458,18 +470,19 @@ pub fn mmmc(
     }
 
     write!(&mut mmmc, "set_analysis_view -setup {{").unwrap();
-    for corner in setup.iter() {
+    for corner in config.setup.iter() {
         write!(&mut mmmc, " {corner}.view").unwrap();
     }
     write!(&mut mmmc, " }}").unwrap();
     write!(&mut mmmc, " -hold {{").unwrap();
-    for corner in hold.iter() {
+    for corner in config.hold.iter() {
         write!(&mut mmmc, " {corner}.view").unwrap();
     }
     write!(&mut mmmc, " }}").unwrap();
     writeln!(
         &mut mmmc,
-        " -dynamic {dynamic}.view -leakage {leakage}.view"
+        " -dynamic {}.view -leakage {}.view",
+        config.dynamic, config.leakage,
     )
     .unwrap();
 

@@ -11,4 +11,7 @@ clap = { version = "4.5.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8.12"
 colored = "2"
+indoc = "2"
+rust_decimal = "1"
+rust_decimal_macros = "1"
 

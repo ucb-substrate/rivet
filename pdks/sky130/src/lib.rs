@@ -11,6 +11,7 @@ use std::{
 use genus::{dont_avoid_lib_cells, set_default_options, Genus};
 use indoc::formatdoc;
 use innovus::{set_default_process, Innovus};
+use rivet::cadence::{mmmc, sdc, MmmcConfig, MmmcCorner};
 use rivet::flow::{Flow, FlowNode, Step};
 
 //maybe make an environment variable using std::sync::OnceLock and then use this root in the tcl
@@ -155,12 +156,22 @@ set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hol
     )
 }
 
+pub fn sram_cache_gen() -> String {}
+
 pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
     let work_dir = work_dir.as_ref().to_path_buf();
     //print!("{}", syn_work_dir.join("checkpoints").into_os_string().into_string().expect("print fail"));
     //
     let genus = Arc::new(Genus::new(&work_dir.join("syn-rundir"), module));
     let innovus = Arc::new(Innovus::new(&work_dir.join("par-rundir"), module));
+    let con = MmmcConfig {
+        sdc_file: PathBuf::new(),
+        corners: vec![],
+        setup: vec![],
+        hold: vec![],
+        dynamic: "".into(),
+        leakage: "".into(),
+    };
 
     Flow {
         nodes: HashMap::from_iter([
@@ -174,7 +185,7 @@ pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
                         set_default_options(),
                         dont_avoid_lib_cells("ICGX1"),
                         genus.read_design_files(
-                            x,
+                            con,
                             &SKY130_ROOT.get().unwrap().join(""),
                             &SKY130_ROOT.get().unwrap().join(
                                 "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
@@ -182,7 +193,7 @@ pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
                         ),
                         genus.elaborate(),
                         genus.init_design(),
-                        genus.power_intent,
+                        genus.power_intent(),
                         Genus::syn_generic(),
                         Genus::syn_map(),
                         Genus::add_tieoffs(),
@@ -199,7 +210,7 @@ pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
                     checkpoint_dir: work_dir.join("par-rundir").join("checkpoints"),
                     steps: vec![
                         set_default_process(130),
-                        innovus.read_design_files(),
+                        innovus.read_design_files(con),
                         Innovus::init_design(),
                         Innovus::innovus_settings(),
                         sky130_innovus_settings(),

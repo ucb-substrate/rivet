@@ -14,12 +14,17 @@ use crate::fs::File;
 #[derive(Debug)]
 pub struct Innovus {
     pub work_dir: PathBuf,
+    pub module: String,
 }
 
 impl Innovus {
-    pub fn new(work_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(work_dir: impl Into<PathBuf>, module: impl Into<String>) -> Self {
         let dir = work_dir.into();
-        Innovus { work_dir: dir }
+        let modul = module.into();
+        Innovus {
+            work_dir: dir,
+            module: modul,
+        }
     }
     //concatenate steps to a tcl file, par.tcl file, Innovus.tcl
 
@@ -28,20 +33,14 @@ impl Innovus {
         path: &PathBuf,
         steps: Vec<AnnotatedStep>,
         checkpoint_dir: Option<PathBuf>,
-        work_dir: PathBuf,
     ) -> io::Result<()> {
         let mut tcl_file = File::create(&path).expect("failed to create par.tcl file");
-
-        writeln!(
-            tcl_file,
-            "set_db super_thread_debug_directory super_thread_debug"
-        )?;
 
         if let Some(actual_checkpt_dir) = checkpoint_dir {
             //there is actually a checkpoint to read from
             use colored::Colorize;
             println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
-            let complete_checkpoint_path = work_dir.join(actual_checkpt_dir);
+            let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
             writeln!(
                 tcl_file,
                 "{}",
@@ -79,7 +78,7 @@ impl Innovus {
             writeln!(tcl_file, "{}", astep.step.command)?;
         }
         // writeln!(tcl_file, "puts \"{}\"", "quit")?;
-        writeln!(tcl_file, "quit")?;
+        writeln!(tcl_file, "exit")?;
         use colored::Colorize;
 
         let temp_str = format!("{}", "\nFinished creating tcl file\n".green());
@@ -87,17 +86,13 @@ impl Innovus {
         Ok(())
     }
 
-    fn read_design_files(
-        par_work_dir: &PathBuf,
-        work_dir: &PathBuf,
-        module: &str,
-        mmmc_conf: MmmcConfig,
-    ) -> Step {
-        let sdc_file_path = par_work_dir.join("clock_pin_constraints.sdc");
+    pub fn read_design_files(&self, mmmc_conf: MmmcConfig) -> Step {
+        fs::create_dir(&self.work_dir.join("par-rundir"));
+        let sdc_file_path = self.work_dir.join("par-rundir/clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc());
         let mmmc_tcl = mmmc(mmmc_conf);
-        let module_file_path = work_dir.join("{module}.v");
+        let module_file_path = self.work_dir.join(format!("{}.v", self.module));
         let module_string = module_file_path.display();
 
         //fix the path fo the sky130 lef in my scratch folder
@@ -107,9 +102,12 @@ impl Innovus {
             command: formatdoc!(
                 r#"
                     read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
-                    {mmmc_tcl}
-                    read_netlist {module_string} -top {module}
-                    "#
+                    {}
+                    read_netlist {} -top {}
+                    "#,
+                mmmc_tcl,
+                module_string,
+                self.module
             ),
             name: "read_design_files".into(),
         }
@@ -195,7 +193,7 @@ impl Innovus {
     }
 
     //todo for non cadence standard cells which come pretapped
-    fn place_tap_cells() -> Step {
+    pub fn place_tap_cells() -> Step {
         Step {
             checkpoint: true,
             command: "".into(),
@@ -234,7 +232,7 @@ impl Innovus {
     "#
     ) */
 
-    fn power_straps(straps: Vec<Layer>) -> Step {
+    pub fn power_straps(straps: Vec<Layer>) -> Step {
         let mut definitions = String::new();
         for strap in straps.into_iter() {
             writeln!(
@@ -271,12 +269,7 @@ impl Innovus {
 
     //possibly want to create a pin struct to pass in as a vec of pins which leads to the tcl
     //commands for editing pins and so on
-    fn place_pins(
-        top_layer: &str,
-        bot_layer: &str,
-        module: &str,
-        assignments: Vec<PinAssignment>,
-    ) -> Step {
+    pub fn place_pins(top_layer: &str, bot_layer: &str, assignments: Vec<PinAssignment>) -> Step {
         let mut place_pins_commands = String::new();
         writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true");
         writeln!(
@@ -324,7 +317,7 @@ impl Innovus {
         }
     }
 
-    fn place_opt_design() -> Step {
+    pub fn place_opt_design() -> Step {
         Step {
             checkpoint: true,
             command: formatdoc!(
@@ -342,7 +335,7 @@ impl Innovus {
         }
     }
 
-    fn add_fillers(filler_cells: Vec<String>) -> Step {
+    pub fn add_fillers(filler_cells: Vec<String>) -> Step {
         let cells = format!("\"{}\"", filler_cells.join(" "));
         Step {
             checkpoint: true,
@@ -356,7 +349,7 @@ impl Innovus {
         }
     }
 
-    fn route_design() -> Step {
+    pub fn route_design() -> Step {
         Step {
             checkpoint: true,
             command: formatdoc!(
@@ -371,7 +364,7 @@ impl Innovus {
         }
     }
 
-    fn opt_design() -> Step {
+    pub fn opt_design() -> Step {
         Step {
             checkpoint: true,
             command: formatdoc!(
@@ -389,7 +382,7 @@ impl Innovus {
     }
 
     //needs to be updated to be hierarchal
-    fn write_regs() -> Step {
+    pub fn write_regs() -> Step {
         Step {
             checkpoint: true,
             command: formatdoc!(
@@ -441,8 +434,9 @@ impl Innovus {
     }
 
     //prob add a parameter of a list of excluded cells
-    fn write_design(rundir: &PathBuf, module: &str) -> Step {
-        let par_rundir = rundir.display();
+    pub fn write_design(&self) -> Step {
+        let par_rundir = self.work_dir.display();
+        let module = self.module.clone();
         Step {
             checkpoint: true,
             command: formatdoc!(
@@ -479,9 +473,9 @@ impl Tool for Innovus {
         start_checkpoint: Option<PathBuf>,
         steps: Vec<AnnotatedStep>,
     ) {
-        let tcl_path = work_dir.clone().join("par.tcl");
+        let tcl_path = self.work_dir.clone().join("par.tcl");
 
-        self.make_tcl_file(&tcl_path, steps, start_checkpoint, work_dir.clone());
+        self.make_tcl_file(&tcl_path, steps, start_checkpoint);
 
         //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command
@@ -626,4 +620,21 @@ pub struct PinAssignment {
     assign: String,
     width: String,
     depth: String,
+}
+
+pub fn set_default_process(node_size: i64) -> Step {
+    Step {
+        name: "set_default_options".into(),
+        command: formatdoc!(
+            r#"
+        set_db design_process_node {} 
+        set_multi_cpu_usage -local_cpu 12
+        set_db timing_analysis_cppr both
+        set_db timing_analysis_type ocv
+        "#,
+            node_size
+        )
+        .into(),
+        checkpoint: false,
+    }
 }

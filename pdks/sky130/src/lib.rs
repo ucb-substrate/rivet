@@ -10,7 +10,13 @@ use std::{
 
 use genus::{dont_avoid_lib_cells, set_default_options, Genus};
 use indoc::formatdoc;
+use innovus::{set_default_process, Innovus};
 use rivet::flow::{Flow, FlowNode, Step};
+
+//maybe make an environment variable using std::sync::OnceLock and then use this root in the tcl
+//templating
+use std::sync::OnceLock;
+static SKY130_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn sky130_innovus_settings() -> Step {
     Step {
@@ -149,32 +155,69 @@ set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hol
     )
 }
 
-pub fn reference_flow(work_dir: impl AsRef<Path>) -> Flow {
+pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
     let work_dir = work_dir.as_ref().to_path_buf();
-    let syn_work_dir = work_dir.join("syn_rundir");
-    fs::create_dir(&syn_work_dir);
     //print!("{}", syn_work_dir.join("checkpoints").into_os_string().into_string().expect("print fail"));
+    //
+    let genus = Arc::new(Genus::new(&work_dir.join("syn-rundir"), module));
+    let innovus = Arc::new(Innovus::new(&work_dir.join("par-rundir"), module));
+
     Flow {
-        nodes: HashMap::from_iter([(
-            "syn".into(),
-            FlowNode {
-                tool: Arc::new(Genus::new(&syn_work_dir)),
-                work_dir: syn_work_dir.clone(),
-                checkpoint_dir: syn_work_dir.join("checkpoints"),
-                steps: vec![
-                    set_default_options(),
-                    dont_avoid_lib_cells("ICGX1"),
-                    read_design_files(&syn_work_dir, &work_dir),
-                    elaborate("decoder"),
-                    init_design("decoder"),
-                    power_intent(&syn_work_dir),
-                    syn_generic(),
-                    syn_map(),
-                    add_tieoffs(),
-                    write_design("decoder"),
-                ],
-                deps: Vec::new(),
-            },
-        )]),
+        nodes: HashMap::from_iter([
+            (
+                "syn".into(),
+                FlowNode {
+                    tool: genus,
+                    work_dir: work_dir.join("syn-rundir").clone(),
+                    checkpoint_dir: work_dir.join("syn-rundir").join("checkpoints"),
+                    steps: vec![
+                        set_default_options(),
+                        dont_avoid_lib_cells("ICGX1"),
+                        genus.read_design_files(
+                            x,
+                            &SKY130_ROOT.get().unwrap().join(""),
+                            &SKY130_ROOT.get().unwrap().join(
+                                "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
+                            ),
+                        ),
+                        genus.elaborate(),
+                        genus.init_design(),
+                        genus.power_intent,
+                        Genus::syn_generic(),
+                        Genus::syn_map(),
+                        Genus::add_tieoffs(),
+                        genus.write_design(),
+                    ],
+                    deps: Vec::new(),
+                },
+            ),
+            (
+                "par".into(),
+                FlowNode {
+                    tool: innovus,
+                    work_dir: work_dir.join("par-rundir"),
+                    checkpoint_dir: work_dir.join("par-rundir").join("checkpoints"),
+                    steps: vec![
+                        set_default_process(130),
+                        innovus.read_design_files(),
+                        Innovus::init_design(),
+                        Innovus::innovus_settings(),
+                        sky130_innovus_settings(),
+                        innovus.floorplan_design(),
+                        sky130_connect_nets(),
+                        Innovus::power_straps(),
+                        Innovus::place_pins(),
+                        Innovus::place_opt_design(),
+                        Innovus::add_fillers(),
+                        Innovus::route_design(),
+                        Innovus::opt_design(),
+                        Innovus::write_regs(),
+                        sky130_connect_nets(),
+                        innovus.write_design(),
+                    ],
+                    deps: vec!["syn".into()],
+                },
+            ),
+        ]),
     }
 }

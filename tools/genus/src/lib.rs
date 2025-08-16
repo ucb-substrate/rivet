@@ -14,12 +14,17 @@ use crate::fs::File;
 #[derive(Debug)]
 pub struct Genus {
     pub work_dir: PathBuf,
+    pub module: String,
 }
 
 impl Genus {
-    pub fn new(work_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(work_dir: impl Into<PathBuf>, module: impl Into<String>) -> Self {
         let dir = work_dir.into();
-        Genus { work_dir: dir }
+        let modul = module.into();
+        Genus {
+            work_dir: dir,
+            module: modul,
+        }
     }
     //concatenate steps to a tcl file, syn.tcl file, genus.tcl
 
@@ -28,7 +33,6 @@ impl Genus {
         path: &PathBuf,
         steps: Vec<AnnotatedStep>,
         checkpoint_dir: Option<PathBuf>,
-        work_dir: PathBuf,
     ) -> io::Result<()> {
         let mut tcl_file = File::create(&path).expect("failed to create syn.tcl file");
 
@@ -41,7 +45,7 @@ impl Genus {
             //there is actually a checkpoint to read from
             use colored::Colorize;
             println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
-            let complete_checkpoint_path = work_dir.join(actual_checkpt_dir);
+            let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
             writeln!(
                 tcl_file,
                 "{}",
@@ -94,23 +98,25 @@ impl Genus {
     }
 
     pub fn read_design_files(
-        syn_work_dir: &PathBuf,
-        work_dir: &PathBuf,
-        module: &str,
+        &self,
         mmmc_conf: MmmcConfig,
+        sram_macro_lef: &PathBuf,
+        pdk_lef: &PathBuf,
     ) -> Step {
         // Write SDC and mmmc.tcl, run commands up to read_hdl.
         //read mmmc.tcl
         //read physical -lef
         //read_hdl -sv {}
 
-        let sdc_file_path = syn_work_dir.join("clock_pin_constraints.sdc");
+        fs::create_dir(&self.work_dir.join("syn-rundir"));
+        let sdc_file_path = self.work_dir.join("syn-rundir/clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc());
         let mmmc_tcl = mmmc(mmmc_conf);
-        let module_file_path = work_dir.join("{module}.v");
+        let module_file_path = self.work_dir.join(format!("{}.v", self.module));
         let module_string = module_file_path.display();
-
+        let sram_macro = sram_macro_lef.display();
+        let pdk = pdk_lef.display();
         //fix the path fo the sky130 lef in my scratch folder
         Step {
             checkpoint: false,
@@ -118,7 +124,7 @@ impl Genus {
             command: formatdoc!(
                 r#"
                 {mmmc_tcl}
-                read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
+                read_physical -lef {{ {sram_macro} {pdk} }}
                 read_hdl -sv {module_string}
 
                 "#
@@ -156,25 +162,25 @@ impl Genus {
         }
     }
 
-    pub fn elaborate(module: &str) -> Step {
+    pub fn elaborate(&self) -> Step {
         Step {
             checkpoint: false,
-            command: format!("elaborate {module}"),
+            command: format!("elaborate {}", self.module),
             name: "elaborate".to_string(),
         }
     }
 
-    pub fn init_design(module: &str) -> Step {
+    pub fn init_design(&self) -> Step {
         Step {
             checkpoint: false,
-            command: format!("init_design -top {module}"),
+            command: format!("init_design -top {}", self.module),
             name: "init_design".to_string(),
         }
     }
 
-    pub fn power_intent(work_dir: &PathBuf) -> Step {
+    pub fn power_intent(&self) -> Step {
         // Write power_spec.cpf and run power_intent TCL commands.
-        let power_spec_file_path = work_dir.join("power_spec.cpf");
+        let power_spec_file_path = self.work_dir.join("power_spec.cpf");
         let mut power_spec_file =
             File::create(&power_spec_file_path).expect("failed to create file");
         writeln!(
@@ -252,7 +258,7 @@ impl Genus {
         }
     }
 
-    pub fn write_design(module: &str) -> Step {
+    pub fn write_design(&self) -> Step {
         // All write TCL commands
         // this includes write regs, write reports, write outputs
         Step {
@@ -334,7 +340,7 @@ impl Tool for Genus {
     ) {
         let tcl_path = work_dir.clone().join("syn.tcl");
 
-        self.make_tcl_file(&tcl_path, steps, start_checkpoint, work_dir.clone());
+        self.make_tcl_file(&tcl_path, steps, start_checkpoint);
 
         //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command
@@ -370,6 +376,7 @@ pub fn set_default_options() -> Step {
         checkpoint: false,
     }
 }
+
 pub fn sdc() -> String {
     // Combine contents of clock_constraints_fragment.sdc and pin_constraints_fragment.sdc
 

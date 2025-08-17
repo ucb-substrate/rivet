@@ -51,7 +51,8 @@ impl Innovus {
                         .into_string()
                         .expect("Failed to read from checkpoint path")
                 )
-            );
+            )
+            .expect("Failed to write");
         }
 
         for astep in steps.into_iter() {
@@ -71,7 +72,8 @@ impl Innovus {
                     checkpoint_command,
                     "write_db -to_file {cdir}.cpf",
                     cdir = checkpoint_file
-                );
+                )
+                .expect("Failed to write");
 
                 writeln!(tcl_file, "{}", checkpoint_command)?;
             }
@@ -87,10 +89,10 @@ impl Innovus {
     }
 
     pub fn read_design_files(&self, mmmc_conf: MmmcConfig) -> Step {
-        fs::create_dir(&self.work_dir.join("par-rundir"));
+        fs::create_dir(&self.work_dir.join("par-rundir")).expect("Failed to create directory");
         let sdc_file_path = self.work_dir.join("par-rundir/clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
-        writeln!(sdc_file, "{}", sdc());
+        writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
         let module_file_path = self.work_dir.join(format!("{}.v", self.module));
         let module_string = module_file_path.display();
@@ -143,7 +145,7 @@ impl Innovus {
         let floorplan_tcl_path = self.work_dir.join("floorplan.tcl");
         let mut floorplan_tcl_file =
             File::create(&floorplan_tcl_path).expect("failed to create file");
-        writeln!(floorplan_tcl_file, "{}", "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }");
+        writeln!(floorplan_tcl_file, "{}", "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }").expect("Failed to write");
         let floorplan_path_string = floorplan_tcl_path.display();
 
         let power_spec_file_path = self.work_dir.join("power_spec.cpf");
@@ -176,7 +178,8 @@ impl Innovus {
             end_design
             "#
             }
-        );
+        )
+        .expect("Failed to write");
         let power_spec_file_string = power_spec_file_path.display();
         Step {
             checkpoint: true,
@@ -237,27 +240,37 @@ impl Innovus {
         for strap in straps.into_iter() {
             writeln!(
                 &mut definitions,
+                "#Power strap definition for layer {}:",
+                strap.top
+            )
+            .expect("Failed to write");
+            writeln!(
+                &mut definitions,
                 "set_db add_stripes_stacked_via_top_layer {}",
                 strap.top
-            );
+            )
+            .expect("Failed to write");
             writeln!(
                 &mut definitions,
                 "set_db add_stripes_stacked_via_bottom_layer {}",
                 strap.bot
-            );
+            )
+            .expect("Failed to write");
 
             if strap.trim_antenna {
                 writeln!(
                     &mut definitions,
                     "set_db add_stripes_trim_antenna_back_to_shape {{stripe}}"
-                );
+                )
+                .expect("Failed to write");
             }
             writeln!(
                 &mut definitions,
                 "set_db add_stripes_spacing_from_block {}",
                 strap.spacing.to_string()
-            );
-            writeln!(&mut definitions, "{}", strap.add_stripes_command);
+            )
+            .expect("Failed to write");
+            writeln!(&mut definitions, "{}", strap.add_stripes_command).expect("Failed to write");
         }
 
         Step {
@@ -271,17 +284,20 @@ impl Innovus {
     //commands for editing pins and so on
     pub fn place_pins(top_layer: &str, bot_layer: &str, assignments: Vec<PinAssignment>) -> Step {
         let mut place_pins_commands = String::new();
-        writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true");
+        writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true")
+            .expect("Failed to write");
         writeln!(
             place_pins_commands,
             "set_db assign_pins_promoted_macro_bottom_layer {bot_layer}"
-        );
+        )
+        .expect("Failed to write");
         writeln!(
             place_pins_commands,
             "set_db assign_pins_promoted_macro_top_layer {top_layer}"
-        );
+        )
+        .expect("Failed to write");
 
-        writeln!(place_pins_commands, "set all_ppins \"\" ");
+        writeln!(place_pins_commands, "set all_ppins \"\" ").expect("Failed to write");
 
         //for pin in pin assignments
         for assignment in assignments.into_iter() {
@@ -298,17 +314,19 @@ impl Innovus {
                 assignment.assign,
                 assignment.width,
                 assignment.depth
-            );
+            )
+            .expect("Failed to write");
         }
         //currently hardcoded for decoder
         //probably can have parameters for this command
         //writeln!(place_pins_commands,"edit_pin -fixed_pin -pin * -hinst {module} -spread_type range -layer {{ met4 }} -side bottom -start {{ 30 0 }} -end {{ 0 0 }}");
 
-        writeln!(place_pins_commands, "if {{[llength $all_ppins] ne 0}} {{assign_io_pins -move_fixed_pin -pins [get_db $all_ppins .net.name]}}");
+        writeln!(place_pins_commands, "if {{[llength $all_ppins] ne 0}} {{assign_io_pins -move_fixed_pin -pins [get_db $all_ppins .net.name]}}").expect("Failed to write");
         writeln!(
             place_pins_commands,
             "set_db assign_pins_edit_in_batch false"
-        );
+        )
+        .expect("Failed to write");
 
         Step {
             checkpoint: true,
@@ -475,7 +493,8 @@ impl Tool for Innovus {
     ) {
         let tcl_path = self.work_dir.clone().join("par.tcl");
 
-        self.make_tcl_file(&tcl_path, steps, start_checkpoint);
+        self.make_tcl_file(&tcl_path, steps, start_checkpoint)
+            .expect("Failed to create par.tcl");
 
         //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command
@@ -493,24 +512,24 @@ impl Tool for Innovus {
 }
 
 pub struct Layer {
-    top: String,
-    bot: String,
-    spacing: Decimal,
-    trim_antenna: bool,
-    add_stripes_command: String,
+    pub top: String,
+    pub bot: String,
+    pub spacing: Decimal,
+    pub trim_antenna: bool,
+    pub add_stripes_command: String,
 }
 
 pub struct PinAssignment {
-    pins: String,
-    module: String,
-    patterns: String,
-    layer: String,
-    side: String,
-    start: String,
-    end: String,
-    assign: String,
-    width: String,
-    depth: String,
+    pub pins: String,
+    pub module: String,
+    pub patterns: String,
+    pub layer: String,
+    pub side: String,
+    pub start: String,
+    pub end: String,
+    pub assign: String,
+    pub width: String,
+    pub depth: String,
 }
 
 pub fn set_default_process(node_size: i64) -> Step {

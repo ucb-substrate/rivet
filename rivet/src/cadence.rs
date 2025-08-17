@@ -18,12 +18,14 @@ pub fn sdc() -> String {
     )
 }
 
+#[derive(Clone)]
 pub struct MmmcCorner {
     pub name: String,
     pub libs: Vec<PathBuf>,
     pub temperature: Decimal,
 }
 
+#[derive(Clone)]
 pub struct MmmcConfig {
     pub sdc_file: PathBuf,
     pub corners: Vec<MmmcCorner>,

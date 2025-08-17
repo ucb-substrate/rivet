@@ -8,5 +8,5 @@ members = [
     "tools/genus",
     "tools/innovus",
     "tools/chipyard",
-    "tools/dummy", "tools/pegasus",
+    "tools/pegasus",
 ]

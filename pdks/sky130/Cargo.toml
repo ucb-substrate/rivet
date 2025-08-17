@@ -8,3 +8,5 @@ rivet = { version = "0.1.0", path = "../../rivet" }
 genus = { version = "0.1.0", path = "../../tools/genus" }
 innovus = { version = "0.1.0", path = "../../tools/innovus" }
 indoc = "2"
+rust_decimal = "1"
+rust_decimal_macros = "1"

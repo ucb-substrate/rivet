@@ -10,9 +10,11 @@ use std::{
 
 use genus::{dont_avoid_lib_cells, set_default_options, Genus};
 use indoc::formatdoc;
-use innovus::{set_default_process, Innovus};
+use innovus::{set_default_process, Innovus, Layer, PinAssignment};
 use rivet::cadence::{mmmc, sdc, MmmcConfig, MmmcCorner};
 use rivet::flow::{Flow, FlowNode, Step};
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 
 //maybe make an environment variable using std::sync::OnceLock and then use this root in the tcl
 //templating
@@ -156,7 +158,7 @@ set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hol
     )
 }
 
-pub fn sram_cache_gen() -> String {}
+//pub fn sram_cache_gen() -> String {}
 
 pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
     let work_dir = work_dir.as_ref().to_path_buf();
@@ -164,29 +166,113 @@ pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
     //
     let genus = Arc::new(Genus::new(&work_dir.join("syn-rundir"), module));
     let innovus = Arc::new(Innovus::new(&work_dir.join("par-rundir"), module));
-    let con = MmmcConfig {
-        sdc_file: PathBuf::new(),
-        corners: vec![],
-        setup: vec![],
-        hold: vec![],
-        dynamic: "".into(),
-        leakage: "".into(),
+    
+    let filler_cells = vec![
+        "FILL0".into(),
+        "FILL1".into(),
+        "FILL4".into(),
+        "FILL9".into(),
+        "FILL16".into(),
+        "FILL25".into(),
+        "FILL36".into(),
+    ];
+
+    let assignment = PinAssignment {
+        pins: "*".into(),
+        module: "decoder".into(),
+        patterns: "-spread_type range".into(),
+        layer: "-layer {met4}".into(),
+        side: "-side bottom".into(),
+        start: "-start {30 0}".into(),
+        end: "-end {0 0}".into(),
+        assign: "".into(),
+        width: "".into(),
+        depth: "".into(),
     };
+
+    let layers = vec![
+
+        Layer {
+            top: "met1".into(),
+            bot: "met1".into(),
+            spacing: dec!(4.000),
+            trim_antenna: false,
+            add_stripes_command: r#"add_stripes -nets {VDD VSS} -layer met1 -direction horizontal -start_offset -.2 -width .4 -spacing 3.74 -set_to_set_distance 8.28 -start_from bottom -switch_layer_over_obs false -max_same_layer_jog_length 2 -pad_core_ring_top_layer_limit met5 -pad_core_ring_bottom_layer_limit met1 -block_ring_top_layer_limit met5 -block_ring_bottom_layer_limit met1 -use_wire_group 0 -snap_wire_center_to_grid none"#.to_string(),
+        },
+
+        Layer {
+            top: "met4".to_string(),
+            bot: "met1".to_string(),
+            spacing: dec!(2.000),
+            trim_antenna: true,
+            add_stripes_command: r#"add_stripes -create_pins 0 -block_ring_bottom_layer_limit met4 -block_ring_top_layer_limit met1 -direction vertical -layer met4 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met1 -set_to_set_distance 75.90 -spacing 3.66 -switch_layer_over_obs 0 -width 1.86 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 0] + 7.35]"#.to_string(),
+        },
+        Layer {
+            top: "met5".to_string(),
+            bot: "met4".to_string(),
+            spacing: dec!(2.000),
+            trim_antenna: true,
+            add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
+        }
+    ];
+
+    let con = MmmcConfig {
+        // Corresponds to: create_constraint_mode ... -sdc_files [...]
+        sdc_file: PathBuf::from("/home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/clock_constraints_fragment.sdc"),
+
+        // This vector defines all the corners used in the analysis.
+        corners: vec![
+            // Corner 1: Slow-Slow for Setup
+            MmmcCorner {
+                name: "ss_100C_1v60.setup".to_string(),
+                libs: vec![SKY130_ROOT.get().unwrap().join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib")],
+                temperature: dec!(100.0),
+            },
+            // Corner 2: Fast-Fast for Hold
+            MmmcCorner {
+                name: "ff_n40C_1v95.hold".to_string(),
+                libs: vec![SKY130_ROOT.get().unwrap().join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib")],
+                temperature: dec!(-40.0),
+            },
+            // Corner 3: Typical-Typical for Hold, Dynamic Power, and Leakage
+            MmmcCorner {
+                name: "tt_025C_1v80.extra".to_string(),
+                libs: vec![SKY130_ROOT.get().unwrap().join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib")],
+                temperature: dec!(25.0),
+            },
+        ],
+
+        // Corresponds to: set_analysis_view -setup {{ ss_100C_1v60.setup_view }}
+        setup: vec!["ss_100C_1v60.setup".to_string()],
+
+        // Corresponds to: set_analysis_view -hold {{ ff_n40C_1v95.hold_view tt_025C_1v80.extra_view }}
+        hold: vec![
+            "ff_n40C_1v95.hold".to_string(),
+            "tt_025C_1v80.extra".to_string(),
+        ],
+
+        // Corresponds to: set_analysis_view ... -dynamic tt_025C_1v80.extra_view
+        dynamic: "tt_025C_1v80.extra".to_string(),
+        
+        // Corresponds to: set_analysis_view ... -leakage tt_025C_1v80.extra_view
+        leakage: "tt_025C_1v80.extra".to_string(),
+    };
+
 
     Flow {
         nodes: HashMap::from_iter([
             (
                 "syn".into(),
                 FlowNode {
-                    tool: genus,
+                    tool: genus.clone(),
                     work_dir: work_dir.join("syn-rundir").clone(),
                     checkpoint_dir: work_dir.join("syn-rundir").join("checkpoints"),
                     steps: vec![
                         set_default_options(),
                         dont_avoid_lib_cells("ICGX1"),
                         genus.read_design_files(
-                            con,
-                            &SKY130_ROOT.get().unwrap().join(""),
+                            con.clone(),
+                            &PathBuf::from("/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef"),
                             &SKY130_ROOT.get().unwrap().join(
                                 "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
                             ),
@@ -205,21 +291,21 @@ pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
             (
                 "par".into(),
                 FlowNode {
-                    tool: innovus,
+                    tool: innovus.clone(),
                     work_dir: work_dir.join("par-rundir"),
                     checkpoint_dir: work_dir.join("par-rundir").join("checkpoints"),
                     steps: vec![
                         set_default_process(130),
-                        innovus.read_design_files(con),
+                        innovus.read_design_files(con.clone()),
                         Innovus::init_design(),
                         Innovus::innovus_settings(),
                         sky130_innovus_settings(),
                         innovus.floorplan_design(),
                         sky130_connect_nets(),
-                        Innovus::power_straps(),
-                        Innovus::place_pins(),
+                        Innovus::power_straps(layers),
+                        Innovus::place_pins("5", "1", vec![assignment]),
                         Innovus::place_opt_design(),
-                        Innovus::add_fillers(),
+                        Innovus::add_fillers(filler_cells),
                         Innovus::route_design(),
                         Innovus::opt_design(),
                         Innovus::write_regs(),

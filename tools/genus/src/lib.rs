@@ -8,7 +8,6 @@ use std::{fs, io};
 use indoc::formatdoc;
 use rivet::cadence::{mmmc, sdc, MmmcConfig, MmmcCorner};
 use rivet::flow::{AnnotatedStep, Step, Tool};
-use rust_decimal::Decimal;
 
 use crate::fs::File;
 
@@ -57,7 +56,8 @@ impl Genus {
                         .into_string()
                         .expect("Failed to read from checkpoint path")
                 )
-            );
+            )
+            .expect("Failed to write");
         }
 
         for astep in steps.into_iter() {
@@ -67,7 +67,7 @@ impl Genus {
                 //generate tcl for checkpointing
                 let mut checkpoint_command = String::new();
 
-                let mut checkpoint_file = astep
+                let checkpoint_file = astep
                     .checkpoint_path
                     .into_os_string()
                     .into_string()
@@ -77,7 +77,8 @@ impl Genus {
                     checkpoint_command,
                     "write_db -to_file {cdir}.cpf",
                     cdir = checkpoint_file
-                );
+                )
+                .expect("Failed to write");
                 //                 writeln!(
                 //                     checkpoint_command,
                 //                     "write_db -to_file pre_{}",
@@ -109,10 +110,10 @@ impl Genus {
         //read physical -lef
         //read_hdl -sv {}
 
-        fs::create_dir(&self.work_dir.join("syn-rundir"));
+        fs::create_dir(&self.work_dir.join("syn-rundir")).expect("Failed to create directory");
         let sdc_file_path = self.work_dir.join("syn-rundir/clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
-        writeln!(sdc_file, "{}", sdc());
+        writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
         let module_file_path = self.work_dir.join(format!("{}.v", self.module));
         let module_string = module_file_path.display();
@@ -135,33 +136,33 @@ impl Genus {
     }
     //
 
-    fn predict_floorplan(innovus_path: &PathBuf) -> Step {
-        let mut command = String::new();
-        // In a real implementation, this would be based on a setting like
-        // `synthesis.genus.phys_flow_effort`. This example assumes "high" effort.
-
-        writeln!(&mut command, "set_db invs_temp_dir temp_invs");
-        // The innovus binary path would be a configurable parameter.
-        writeln!(
-            &mut command,
-            "set_db innovus_executable {}",
-            innovus_path.display()
-        );
-        writeln!(
-            &mut command,
-            "set_db predict_floorplan_enable_during_generic true"
-        );
-        writeln!(&mut command, "set_db physical_force_predict_floorplan true");
-        writeln!(&mut command, "set_db predict_floorplan_use_innovus true");
-
-        writeln!(&mut command, "predict_floorplan");
-
-        Step {
-            name: "predict_floorplan".to_string(),
-            command,
-            checkpoint: true,
-        }
-    }
+    // fn predict_floorplan(innovus_path: &PathBuf) -> Step {
+    //     let mut command = String::new();
+    //     // In a real implementation, this would be based on a setting like
+    //     // `synthesis.genus.phys_flow_effort`. This example assumes "high" effort.
+    //
+    //     writeln!(&mut command, "set_db invs_temp_dir temp_invs").expect("Failed to write");
+    //     // The innovus binary path would be a configurable parameter.
+    //     writeln!(
+    //         &mut command,
+    //         "set_db innovus_executable {}",
+    //         innovus_path.display()
+    //     ).expect("Failed to write");
+    //     writeln!(
+    //         &mut command,
+    //         "set_db predict_floorplan_enable_during_generic true"
+    //     ).expect("Failed to write");
+    //     writeln!(&mut command, "set_db physical_force_predict_floorplan true").expect("Failed to write");
+    //     writeln!(&mut command, "set_db predict_floorplan_use_innovus true").expect("Failed to write");
+    //
+    //     writeln!(&mut command, "predict_floorplan").expect("Failed to write");
+    //
+    //     Step {
+    //         name: "predict_floorplan".to_string(),
+    //         command,
+    //         checkpoint: true,
+    //     }
+    // }
 
     pub fn elaborate(&self) -> Step {
         Step {
@@ -211,7 +212,8 @@ impl Genus {
         end_design
         "#
             }
-        );
+        )
+        .expect("Failed to write");
         //create the power_spec cpf file with the contents hard coded
         let power_spec_file_string = power_spec_file_path.display();
         Step {
@@ -342,7 +344,8 @@ impl Tool for Genus {
     ) {
         let tcl_path = work_dir.clone().join("syn.tcl");
 
-        self.make_tcl_file(&tcl_path, steps, start_checkpoint);
+        self.make_tcl_file(&tcl_path, steps, start_checkpoint)
+            .expect("Failed to create syn.tcl");
 
         //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command

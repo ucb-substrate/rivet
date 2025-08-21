@@ -18,8 +18,7 @@ use rust_decimal_macros::dec;
 
 //maybe make an environment variable using std::sync::OnceLock and then use this root in the tcl
 //templating
-use std::sync::OnceLock;
-static SKY130_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
 
 pub fn sky130_innovus_settings() -> Step {
     Step {
@@ -160,7 +159,7 @@ set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hol
 
 //pub fn sram_cache_gen() -> String {}
 
-pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
+pub fn reference_flow(pdk_root: PathBuf, work_dir: impl AsRef<Path>, module: &str) -> Flow {
     let work_dir = work_dir.as_ref().to_path_buf();
     //print!("{}", syn_work_dir.join("checkpoints").into_os_string().into_string().expect("print fail"));
     //
@@ -225,19 +224,19 @@ pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
             // Corner 1: Slow-Slow for Setup
             MmmcCorner {
                 name: "ss_100C_1v60.setup".to_string(),
-                libs: vec![SKY130_ROOT.get().unwrap().join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib")],
+                libs: vec![pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib")],
                 temperature: dec!(100.0),
             },
             // Corner 2: Fast-Fast for Hold
             MmmcCorner {
                 name: "ff_n40C_1v95.hold".to_string(),
-                libs: vec![SKY130_ROOT.get().unwrap().join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib")],
+                libs: vec![pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib")],
                 temperature: dec!(-40.0),
             },
             // Corner 3: Typical-Typical for Hold, Dynamic Power, and Leakage
             MmmcCorner {
                 name: "tt_025C_1v80.extra".to_string(),
-                libs: vec![SKY130_ROOT.get().unwrap().join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib")],
+                libs: vec![pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib")],
                 temperature: dec!(25.0),
             },
         ],
@@ -273,7 +272,7 @@ pub fn reference_flow(work_dir: impl AsRef<Path>, module: &str) -> Flow {
                         genus.read_design_files(
                             con.clone(),
                             &PathBuf::from("/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef"),
-                            &SKY130_ROOT.get().unwrap().join(
+                            &pdk_root.join(
                                 "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
                             ),
                         ),

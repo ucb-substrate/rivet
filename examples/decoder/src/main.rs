@@ -81,6 +81,7 @@ fn main() {
     };
     //fix hardcoding the pathbuf of the reference flow
     let flow = reference_flow(
+        PathBuf::from("/home/ff/eecs251b/"),
         PathBuf::from("/scratch/cs199-cby/rivet/examples/decoder/src"),
         "decoder",
     );

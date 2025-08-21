@@ -264,8 +264,8 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: impl AsRef<Path>, module: &st
                 "syn".into(),
                 FlowNode {
                     tool: genus.clone(),
-                    work_dir: work_dir.join("syn-rundir").clone(),
-                    checkpoint_dir: work_dir.join("syn-rundir").join("checkpoints"),
+                    work_dir: work_dir.join("syn-rundir/").clone(),
+                    checkpoint_dir: work_dir.join("syn-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_options(),
                         dont_avoid_lib_cells("ICGX1"),
@@ -291,8 +291,8 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: impl AsRef<Path>, module: &st
                 "par".into(),
                 FlowNode {
                     tool: innovus.clone(),
-                    work_dir: work_dir.join("par-rundir"),
-                    checkpoint_dir: work_dir.join("par-rundir").join("checkpoints"),
+                    work_dir: work_dir.join("par-rundir/"),
+                    checkpoint_dir: work_dir.join("par-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_process(130),
                         innovus.read_design_files(con.clone()),

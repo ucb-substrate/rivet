@@ -89,8 +89,7 @@ impl Innovus {
     }
 
     pub fn read_design_files(&self, mmmc_conf: MmmcConfig) -> Step {
-        fs::create_dir(&self.work_dir.join("par-rundir")).expect("Failed to create directory");
-        let sdc_file_path = self.work_dir.join("par-rundir/clock_pin_constraints.sdc");
+        let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
@@ -491,6 +490,7 @@ impl Tool for Innovus {
         start_checkpoint: Option<PathBuf>,
         steps: Vec<AnnotatedStep>,
     ) {
+        fs::create_dir(&self.work_dir).expect("Failed to create directory");
         let tcl_path = self.work_dir.clone().join("par.tcl");
 
         self.make_tcl_file(&tcl_path, steps, start_checkpoint)

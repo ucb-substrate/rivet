@@ -110,8 +110,7 @@ impl Genus {
         //read physical -lef
         //read_hdl -sv {}
 
-        fs::create_dir(&self.work_dir.join("syn-rundir")).expect("Failed to create directory");
-        let sdc_file_path = self.work_dir.join("syn-rundir/clock_pin_constraints.sdc");
+        let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
@@ -342,6 +341,7 @@ impl Tool for Genus {
         start_checkpoint: Option<PathBuf>,
         steps: Vec<AnnotatedStep>,
     ) {
+        fs::create_dir(&self.work_dir).expect("Failed to create directory");
         let tcl_path = work_dir.clone().join("syn.tcl");
 
         self.make_tcl_file(&tcl_path, steps, start_checkpoint)

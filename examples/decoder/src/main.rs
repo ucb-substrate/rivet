@@ -85,5 +85,5 @@ fn main() {
         PathBuf::from("/scratch/cs199-cby/rivet/examples/decoder/src"),
         "decoder",
     );
-    flow.execute("syn", &config);
+    flow.execute("par", &config);
 }

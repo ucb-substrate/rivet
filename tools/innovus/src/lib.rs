@@ -490,7 +490,6 @@ impl Tool for Innovus {
         start_checkpoint: Option<PathBuf>,
         steps: Vec<AnnotatedStep>,
     ) {
-        fs::create_dir(&self.work_dir).expect("Failed to create directory");
         let tcl_path = self.work_dir.clone().join("par.tcl");
 
         self.make_tcl_file(&tcl_path, steps, start_checkpoint)

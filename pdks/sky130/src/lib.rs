@@ -257,7 +257,9 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: impl AsRef<Path>, module: &st
         leakage: "tt_025C_1v80.extra".to_string(),
     };
 
-
+    
+    fs::create_dir(work_dir.join("syn-rundir")).expect("Failed to create directory");
+    fs::create_dir(work_dir.join("par-rundir")).expect("Failed to create directory");
     Flow {
         nodes: HashMap::from_iter([
             (

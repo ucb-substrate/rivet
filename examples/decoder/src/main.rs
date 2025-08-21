@@ -68,7 +68,7 @@ fn main() {
     let mut tools = HashMap::new();
     let conf_start = ToolStart {
         step: "syn_map".to_string(),
-        checkpoint: Some(PathBuf::from("checkpoints/syn_map.cpf")),
+        checkpoint: None,
     };
     let conf = ToolConfig {
         start: Some(conf_start),
@@ -82,7 +82,7 @@ fn main() {
     //fix hardcoding the pathbuf of the reference flow
     let flow = reference_flow(
         PathBuf::from("/home/ff/eecs251b/"),
-        PathBuf::from("/scratch/cs199-cby/rivet/examples/decoder/src"),
+        PathBuf::from("/scratch/cs199-cbc/rivet/examples/decoder/src"),
         "decoder",
     );
     flow.execute("par", &config);

@@ -26,7 +26,6 @@ impl Innovus {
             module: modul,
         }
     }
-    //concatenate steps to a tcl file, par.tcl file, Innovus.tcl
 
     fn make_tcl_file(
         &self,
@@ -67,7 +66,6 @@ impl Innovus {
                     .into_os_string()
                     .into_string()
                     .expect("Failed to create checkpoint file");
-                //before had write_db -to_file pre_{astep.step.name} -> no checkpt dir
                 writeln!(
                     checkpoint_command,
                     "write_db -to_file {cdir}.cpf",
@@ -79,7 +77,6 @@ impl Innovus {
             }
             writeln!(tcl_file, "{}", astep.step.command)?;
         }
-        // writeln!(tcl_file, "puts \"{}\"", "quit")?;
         writeln!(tcl_file, "exit")?;
         use colored::Colorize;
 
@@ -96,10 +93,9 @@ impl Innovus {
         let netlist_file_path = netlist_path.clone();
         let netlist_string = netlist_file_path.display();
 
-        //fix the path fo the sky130 lef in my scratch folder
+        //TODO: fix the hardcoded cache lef
         Step {
             checkpoint: false,
-            //the sky130 cache filepath is hardcoded
             command: formatdoc!(
                 r#"
                     read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
@@ -194,7 +190,7 @@ impl Innovus {
         }
     }
 
-    //todo for non cadence standard cells which come pretapped
+    //TODO: for non cadence standard cells which do not come pretapped
     pub fn place_tap_cells() -> Step {
         Step {
             checkpoint: true,
@@ -202,7 +198,6 @@ impl Innovus {
             name: "place_tap_cells".into(),
         }
     }
-
 
     pub fn power_straps(straps: Vec<Layer>) -> Step {
         let mut definitions = String::new();
@@ -249,8 +244,6 @@ impl Innovus {
         }
     }
 
-    //possibly want to create a pin struct to pass in as a vec of pins which leads to the tcl
-    //commands for editing pins and so on
     pub fn place_pins(top_layer: &str, bot_layer: &str, assignments: Vec<PinAssignment>) -> Step {
         let mut place_pins_commands = String::new();
         writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true")
@@ -286,9 +279,6 @@ impl Innovus {
             )
             .expect("Failed to write");
         }
-        //currently hardcoded for decoder
-        //probably can have parameters for this command
-        //writeln!(place_pins_commands,"edit_pin -fixed_pin -pin * -hinst {module} -spread_type range -layer {{ met4 }} -side bottom -start {{ 30 0 }} -end {{ 0 0 }}");
 
         writeln!(place_pins_commands, "if {{[llength $all_ppins] ne 0}} {{assign_io_pins -move_fixed_pin -pins [get_db $all_ppins .net.name]}}").expect("Failed to write");
         writeln!(
@@ -368,7 +358,7 @@ impl Innovus {
         }
     }
 
-    //needs to be updated to be hierarchal
+    //TODO:needs to be updated to be hierarchal
     pub fn write_regs() -> Step {
         Step {
             checkpoint: true,
@@ -415,12 +405,11 @@ impl Innovus {
             close $write_regs_ir
             "#
             ),
-            //the paths for write hdl, write sdc, and write sdf need to be fixed
             name: "write_regs".into(),
         }
     }
 
-    //prob add a parameter of a list of excluded cells
+    //TODO: add a parameter of a list of excluded cells
     pub fn write_design(&self) -> Step {
         let par_rundir = self.work_dir.display();
         let module = self.module.clone();
@@ -465,8 +454,6 @@ impl Tool for Innovus {
         self.make_tcl_file(&tcl_path, steps, start_checkpoint)
             .expect("Failed to create par.tcl");
 
-        //this genus cli command is also hardcoded since I think there are some issues with the
-        //work_dir input and also the current_dir attribute of the command
         let status = Command::new("innovus")
             .args(["-file", tcl_path.to_str().unwrap(), "-stylus"])
             .current_dir(work_dir)

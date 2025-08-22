@@ -159,8 +159,7 @@ set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hol
 
 //pub fn sram_cache_gen() -> String {}
 
-pub fn reference_flow(pdk_root: PathBuf, work_dir: impl AsRef<Path>, module: &str) -> Flow {
-    let work_dir = work_dir.as_ref().to_path_buf();
+pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flow {
     //print!("{}", syn_work_dir.join("checkpoints").into_os_string().into_string().expect("print fail"));
     //
     let genus = Arc::new(Genus::new(&work_dir.join("syn-rundir"), module));
@@ -215,9 +214,11 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: impl AsRef<Path>, module: &st
         }
     ];
 
+    let sdc_file_path = work_dir.clone().join("syn-rundir/clock_pin_constraints.sdc");
+
     let con = MmmcConfig {
         // Corresponds to: create_constraint_mode ... -sdc_files [...]
-        sdc_file: PathBuf::from("/home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/clock_constraints_fragment.sdc"),
+        sdc_file: sdc_file_path,
 
         // This vector defines all the corners used in the analysis.
         corners: vec![

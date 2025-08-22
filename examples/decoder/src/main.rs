@@ -67,7 +67,7 @@ fn main() {
     use rivet::flow::ToolStart;
     let mut tools = HashMap::new();
     let conf_start = ToolStart {
-        step: "syn_map".to_string(),
+        step: "set_default_options".to_string(),
         checkpoint: None,
     };
     let conf = ToolConfig {

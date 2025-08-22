@@ -60,11 +60,11 @@ pub fn mmmc(config: MmmcConfig) -> String {
     .unwrap();
 
     for corner in config.corners.iter() {
-        let library_set_name = format!("{}.set", corner.name);
-        let timing_cond_name = format!("{}.cond", corner.name);
-        let rc_corner_name = format!("{}.rc", corner.name);
-        let delay_corner_name = format!("{}.delay", corner.name);
-        let analysis_view_name = format!("{}.view", corner.name);
+        let library_set_name = format!("{}_set", corner.name);
+        let timing_cond_name = format!("{}_cond", corner.name);
+        let rc_corner_name = format!("{}_rc", corner.name);
+        let delay_corner_name = format!("{}_delay", corner.name);
+        let analysis_view_name = format!("{}_view", corner.name);
         write!(
             &mut mmmc,
             "create_library_set -name {library_set_name} -timing [list"
@@ -98,17 +98,17 @@ pub fn mmmc(config: MmmcConfig) -> String {
 
     write!(&mut mmmc, "set_analysis_view -setup {{").unwrap();
     for corner in config.setup.iter() {
-        write!(&mut mmmc, " {corner}.view").unwrap();
+        write!(&mut mmmc, " {corner}_view").unwrap();
     }
     write!(&mut mmmc, " }}").unwrap();
     write!(&mut mmmc, " -hold {{").unwrap();
     for corner in config.hold.iter() {
-        write!(&mut mmmc, " {corner}.view").unwrap();
+        write!(&mut mmmc, " {corner}_view").unwrap();
     }
     write!(&mut mmmc, " }}").unwrap();
     writeln!(
         &mut mmmc,
-        " -dynamic {}.view -leakage {}.view",
+        " -dynamic {}_view -leakage {}_view",
         config.dynamic, config.leakage,
     )
     .unwrap();

@@ -113,7 +113,7 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/vim,macos,windows,linux,rust
 
-
-syn_rundir/
+par-rundir/
+syn-rundir/
 build/
 target/

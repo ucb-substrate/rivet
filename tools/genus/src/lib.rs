@@ -26,7 +26,6 @@ impl Genus {
             module: modul,
         }
     }
-    //concatenate steps to a tcl file, syn.tcl file, genus.tcl
 
     fn make_tcl_file(
         &self,
@@ -42,7 +41,6 @@ impl Genus {
         )?;
 
         if let Some(actual_checkpt_dir) = checkpoint_dir {
-            //there is actually a checkpoint to read from
             use colored::Colorize;
             println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
             let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
@@ -67,30 +65,23 @@ impl Genus {
                 //generate tcl for checkpointing
                 let mut checkpoint_command = String::new();
 
+                //TODO: have the checkpoint file name contain pre_stepname
                 let checkpoint_file = astep
                     .checkpoint_path
                     .into_os_string()
                     .into_string()
                     .expect("Failed to create checkpoint file");
-                //before had write_db -to_file pre_{astep.step.name} -> no checkpt dir
                 writeln!(
                     checkpoint_command,
                     "write_db -to_file {cdir}.cpf",
                     cdir = checkpoint_file
                 )
                 .expect("Failed to write");
-                //                 writeln!(
-                //                     checkpoint_command,
-                //                     "write_db -to_file pre_{}",
-                //                     astep.step.name
-                //                 );
-                //writeln!(tcl_file, "puts \"{}\"", checkpoint_command)?;
+
                 writeln!(tcl_file, "{}", checkpoint_command)?;
             }
-            // writeln!(tcl_file, "puts\"{}\"", astep.step.command.to_string())?;
             writeln!(tcl_file, "{}", astep.step.command)?;
         }
-        // writeln!(tcl_file, "puts \"{}\"", "quit")?;
         writeln!(tcl_file, "quit")?;
         use colored::Colorize;
 
@@ -107,9 +98,6 @@ impl Genus {
         pdk_lef: &PathBuf,
     ) -> Step {
         // Write SDC and mmmc.tcl, run commands up to read_hdl.
-        //read mmmc.tcl
-        //read physical -lef
-        //read_hdl -sv {}
 
         let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         println!("{}", sdc_file_path.display());
@@ -120,10 +108,8 @@ impl Genus {
         let module_string = module_file_path.display();
         let sram_macro = sram_macro_lef.display();
         let pdk = pdk_lef.display();
-        //fix the path fo the sky130 lef in my scratch folder
         Step {
             checkpoint: false,
-            //the sky130 cache filepath is hardcoded
             command: formatdoc!(
                 r#"
                 {mmmc_tcl}
@@ -135,7 +121,6 @@ impl Genus {
             name: "read_design_files".into(),
         }
     }
-    //
 
     // fn predict_floorplan(innovus_path: &PathBuf) -> Step {
     //     let mut command = String::new();
@@ -215,7 +200,6 @@ impl Genus {
             }
         )
         .expect("Failed to write");
-        //create the power_spec cpf file with the contents hard coded
         let power_spec_file_string = power_spec_file_path.display();
         Step {
             checkpoint: true,
@@ -263,8 +247,6 @@ impl Genus {
     }
 
     pub fn write_design(&self) -> Step {
-        // All write TCL commands
-        // this includes write regs, write reports, write outputs
         let module = self.module.clone();
         Step {
             checkpoint: true,
@@ -333,10 +315,6 @@ impl Genus {
 }
 
 impl Tool for Genus {
-    //fn work_dir(&self) -> PathBuf {
-    //    self.work_dir.clone()
-    //}
-    // genus -files syn.tcl -no_gui
     fn invoke(
         &self,
         work_dir: PathBuf,
@@ -348,8 +326,6 @@ impl Tool for Genus {
         self.make_tcl_file(&tcl_path, steps, start_checkpoint)
             .expect("Failed to create syn.tcl");
 
-        //this genus cli command is also hardcoded since I think there are some issues with the
-        //work_dir input and also the current_dir attribute of the command
         let status = Command::new("genus")
             .args(["-f", tcl_path.to_str().unwrap()])
             .current_dir(work_dir)

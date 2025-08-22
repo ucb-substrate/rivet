@@ -16,10 +16,6 @@ use rivet::flow::{Flow, FlowNode, Step};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-//maybe make an environment variable using std::sync::OnceLock and then use this root in the tcl
-//templating
-
-
 pub fn sky130_innovus_settings() -> Step {
     Step {
         checkpoint: true,
@@ -116,55 +112,12 @@ fn sky130_connect_nets() -> Step {
     }
 }
 
-fn sky130_cds_mmmc(sdc_file: impl AsRef<Path>) -> String {
-    let sdc_file = sdc_file.as_ref();
-    //the sdc files need their paths not hardcoded to the chipyard directory
-    formatdoc!(
-        r#"puts "create_constraint_mode -name my_constraint_mode -sdc_files [list /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/clock_constraints_fragment.sdc /home/ff/eecs251b/sp25-chipyard/vlsi/build/lab4/syn-rundir/pin_constraints_fragment.sdc] "
-create_constraint_mode -name my_constraint_mode -sdc_files {sdc_file:?}
-puts "create_library_set -name ss_100C_1v60.setup_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]"
-create_library_set -name ss_100C_1v60.setup_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib]
-puts "create_timing_condition -name ss_100C_1v60.setup_cond -library_sets [list ss_100C_1v60.setup_set]"
-create_timing_condition -name ss_100C_1v60.setup_cond -library_sets [list ss_100C_1v60.setup_set]
-puts "create_rc_corner -name ss_100C_1v60.setup_rc -temperature 100.0 "
-create_rc_corner -name ss_100C_1v60.setup_rc -temperature 100.0
-puts "create_delay_corner -name ss_100C_1v60.setup_delay -timing_condition ss_100C_1v60.setup_cond -rc_corner ss_100C_1v60.setup_rc"
-create_delay_corner -name ss_100C_1v60.setup_delay -timing_condition ss_100C_1v60.setup_cond -rc_corner ss_100C_1v60.setup_rc
-puts "create_analysis_view -name ss_100C_1v60.setup_view -delay_corner ss_100C_1v60.setup_delay -constraint_mode my_constraint_mode"
-create_analysis_view -name ss_100C_1v60.setup_view -delay_corner ss_100C_1v60.setup_delay -constraint_mode my_constraint_mode
-puts "create_library_set -name ff_n40C_1v95.hold_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib]"
-create_library_set -name ff_n40C_1v95.hold_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib]
-puts "create_timing_condition -name ff_n40C_1v95.hold_cond -library_sets [list ff_n40C_1v95.hold_set]"
-create_timing_condition -name ff_n40C_1v95.hold_cond -library_sets [list ff_n40C_1v95.hold_set]
-puts "create_rc_corner -name ff_n40C_1v95.hold_rc -temperature -40.0 "
-create_rc_corner -name ff_n40C_1v95.hold_rc -temperature -40.0
-puts "create_delay_corner -name ff_n40C_1v95.hold_delay -timing_condition ff_n40C_1v95.hold_cond -rc_corner ff_n40C_1v95.hold_rc"
-create_delay_corner -name ff_n40C_1v95.hold_delay -timing_condition ff_n40C_1v95.hold_cond -rc_corner ff_n40C_1v95.hold_rc
-puts "create_analysis_view -name ff_n40C_1v95.hold_view -delay_corner ff_n40C_1v95.hold_delay -constraint_mode my_constraint_mode"
-create_analysis_view -name ff_n40C_1v95.hold_view -delay_corner ff_n40C_1v95.hold_delay -constraint_mode my_constraint_mode
-puts "create_library_set -name tt_025C_1v80.extra_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib]"
-create_library_set -name tt_025C_1v80.extra_set -timing [list /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib]
-puts "create_timing_condition -name tt_025C_1v80.extra_cond -library_sets [list tt_025C_1v80.extra_set]"
-create_timing_condition -name tt_025C_1v80.extra_cond -library_sets [list tt_025C_1v80.extra_set]
-puts "create_rc_corner -name tt_025C_1v80.extra_rc -temperature 25.0 "
-create_rc_corner -name tt_025C_1v80.extra_rc -temperature 25.0
-puts "create_delay_corner -name tt_025C_1v80.extra_delay -timing_condition tt_025C_1v80.extra_cond -rc_corner tt_025C_1v80.extra_rc"
-create_delay_corner -name tt_025C_1v80.extra_delay -timing_condition tt_025C_1v80.extra_cond -rc_corner tt_025C_1v80.extra_rc
-puts "create_analysis_view -name tt_025C_1v80.extra_view -delay_corner tt_025C_1v80.extra_delay -constraint_mode my_constraint_mode"
-create_analysis_view -name tt_025C_1v80.extra_view -delay_corner tt_025C_1v80.extra_delay -constraint_mode my_constraint_mode
-puts "set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hold_view tt_025C_1v80.extra_view }} -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"
-set_analysis_view -setup {{ ss_100C_1v60.setup_view }} -hold {{ ff_n40C_1v95.hold_view tt_025C_1v80.extra_view }} -dynamic tt_025C_1v80.extra_view -leakage tt_025C_1v80.extra_view"#
-    )
-}
-
 //pub fn sram_cache_gen() -> String {}
 
 pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flow {
-    //print!("{}", syn_work_dir.join("checkpoints").into_os_string().into_string().expect("print fail"));
-    //
     let genus = Arc::new(Genus::new(&work_dir.join("syn-rundir"), module));
     let innovus = Arc::new(Innovus::new(&work_dir.join("par-rundir"), module));
-    
+
     let filler_cells = vec![
         "FILL0".into(),
         "FILL1".into(),
@@ -214,55 +167,52 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
         }
     ];
 
-    let sdc_file_path = work_dir.clone().join("syn-rundir/clock_pin_constraints.sdc");
+    let sdc_file_path = work_dir
+        .clone()
+        .join("syn-rundir/clock_pin_constraints.sdc");
 
     let con = MmmcConfig {
-        // Corresponds to: create_constraint_mode ... -sdc_files [...]
         sdc_file: sdc_file_path,
 
-        // This vector defines all the corners used in the analysis.
         corners: vec![
-            // Corner 1: Slow-Slow for Setup
             MmmcCorner {
                 name: "ss_100C_1v60.setup".to_string(),
-                libs: vec![pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib")],
+                libs: vec![pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib")],
                 temperature: dec!(100.0),
             },
-            // Corner 2: Fast-Fast for Hold
             MmmcCorner {
                 name: "ff_n40C_1v95.hold".to_string(),
-                libs: vec![pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib")],
+                libs: vec![pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib")],
                 temperature: dec!(-40.0),
             },
-            // Corner 3: Typical-Typical for Hold, Dynamic Power, and Leakage
             MmmcCorner {
                 name: "tt_025C_1v80.extra".to_string(),
-                libs: vec![pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib")],
+                libs: vec![pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib")],
                 temperature: dec!(25.0),
             },
         ],
 
-        // Corresponds to: set_analysis_view -setup {{ ss_100C_1v60.setup_view }}
         setup: vec!["ss_100C_1v60.setup".to_string()],
 
-        // Corresponds to: set_analysis_view -hold {{ ff_n40C_1v95.hold_view tt_025C_1v80.extra_view }}
         hold: vec![
             "ff_n40C_1v95.hold".to_string(),
             "tt_025C_1v80.extra".to_string(),
         ],
 
-        // Corresponds to: set_analysis_view ... -dynamic tt_025C_1v80.extra_view
         dynamic: "tt_025C_1v80.extra".to_string(),
-        
-        // Corresponds to: set_analysis_view ... -leakage tt_025C_1v80.extra_view
+
         leakage: "tt_025C_1v80.extra".to_string(),
     };
 
-    
     fs::create_dir(work_dir.join("syn-rundir")).expect("Failed to create directory");
     fs::create_dir(work_dir.join("par-rundir")).expect("Failed to create directory");
-    fs::create_dir(work_dir.join("syn-rundir/").join("checkpoints/")).expect("Failed to create directory");
-    fs::create_dir(work_dir.join("par-rundir/").join("checkpoints/")).expect("Failed to create directory");
+    fs::create_dir(work_dir.join("syn-rundir/").join("checkpoints/"))
+        .expect("Failed to create directory");
+    fs::create_dir(work_dir.join("par-rundir/").join("checkpoints/"))
+        .expect("Failed to create directory");
 
     Flow {
         nodes: HashMap::from_iter([

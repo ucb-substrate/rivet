@@ -468,7 +468,7 @@ impl Tool for Innovus {
         //this genus cli command is also hardcoded since I think there are some issues with the
         //work_dir input and also the current_dir attribute of the command
         let status = Command::new("innovus")
-            .args(["-f", tcl_path.to_str().unwrap()])
+            .args(["-file", tcl_path.to_str().unwrap()])
             .current_dir(work_dir)
             .status()
             .expect("Failed to execute par.tcl");

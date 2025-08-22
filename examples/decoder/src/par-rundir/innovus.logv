@@ -1,0 +1,64 @@
+[08/22 11:46:11      0s] 
+[08/22 11:46:11      0s] Cadence Innovus(TM) Implementation System.
+[08/22 11:46:11      0s] Copyright 2021 Cadence Design Systems, Inc. All rights reserved worldwide.
+[08/22 11:46:11      0s] 
+[08/22 11:46:11      0s] Version:	v21.17-s075_1, built Wed Mar 15 11:17:40 PDT 2023
+[08/22 11:46:11      0s] Options:	-file /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl 
+[08/22 11:46:11      0s] Date:		Fri Aug 22 11:46:11 2025
+[08/22 11:46:11      0s] Host:		eda-4.EECS.Berkeley.EDU (x86_64 w/Linux 4.18.0-553.69.1.el8_10.x86_64) (48cores*96cpus*AMD EPYC 9454 48-Core Processor 1024KB)
+[08/22 11:46:11      0s] OS:		Red Hat Enterprise Linux 8.10 (Ootpa)
+[08/22 11:46:11      0s] 
+[08/22 11:46:11      0s] License:
+[08/22 11:46:11      0s] 		[11:46:11.499059] Configured Lic search path (21.01-s002): 5280@license-srv.eecs.berkeley.edu:2100@license-srv.eecs.berkeley.edu:1717@license-srv.eecs.berkeley.edu
+
+[08/22 11:46:11      0s] 		invs	Innovus Implementation System	21.1	checkout succeeded
+[08/22 11:46:11      0s] 		8 CPU jobs allowed with the current license(s). Use setMultiCpuUsage to set your required CPU count.
+[08/22 11:46:11      0s] **WARN: (IMPSYT-1507):	The display is invalid and will start in no window mode
+[08/22 11:46:23      9s] Reset Parastics called with the command setExtractRCMode -reset@(#)CDS: Innovus v21.17-s075_1 (64bit) 03/15/2023 11:17 (Linux 3.10.0-693.el7.x86_64)
+[08/22 11:46:26     11s] @(#)CDS: NanoRoute 21.17-s075_1 NR230308-2354/21_17-UB (database version 18.20.604) {superthreading v2.17}
+[08/22 11:46:26     11s] @(#)CDS: AAE 21.17-s026 (64bit) 03/15/2023 (Linux 3.10.0-693.el7.x86_64)
+[08/22 11:46:26     11s] @(#)CDS: CTE 21.17-s025_1 () Mar 14 2023 11:00:06 ( )
+[08/22 11:46:26     11s] @(#)CDS: SYNTECH 21.17-s007_1 () Feb 20 2023 06:56:35 ( )
+[08/22 11:46:26     11s] @(#)CDS: CPE v21.17-s068
+[08/22 11:46:26     11s] @(#)CDS: IQuantus/TQuantus 21.1.1-s939 (64bit) Wed Nov 9 09:34:24 PST 2022 (Linux 3.10.0-693.el7.x86_64)
+[08/22 11:46:26     11s] @(#)CDS: OA 22.60-p087 Thu Feb  9 09:35:26 2023
+[08/22 11:46:26     11s] @(#)CDS: SGN 20.10-d001 (01-Jun-2020) (64 bit executable, Qt5.9.0)
+[08/22 11:46:26     11s] @(#)CDS: RCDB 11.15.0
+[08/22 11:46:26     11s] @(#)CDS: STYLUS 21.12-s019_1 (12/20/2022 05:13 PST)
+[08/22 11:46:26     11s] @(#)CDS: SystemPlanner-21.17Rel-10251 (21.17) (2023-02-02 17:22:51+0800)
+[08/22 11:46:26     11s] Create and set the environment variable TMPDIR to /tmp/innovus_temp_637871_eda-4.EECS.Berkeley.EDU_cs199-cbc_SdUwEd.
+
+[08/22 11:46:26     11s] Change the soft stacksize limit to 0.2%RAM (1546 mbytes). Set global soft_stack_size_limit to change the value.
+[08/22 11:46:27     12s] 
+[08/22 11:46:27     12s] **INFO:  MMMC transition support version v31-84 
+[08/22 11:46:27     12s] 
+[08/22 11:46:27     12s] <CMD> set_global _enable_mmmc_by_default_flow      $CTE::mmmc_default
+[08/22 11:46:27     12s] <CMD> suppressMessage ENCEXT-2799
+[08/22 11:46:27     12s] <CMD> getVersion
+[08/22 11:46:28     12s] [INFO] Loading Pegasus 22.14 fill procedures
+[08/22 11:46:29     12s] **WARN: Tk package not loaded. The Pegasus fill DRC monitor is disabled.
+[08/22 11:46:29     12s] Sourcing file "/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl" ...
+[08/22 11:46:29     12s] <CMD> setDesignMode -process 130
+[08/22 11:46:29     12s] ##  Process: 130           (User Set)               
+[08/22 11:46:29     12s] ##     Node: (not set)                           
+[08/22 11:46:29     12s] 
+##  Check design process and node:  
+##  Design tech node is not set.
+
+[08/22 11:46:29     12s] Applying the recommended capacitance filtering threshold values for 130nm process node: total_c_th=0, relative_c_th=1 and coupling_c_th=0.4.
+[08/22 11:46:29     12s] 	These values will be used by all post-route extraction engines, including TQuantus, IQuantus and Quantus QRC extraction.
+[08/22 11:46:29     12s] 	Capacitance filtering mode(-capFilterMode option of the setExtractRCMode) is 'relAndCoup' for all engines.
+[08/22 11:46:29     12s] 	The accuracy mode for postRoute effortLevel low extraction will be set to 'standard'.
+[08/22 11:46:29     12s] 	Default value for EffortLevel(-effortLevel option of the setExtractRCMode) in postRoute extraction mode is 'low'.
+[08/22 11:46:29     12s] **ERROR: (IMPSYT-6692):	Invalid return code while executing '/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl' was returned and script processing was stopped. Review the following error in '/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl' then restart.
+[08/22 11:46:29     12s] **ERROR: (IMPSYT-6693):	Error message: /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl: invalid command name "set_app_options".
+[08/22 11:46:46     12s] 
+[08/22 11:46:46     12s] *** Memory Usage v#1 (Current mem = 959.641M, initial mem = 486.941M) ***
+[08/22 11:46:46     12s] 
+[08/22 11:46:46     12s] *** Summary of all messages that are not suppressed in this session:
+[08/22 11:46:46     12s] Severity  ID               Count  Summary                                  
+[08/22 11:46:46     12s] ERROR     IMPSYT-6692          1  Invalid return code while executing '%s'...
+[08/22 11:46:46     12s] ERROR     IMPSYT-6693          1  Error message: %s: %s.                   
+[08/22 11:46:46     12s] *** Message Summary: 0 warning(s), 2 error(s)
+[08/22 11:46:46     12s] 
+[08/22 11:46:46     12s] --- Ending "Innovus" (totcpu=0:00:12.8, real=0:00:35.0, mem=959.6M) ---

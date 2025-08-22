@@ -1,30 +1,33 @@
 
 Cadence Innovus(TM) Implementation System.
-Copyright 2021 Cadence Design Systems, Inc. All rights reserved worldwide.
+Copyright 2022 Cadence Design Systems, Inc. All rights reserved worldwide.
 
-Version:	v21.17-s075_1, built Wed Mar 15 11:17:40 PDT 2023
-Options:	-file /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl 
-Date:		Fri Aug 22 11:46:11 2025
+Version:	v22.11-s119_1, built Fri Jan 20 13:36:23 PST 2023
+Options:	-file /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl -stylus 
+Date:		Fri Aug 22 13:34:59 2025
 Host:		eda-4.EECS.Berkeley.EDU (x86_64 w/Linux 4.18.0-553.69.1.el8_10.x86_64) (48cores*96cpus*AMD EPYC 9454 48-Core Processor 1024KB)
-OS:		Red Hat Enterprise Linux 8.10 (Ootpa)
+OS:		Red Hat Enterprise Linux release 8.10 (Ootpa)
 
 License:
-		[11:46:11.499059] Configured Lic search path (21.01-s002): 5280@license-srv.eecs.berkeley.edu:2100@license-srv.eecs.berkeley.edu:1717@license-srv.eecs.berkeley.edu
+		[13:34:59.012236] Configured Lic search path (21.01-s002): 5280@license-srv.eecs.berkeley.edu:5280@bisc.EECS.Berkeley.EDU:2100@license-srv.eecs.berkeley.edu:1717@license-srv.eecs.berkeley.edu
 
-		invs	Innovus Implementation System	21.1	checkout succeeded
-		8 CPU jobs allowed with the current license(s). Use setMultiCpuUsage to set your required CPU count.
+		invs	Innovus Implementation System	22.1	checkout succeeded
+		8 CPU jobs allowed with the current license(s). Use set_multi_cpu_usage to set your required CPU count.
 **WARN: (IMPSYT-1507):	The display is invalid and will start in no window mode
+
+
+Create and set the environment variable TMPDIR to /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/innovus_temp_730089_eda-4.EECS.Berkeley.EDU_cs199-cbc_x10ECg.
+
 Change the soft stacksize limit to 0.2%RAM (1546 mbytes). Set global soft_stack_size_limit to change the value.
 
 **INFO:  MMMC transition support version v31-84 
 
-<CMD> set_global _enable_mmmc_by_default_flow      $CTE::mmmc_default
-<CMD> suppressMessage ENCEXT-2799
-<CMD> getVersion
 [INFO] Loading Pegasus 22.14 fill procedures
 **WARN: Tk package not loaded. The Pegasus fill DRC monitor is disabled.
-Sourcing file "/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl" ...
-<CMD> setDesignMode -process 130
+#@ Processing -files option
+@innovus 1> source /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl
+#@ Begin verbose source (pre): source /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl
+@@file 1: set_db design_process_node 130 
 ##  Process: 130           (User Set)               
 ##     Node: (not set)                           
 
@@ -33,13 +36,84 @@ Sourcing file "/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl"
 
 Applying the recommended capacitance filtering threshold values for 130nm process node: total_c_th=0, relative_c_th=1 and coupling_c_th=0.4.
 	These values will be used by all post-route extraction engines, including TQuantus, IQuantus and Quantus QRC extraction.
-	Capacitance filtering mode(-capFilterMode option of the setExtractRCMode) is 'relAndCoup' for all engines.
-	The accuracy mode for postRoute effortLevel low extraction will be set to 'standard'.
-	Default value for EffortLevel(-effortLevel option of the setExtractRCMode) in postRoute extraction mode is 'low'.
+	Capacitance filtering mode(extract_rc_cap_filter_mode option of the set_db) is 'relative_and_coupling' for all engines.
+	The accuracy mode for post_route extract_rc_effort_level low extraction will be set to 'standard'.
+	Default value for EffortLevel(extract_rc_effort_level option of the set_db) in post_route extraction mode is 'low'.
+@@file 2: set_multi_cpu_usage -local_cpu 12
+@@file 3: set_db timing_analysis_cppr both
+@@file 4: set_db timing_analysis_type ocv
+@file 5:
+@@file 6: init_design
+**ERROR: (IMPIMEX-12):	'init_design' failed. You are missing one or more of the required commands before running init_design.
+The MMMC init sequence looks like this: 
+read_mmmc top.mmmc 
+read_physical -lef {tech.lef stdcell.lef}   #optional in Tempus, required for Innovus 
+read_netlist top.v 
+read_power_intent -1801 top.1801	    #only for MSV designs 
+init_design 
+
+Tempus also supports a single-mode timing init sequence with no MMMC file like this: 
+read_libs all.lib 
+read_netlist top.v 
+read_sdc top.sdc 
+init_design 
+
+See the 'Stylus Common UI Initialization' section in the 'Design Import and Export Capabilities' chapter of the Innovus Stylus 
+Common UI User Guide for more details.
+**ERROR: (IMPSE-110):	File '/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl' line 6: errors out.
+#@ End verbose source /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl
 **ERROR: (IMPSYT-6692):	Invalid return code while executing '/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl' was returned and script processing was stopped. Review the following error in '/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl' then restart.
-**ERROR: (IMPSYT-6693):	Error message: /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl: invalid command name "set_app_options".
+Error info: /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl: 
+    while executing
+"error [putError $::imexEmsHandleId 12]"
+    (procedure "::IMEX::check_initialization_state" line 44)
+    invoked from within
+"::IMEX::check_initialization_state "init_design""
+    (procedure "IMEX::init_design_rbc" line 71)
+    invoked from within
+"IMEX::init_design_rbc"
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel [concat IMEX::init_design_rbc $args] "
+    (procedure "se::smap::IMEX::init_design_rbc" line 1)
+    invoked from within
+"init_design"
+    (file "/scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl" line 6)
+    invoked from within
+"::se_source_orig /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl"
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel [concat ::se_source_orig $args]"
+    invoked from within
+"if {[::SE::source_verbose_file_state $file_name] == 1} {
+              ::SE::source_verbose_start $file_name
+              set st [uplevel [concat ::s..."
+    invoked from within
+"if {$useTclVerbose} {
+          # use tcl internal method
+          set st ""
+          if {[::SE::source_verbose_file_state $file_name] == 1} {
+     ..."
+    invoked from within
+"if {$largeFile == 1} {
+    if {$enableVerbose == 0 && [::SE::isEchoFile] == 1} {
+      $putCmd "Sourcing $file_name"
+    }
+    set st [uplevel [concat..."
+    (procedure "source" line 167)
+    invoked from within
+"source /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl"
+    invoked from within
+"::se::run_command_from_console "source /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl""
+    invoked from within
+"eval_novus {::se::run_command_from_console "source /scratch/cs199-cbc/rivet/examples/decoder/src/par-rundir/par.tcl"}"
+    (in namespace inscope "::" script line 1)
+    invoked from within
+"namespace inscope :: eval_novus "::se::run_command_from_console \"source $fileName\""".
+@innovus 2> exit
 
-*** Memory Usage v#1 (Current mem = 959.641M, initial mem = 486.941M) ***
-*** Message Summary: 0 warning(s), 2 error(s)
 
---- Ending "Innovus" (totcpu=0:00:12.8, real=0:00:35.0, mem=959.6M) ---
+*** Memory Usage v#1 (Current mem = 1282.766M, initial mem = 633.051M) ***
+*** Message Summary: 0 warning(s), 3 error(s)
+
+--- Ending "Innovus" (totcpu=0:00:17.9, real=0:53:42, mem=1282.8M) ---

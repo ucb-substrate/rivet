@@ -1,7 +1,7 @@
 ################################################################################
 #
 # Init setup file
-# Created by Genus(TM) Synthesis Solution on 08/22/2025 11:46:09
+# Created by Genus(TM) Synthesis Solution on 08/22/2025 13:34:58
 #
 ################################################################################
 if { ![is_common_ui_mode] } { error "ERROR: This script requires common_ui to be active."}
@@ -15,4 +15,4 @@ read_netlist genus_invs_des/genus.v.gz
 
 read_power_intent  -cpf genus_invs_des/genus.cpf
 
-init_design -skip_sdc_read
+init_design

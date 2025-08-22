@@ -189,7 +189,6 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
     };
 
     let layers = vec![
-
         Layer {
             top: "met1".into(),
             bot: "met1".into(),
@@ -257,8 +256,7 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
         // Corresponds to: set_analysis_view ... -leakage tt_025C_1v80.extra_view
         leakage: "tt_025C_1v80.extra".to_string(),
     };
-
-    
+     
     fs::create_dir(work_dir.join("syn-rundir")).expect("Failed to create directory");
     fs::create_dir(work_dir.join("par-rundir")).expect("Failed to create directory");
     fs::create_dir(work_dir.join("syn-rundir/").join("checkpoints/")).expect("Failed to create directory");
@@ -302,8 +300,8 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
                     checkpoint_dir: work_dir.join("par-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_process(130),
-                        innovus.read_design_files(&work_dir.join("/syn-rundir/{module}.mapped.v"), con.clone()),
                         Innovus::init_design(),
+                        innovus.read_design_files(&work_dir.join("/syn-rundir/{module}.mapped.v"), con.clone()),
                         Innovus::innovus_settings(),
                         sky130_innovus_settings(),
                         innovus.floorplan_design(),

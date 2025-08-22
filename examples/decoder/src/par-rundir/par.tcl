@@ -1,8 +1,9 @@
 set_db design_process_node 130 
-set_app_options -name distributed.local_cpu -value 12
+set_multi_cpu_usage -local_cpu 12
 set_db timing_analysis_cppr both
 set_db timing_analysis_type ocv
 
+init_design
 read_physical -lef {/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }
 create_constraint_mode -name my_constraint_mode -sdc_files [list "/scratch/cs199-cbc/rivet/examples/decoder/src/syn-rundir/clock_pin_constraints.sdc"]
 create_library_set -name ss_100C_1v60.setup_set -timing [list "/home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib"]
@@ -24,7 +25,6 @@ set_analysis_view -setup { ss_100C_1v60.setup_view } -hold { ff_n40C_1v95.hold_v
 
 read_netlist /syn-rundir/{module}.mapped.v -top decoder
 
-init_design
 set_db design_bottom_routing_layer 2
 set_db design_top_routing_layer 6
 set_db design_flow_effort standard

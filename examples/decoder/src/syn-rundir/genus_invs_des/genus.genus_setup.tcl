@@ -1,15 +1,15 @@
 ################################################################################
 #
 # Genus(TM) Synthesis Solution setup file
-# Created by Genus(TM) Synthesis Solution 21.17-s066_1
-#   on 08/22/2025 11:46:09
+# Created by Genus(TM) Synthesis Solution 22.11-s104_1
+#   on 08/22/2025 13:34:58
 #
 # This file can only be run in Genus Common UI mode.
 #
 ################################################################################
 
 
-# This script is intended for use with Genus(TM) Synthesis Solution version 21.17-s066_1
+# This script is intended for use with Genus(TM) Synthesis Solution version 22.11-s104_1
 
 
 # Remove Existing Design
@@ -39,8 +39,8 @@ puts "\n** Restoration Completed **\n"
 # Data Integrity Check
 ################################################################################
 # program version
-if {"[string_representation [::legacy::get_attribute program_version /]]" != "21.17-s066_1"} {
-   mesg_send [::legacy::find -message /messages/PHYS/PHYS-91] "golden program_version: 21.17-s066_1  current program_version: [string_representation [::legacy::get_attribute program_version /]]"
+if {"[string_representation [::legacy::get_attribute program_version /]]" != "22.11-s104_1"} {
+   mesg_send [::legacy::find -message /messages/PHYS/PHYS-91] "golden program_version: 22.11-s104_1  current program_version: [string_representation [::legacy::get_attribute program_version /]]"
 }
 # license
 if {"[string_representation [::legacy::get_attribute startup_license /]]" != "Genus_Synthesis"} {

@@ -1,10 +1,10 @@
 (DELAYFILE
   (SDFVERSION  "OVI 3.0")
   (DESIGN      "decoder")
-  (DATE        "Fri Aug 22 11:46:09 PDT 2025")
+  (DATE        "Fri Aug 22 13:34:57 PDT 2025")
   (VENDOR      "Cadence, Inc.")
   (PROGRAM     "Genus(TM) Synthesis Solution")
-  (VERSION     "21.17-s066_1")
+  (VERSION     "22.11-s104_1")
   (DIVIDER     .)
   (VOLTAGE     ::1.62)
   (PROCESS     "::1.0")
@@ -12,7 +12,7 @@
   (TIMESCALE   1ps)
   (CELL
      (CELLTYPE "INVX16")
-     (INSTANCE g175)
+     (INSTANCE g178)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.3))
@@ -22,7 +22,47 @@
   )
   (CELL
      (CELLTYPE "INVX16")
-     (INSTANCE g159)
+     (INSTANCE g162)
+     (DELAY
+        (ABSOLUTE
+          (PORT A (::0.3))
+          (IOPATH A Y (::609) (::440))
+        )
+     )
+  )
+  (CELL
+     (CELLTYPE "INVX16")
+     (INSTANCE g164)
+     (DELAY
+        (ABSOLUTE
+          (PORT A (::0.3))
+          (IOPATH A Y (::608) (::440))
+        )
+     )
+  )
+  (CELL
+     (CELLTYPE "INVX16")
+     (INSTANCE g168)
+     (DELAY
+        (ABSOLUTE
+          (PORT A (::0.3))
+          (IOPATH A Y (::608) (::440))
+        )
+     )
+  )
+  (CELL
+     (CELLTYPE "INVX16")
+     (INSTANCE g184)
+     (DELAY
+        (ABSOLUTE
+          (PORT A (::0.3))
+          (IOPATH A Y (::609) (::440))
+        )
+     )
+  )
+  (CELL
+     (CELLTYPE "INVX16")
+     (INSTANCE g177)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.3))
@@ -36,17 +76,7 @@
      (DELAY
         (ABSOLUTE
           (PORT A (::0.3))
-          (IOPATH A Y (::608) (::440))
-        )
-     )
-  )
-  (CELL
-     (CELLTYPE "INVX16")
-     (INSTANCE g165)
-     (DELAY
-        (ABSOLUTE
-          (PORT A (::0.3))
-          (IOPATH A Y (::608) (::440))
+          (IOPATH A Y (::609) (::440))
         )
      )
   )
@@ -62,46 +92,6 @@
   )
   (CELL
      (CELLTYPE "INVX16")
-     (INSTANCE g174)
-     (DELAY
-        (ABSOLUTE
-          (PORT A (::0.3))
-          (IOPATH A Y (::609) (::440))
-        )
-     )
-  )
-  (CELL
-     (CELLTYPE "INVX16")
-     (INSTANCE g158)
-     (DELAY
-        (ABSOLUTE
-          (PORT A (::0.3))
-          (IOPATH A Y (::609) (::440))
-        )
-     )
-  )
-  (CELL
-     (CELLTYPE "INVX16")
-     (INSTANCE g178)
-     (DELAY
-        (ABSOLUTE
-          (PORT A (::0.3))
-          (IOPATH A Y (::609) (::440))
-        )
-     )
-  )
-  (CELL
-     (CELLTYPE "INVX16")
-     (INSTANCE g160)
-     (DELAY
-        (ABSOLUTE
-          (PORT A (::0.3))
-          (IOPATH A Y (::608) (::440))
-        )
-     )
-  )
-  (CELL
-     (CELLTYPE "INVX16")
      (INSTANCE g163)
      (DELAY
         (ABSOLUTE
@@ -112,7 +102,7 @@
   )
   (CELL
      (CELLTYPE "INVX16")
-     (INSTANCE g177)
+     (INSTANCE g166)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.3))
@@ -122,21 +112,11 @@
   )
   (CELL
      (CELLTYPE "INVX16")
-     (INSTANCE g176)
+     (INSTANCE g180)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.3))
-          (IOPATH A Y (::609) (::440))
-        )
-     )
-  )
-  (CELL
-     (CELLTYPE "INVX16")
-     (INSTANCE g164)
-     (DELAY
-        (ABSOLUTE
-          (PORT A (::0.3))
-          (IOPATH A Y (::609) (::440))
+          (IOPATH A Y (::608) (::440))
         )
      )
   )
@@ -152,7 +132,27 @@
   )
   (CELL
      (CELLTYPE "INVX16")
-     (INSTANCE g180)
+     (INSTANCE g167)
+     (DELAY
+        (ABSOLUTE
+          (PORT A (::0.3))
+          (IOPATH A Y (::609) (::440))
+        )
+     )
+  )
+  (CELL
+     (CELLTYPE "INVX16")
+     (INSTANCE g182)
+     (DELAY
+        (ABSOLUTE
+          (PORT A (::0.3))
+          (IOPATH A Y (::609) (::440))
+        )
+     )
+  )
+  (CELL
+     (CELLTYPE "INVX16")
+     (INSTANCE g183)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.3))
@@ -162,7 +162,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g167__2398)
+     (INSTANCE g170__2398)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -174,7 +174,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g182__5107)
+     (INSTANCE g185__5107)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -186,7 +186,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g168__6260)
+     (INSTANCE g171__6260)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -198,7 +198,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g183__4319)
+     (INSTANCE g186__4319)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -210,7 +210,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g166__8428)
+     (INSTANCE g169__8428)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -222,7 +222,7 @@
   )
   (CELL
      (CELLTYPE "INVX16")
-     (INSTANCE g162)
+     (INSTANCE g165)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.3))
@@ -232,7 +232,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g184__5526)
+     (INSTANCE g187__5526)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -244,7 +244,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g171__6783)
+     (INSTANCE g174__6783)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -256,7 +256,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g187__3680)
+     (INSTANCE g190__3680)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -268,7 +268,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g169__1617)
+     (INSTANCE g172__1617)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -280,7 +280,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g186__2802)
+     (INSTANCE g189__2802)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -292,7 +292,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g172__1705)
+     (INSTANCE g175__1705)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -304,7 +304,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g185__5122)
+     (INSTANCE g188__5122)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -316,7 +316,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g173__8246)
+     (INSTANCE g176__8246)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -328,7 +328,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g188__7098)
+     (INSTANCE g191__7098)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -340,7 +340,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X2")
-     (INSTANCE g189__6131)
+     (INSTANCE g192__6131)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -352,7 +352,7 @@
   )
   (CELL
      (CELLTYPE "OR2X2")
-     (INSTANCE g170__1881)
+     (INSTANCE g173__1881)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -364,7 +364,7 @@
   )
   (CELL
      (CELLTYPE "INVX2")
-     (INSTANCE g194)
+     (INSTANCE g197)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -374,7 +374,7 @@
   )
   (CELL
      (CELLTYPE "CLKAND2X2")
-     (INSTANCE g193__5115)
+     (INSTANCE g196__5115)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -386,7 +386,7 @@
   )
   (CELL
      (CELLTYPE "CLKAND2X2")
-     (INSTANCE g190__7482)
+     (INSTANCE g193__7482)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -398,7 +398,7 @@
   )
   (CELL
      (CELLTYPE "CLKAND2X2")
-     (INSTANCE g191__4733)
+     (INSTANCE g194__4733)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -410,7 +410,7 @@
   )
   (CELL
      (CELLTYPE "INVX2")
-     (INSTANCE g195)
+     (INSTANCE g198)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -420,7 +420,7 @@
   )
   (CELL
      (CELLTYPE "CLKAND2X2")
-     (INSTANCE g196__6161)
+     (INSTANCE g199__6161)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -432,7 +432,7 @@
   )
   (CELL
      (CELLTYPE "CLKAND2X2")
-     (INSTANCE g198__9315)
+     (INSTANCE g201__9315)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -444,7 +444,7 @@
   )
   (CELL
      (CELLTYPE "CLKAND2X2")
-     (INSTANCE g192__9945)
+     (INSTANCE g195__9945)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -456,7 +456,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X1")
-     (INSTANCE g197__2883)
+     (INSTANCE g200__2883)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -468,7 +468,7 @@
   )
   (CELL
      (CELLTYPE "NAND2X1")
-     (INSTANCE g199__2346)
+     (INSTANCE g202__2346)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -480,27 +480,7 @@
   )
   (CELL
      (CELLTYPE "INVX2")
-     (INSTANCE g202)
-     (DELAY
-        (ABSOLUTE
-          (PORT A (::0.0))
-          (IOPATH A Y (::46) (::30))
-        )
-     )
-  )
-  (CELL
-     (CELLTYPE "INVX2")
-     (INSTANCE g200)
-     (DELAY
-        (ABSOLUTE
-          (PORT A (::0.0))
-          (IOPATH A Y (::46) (::30))
-        )
-     )
-  )
-  (CELL
-     (CELLTYPE "INVX2")
-     (INSTANCE g201)
+     (INSTANCE g205)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))
@@ -511,6 +491,26 @@
   (CELL
      (CELLTYPE "INVX2")
      (INSTANCE g203)
+     (DELAY
+        (ABSOLUTE
+          (PORT A (::0.0))
+          (IOPATH A Y (::46) (::30))
+        )
+     )
+  )
+  (CELL
+     (CELLTYPE "INVX2")
+     (INSTANCE g204)
+     (DELAY
+        (ABSOLUTE
+          (PORT A (::0.0))
+          (IOPATH A Y (::46) (::30))
+        )
+     )
+  )
+  (CELL
+     (CELLTYPE "INVX2")
+     (INSTANCE g206)
      (DELAY
         (ABSOLUTE
           (PORT A (::0.0))

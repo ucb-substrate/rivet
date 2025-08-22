@@ -1,4 +1,4 @@
-#### Template Script for RTL->Gate-Level Flow (generated from GENUS 21.17-s066_1) 
+#### Template Script for RTL->Gate-Level Flow (generated from GENUS 22.11-s104_1) 
 
 if {[file exists /proc/cpuinfo]} {
   sh grep "model name" /proc/cpuinfo

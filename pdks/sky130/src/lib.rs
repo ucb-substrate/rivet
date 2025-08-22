@@ -260,18 +260,22 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: impl AsRef<Path>, module: &st
     
     fs::create_dir(work_dir.join("syn-rundir")).expect("Failed to create directory");
     fs::create_dir(work_dir.join("par-rundir")).expect("Failed to create directory");
+    fs::create_dir(work_dir.join("syn-rundir/").join("checkpoints/")).expect("Failed to create directory");
+    fs::create_dir(work_dir.join("par-rundir/").join("checkpoints/")).expect("Failed to create directory");
+
     Flow {
         nodes: HashMap::from_iter([
             (
                 "syn".into(),
                 FlowNode {
                     tool: genus.clone(),
-                    work_dir: work_dir.join("syn-rundir/").clone(),
+                    work_dir: work_dir.join("syn-rundir/"),
                     checkpoint_dir: work_dir.join("syn-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_options(),
                         dont_avoid_lib_cells("ICGX1"),
                         genus.read_design_files(
+                            &PathBuf::from("/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v"),
                             con.clone(),
                             &PathBuf::from("/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef"),
                             &pdk_root.join(
@@ -293,11 +297,11 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: impl AsRef<Path>, module: &st
                 "par".into(),
                 FlowNode {
                     tool: innovus.clone(),
-                    work_dir: work_dir.join("par-rundir/"),
+                    work_dir: work_dir.join("par-rundir"),
                     checkpoint_dir: work_dir.join("par-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_process(130),
-                        innovus.read_design_files(con.clone()),
+                        innovus.read_design_files(&work_dir.join("/syn-rundir/{module}.mapped.v"), con.clone()),
                         Innovus::init_design(),
                         Innovus::innovus_settings(),
                         sky130_innovus_settings(),

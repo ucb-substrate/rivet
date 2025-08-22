@@ -88,13 +88,13 @@ impl Innovus {
         Ok(())
     }
 
-    pub fn read_design_files(&self, mmmc_conf: MmmcConfig) -> Step {
+    pub fn read_design_files(&self, netlist_path: &PathBuf, mmmc_conf: MmmcConfig) -> Step {
         let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
-        let module_file_path = self.work_dir.join(format!("{}.v", self.module));
-        let module_string = module_file_path.display();
+        let netlist_file_path = netlist_path.clone();
+        let netlist_string = netlist_file_path.display();
 
         //fix the path fo the sky130 lef in my scratch folder
         Step {
@@ -107,7 +107,7 @@ impl Innovus {
                     read_netlist {} -top {}
                     "#,
                 mmmc_tcl,
-                module_string,
+                netlist_string,
                 self.module
             ),
             name: "read_design_files".into(),

@@ -101,6 +101,7 @@ impl Genus {
 
     pub fn read_design_files(
         &self,
+        module_path: &PathBuf,
         mmmc_conf: MmmcConfig,
         sram_macro_lef: &PathBuf,
         pdk_lef: &PathBuf,
@@ -115,7 +116,7 @@ impl Genus {
         let mut sdc_file = File::create(sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
-        let module_file_path = self.work_dir.join(format!("{}.v", self.module));
+        let module_file_path = module_path.clone();
         let module_string = module_file_path.display();
         let sram_macro = sram_macro_lef.display();
         let pdk = pdk_lef.display();

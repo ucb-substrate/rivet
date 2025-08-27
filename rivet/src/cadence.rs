@@ -27,7 +27,7 @@ pub struct MmmcCorner {
 
 #[derive(Clone)]
 pub struct MmmcConfig {
-    pub sdc_file: PathBuf,
+    pub sdc_files: Vec<PathBuf>,
     pub corners: Vec<MmmcCorner>,
     pub setup: Vec<String>,
     pub hold: Vec<String>,
@@ -50,12 +50,13 @@ pub fn mmmc(config: MmmcConfig) -> String {
     }
 
     //the sdc files need their paths not hardcoded to the chipyard directory
-    let sdc_file = config.sdc_file;
+    let sdc_files_vec: Vec<String> = config.sdc_files.iter().map(|p| p.display().to_string()).collect();
+    let sdc_files = sdc_files_vec.join(" ");
     let mut mmmc = String::new();
     let constraint_mode_name = "my_constraint_mode";
     writeln!(
         &mut mmmc,
-        "create_constraint_mode -name {constraint_mode_name} -sdc_files [list {sdc_file:?}]"
+        "create_constraint_mode -name {constraint_mode_name} -sdc_files [list {sdc_files}]"
     )
     .unwrap();
 

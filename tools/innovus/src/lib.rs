@@ -68,7 +68,7 @@ impl Innovus {
                     .expect("Failed to create checkpoint file");
                 writeln!(
                     checkpoint_command,
-                    "write_db -to_file {cdir}.cpf",
+                    "write_db {cdir}.cpf",
                     cdir = checkpoint_file
                 )
                 .expect("Failed to write");
@@ -90,6 +90,8 @@ impl Innovus {
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
+        let mmmc_tcl_path = self.work_dir.clone().join("mmmc.tcl");
+        fs::write(&mmmc_tcl_path, mmmc_tcl);
         let netlist_file_path = netlist_path.clone();
         let netlist_string = netlist_file_path.display();
 
@@ -99,10 +101,10 @@ impl Innovus {
             command: formatdoc!(
                 r#"
                     read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
-                    {}
+                    read_mmmc {}
                     read_netlist {} -top {}
                     "#,
-                mmmc_tcl,
+                mmmc_tcl_path.display(),
                 netlist_string,
                 self.module
             ),

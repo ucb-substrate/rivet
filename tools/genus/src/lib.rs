@@ -104,6 +104,8 @@ impl Genus {
         let mut sdc_file = File::create(sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
+        let mmmc_tcl_path = self.work_dir.clone().join("mmmc.tcl");
+        fs::write(&mmmc_tcl_path, mmmc_tcl);
         let module_file_path = module_path.clone();
         let module_string = module_file_path.display();
         let sram_macro = sram_macro_lef.display();
@@ -112,12 +114,11 @@ impl Genus {
             checkpoint: false,
             command: formatdoc!(
                 r#"
-                {mmmc_tcl}
-                read_physical -lef {{ {sram_macro} {pdk} }}
-                read_hdl -sv {module_string}
-
+                read_mmmc {}
+                read_physical -lef {{ {} {} }}
+                read_hdl -sv {}
                 "#
-            ),
+            ,mmmc_tcl_path.display(), sram_macro, pdk, module_string),
             name: "read_design_files".into(),
         }
     }

@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     fs,
     fs::File,
-    io::Write,
+    io::{Write, BufReader, BufWriter},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -112,11 +112,31 @@ fn sky130_connect_nets() -> Step {
     }
 }
 
-//pub fn sram_cache_gen() -> String {}
+pub fn setup_techlef(working_directory: &PathBuf, lef_file: &PathBuf) -> PathBuf {
+    //create the tech-sky130-cache directory in the working directory
+    //read in the lef file and then find and replace 
+    fs::create_dir(working_directory.join("tech-sky130-cache")).expect("Failed to create directory");
+    //get the sky130_scl_9T string from the lef_file pathbuf
+    
+    let tlef_path = working_directory.join(format!("tech-sky130-cache/{}.tlef", ))
+    let reader = io::BufReader::new(File::open(lef_file));
+    let techlef = io::BufWriter::new(File::create(&tlef_path));
 
-pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flow {
-    let genus = Arc::new(Genus::new(&work_dir.join("syn-rundir"), module));
-    let innovus = Arc::new(Innovus::new(&work_dir.join("par-rundir"), module));
+
+    let licon = r#""#;
+    for line in reader.lines() {
+        writlne!(writer, "{}, line");
+        if line.trim() == "END pwell" {
+            writer.write_all(licon.as_bytes());
+        }
+    }
+    
+    
+}
+
+pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> Flow {
+    let genus = Arc::new(Genus::new(&working_dir.join("syn-rundir"), module));
+    let innovus = Arc::new(Innovus::new(&working_dir.join("par-rundir"), module));
 
     let filler_cells = vec![
         "FILL0".into(),
@@ -165,13 +185,13 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
             add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
         }
     ];
+    
 
-    let sdc_file_path = work_dir
+    let syn_con = MmmcConfig {
+        sdc_files: vec![working_dir
         .clone()
-        .join("syn-rundir/clock_pin_constraints.sdc");
+        .join("syn-rundir/clock_pin_constraints.sdc")],
 
-    let con = MmmcConfig {
-        sdc_file: sdc_file_path,
 
         corners: vec![
             MmmcCorner {
@@ -205,17 +225,56 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
 
         leakage: "tt_025C_1v80.extra".to_string(),
     };
-<<<<<<< HEAD
-     
-=======
+    
+    let par_con = MmmcConfig {
+        sdc_files: vec![working_dir
+        .clone()
+        .join("par-rundir/clock_pin_constraints.sdc"),
+        working_dir.clone().join(format!("syn-rundir/{}.mapped.sdc", module))
+        ],
+        corners: vec![
+            MmmcCorner {
+                name: "ss_100C_1v60.setup".to_string(),
+                libs: vec![pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib")],
+                temperature: dec!(100.0),
+            },
+            MmmcCorner {
+                name: "ff_n40C_1v95.hold".to_string(),
+                libs: vec![pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib")],
+                temperature: dec!(-40.0),
+            },
+            MmmcCorner {
+                name: "tt_025C_1v80.extra".to_string(),
+                libs: vec![pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib")],
+                temperature: dec!(25.0),
+            },
+        ],
 
->>>>>>> 67890a77d3d089049d0475c78da19953d6cc7d57
-    fs::create_dir(work_dir.join("syn-rundir")).expect("Failed to create directory");
-    fs::create_dir(work_dir.join("par-rundir")).expect("Failed to create directory");
-    fs::create_dir(work_dir.join("syn-rundir/").join("checkpoints/"))
+        setup: vec!["ss_100C_1v60.setup".to_string()],
+
+        hold: vec![
+            "ff_n40C_1v95.hold".to_string(),
+            "tt_025C_1v80.extra".to_string(),
+        ],
+
+        dynamic: "tt_025C_1v80.extra".to_string(),
+
+        leakage: "tt_025C_1v80.extra".to_string(),
+    };
+
+
+    fs::create_dir(working_dir.join("syn-rundir")).expect("Failed to create directory");
+    fs::create_dir(working_dir.join("par-rundir")).expect("Failed to create directory");
+    fs::create_dir(working_dir.join("syn-rundir/").join("checkpoints/"))
         .expect("Failed to create directory");
-    fs::create_dir(work_dir.join("par-rundir/").join("checkpoints/"))
+    fs::create_dir(working_dir.join("par-rundir/").join("checkpoints/"))
         .expect("Failed to create directory");
+
+    let netlist = working_dir.join(format!("syn-rundir/{}.mapped.v", module.clone()));
+    println!("{}", netlist.display());
 
     Flow {
         nodes: HashMap::from_iter([
@@ -223,14 +282,14 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
                 "syn".into(),
                 FlowNode {
                     tool: genus.clone(),
-                    work_dir: work_dir.join("syn-rundir/"),
-                    checkpoint_dir: work_dir.join("syn-rundir/").join("checkpoints/"),
+                    work_dir: working_dir.join("syn-rundir/"),
+                    checkpoint_dir: working_dir.join("syn-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_options(),
                         dont_avoid_lib_cells("ICGX1"),
                         genus.read_design_files(
                             &PathBuf::from("/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v"),
-                            con.clone(),
+                            syn_con.clone(),
                             &PathBuf::from("/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef"),
                             &pdk_root.join(
                                 "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
@@ -251,12 +310,12 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
                 "par".into(),
                 FlowNode {
                     tool: innovus.clone(),
-                    work_dir: work_dir.join("par-rundir"),
-                    checkpoint_dir: work_dir.join("par-rundir/").join("checkpoints/"),
+                    work_dir: working_dir.join("par-rundir"),
+                    checkpoint_dir: working_dir.join("par-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_process(130),
+                        innovus.read_design_files(&netlist, par_con.clone()),
                         Innovus::init_design(),
-                        innovus.read_design_files(&work_dir.join("/syn-rundir/{module}.mapped.v"), con.clone()),
                         Innovus::innovus_settings(),
                         sky130_innovus_settings(),
                         innovus.floorplan_design(),
@@ -277,3 +336,4 @@ pub fn reference_flow(pdk_root: PathBuf, work_dir: PathBuf, module: &str) -> Flo
         ]),
     }
 }
+

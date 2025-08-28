@@ -94,7 +94,7 @@ impl Genus {
         &self,
         module_path: &PathBuf,
         mmmc_conf: MmmcConfig,
-        sram_macro_lef: &PathBuf,
+        tlef: &PathBuf,
         pdk_lef: &PathBuf,
     ) -> Step {
         // Write SDC and mmmc.tcl, run commands up to read_hdl.
@@ -108,7 +108,7 @@ impl Genus {
         fs::write(&mmmc_tcl_path, mmmc_tcl);
         let module_file_path = module_path.clone();
         let module_string = module_file_path.display();
-        let sram_macro = sram_macro_lef.display();
+        let cache_tlef= tlef.display();
         let pdk = pdk_lef.display();
         Step {
             checkpoint: false,
@@ -118,7 +118,7 @@ impl Genus {
                 read_physical -lef {{ {} {} }}
                 read_hdl -sv {}
                 "#
-            ,mmmc_tcl_path.display(), sram_macro, pdk, module_string),
+            ,mmmc_tcl_path.display(), cache_tlef, pdk, module_string),
             name: "read_design_files".into(),
         }
     }

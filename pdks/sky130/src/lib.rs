@@ -340,7 +340,7 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
 
     let netlist = working_dir.join(format!("syn-rundir/{}.mapped.v", module.clone()));
     println!("{}", netlist.display());
-
+    let tlef = setup_techlef(&working_dir.clone(), &PathBuf::from("/home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"));
     Flow {
         nodes: HashMap::from_iter([
             (
@@ -355,7 +355,7 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
                         genus.read_design_files(
                             &PathBuf::from("/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v"),
                             syn_con.clone(),
-                            &PathBuf::from("/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef"),
+                            &tlef,
                             &pdk_root.join(
                                 "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
                             ),
@@ -379,7 +379,11 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
                     checkpoint_dir: working_dir.join("par-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_process(130),
-                        innovus.read_design_files(&netlist, par_con.clone()),
+                        innovus.read_design_files(&netlist, par_con.clone(),  &tlef,
+                            &pdk_root.join(
+                                "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
+                            ),
+),
                         Innovus::init_design(),
                         Innovus::innovus_settings(),
                         sky130_innovus_settings(),

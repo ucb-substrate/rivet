@@ -85,7 +85,7 @@ impl Innovus {
         Ok(())
     }
 
-    pub fn read_design_files(&self, netlist_path: &PathBuf, mmmc_conf: MmmcConfig) -> Step {
+    pub fn read_design_files(&self, netlist_path: &PathBuf, mmmc_conf: MmmcConfig, tlef: &PathBuf, pdk_lef: &PathBuf) -> Step {
         let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
@@ -94,16 +94,20 @@ impl Innovus {
         fs::write(&mmmc_tcl_path, mmmc_tcl);
         let netlist_file_path = netlist_path.clone();
         let netlist_string = netlist_file_path.display();
+        let cache_tlef = tlef.display();
+        let pdk = pdk_lef.display();
 
         //TODO: fix the hardcoded cache lef
         Step {
             checkpoint: false,
             command: formatdoc!(
                 r#"
-                    read_physical -lef {{/scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/tech-sky130-cache/sky130_scl_9T.tlef  /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef }}
+                    read_physical -lef {{ {} {} }}
                     read_mmmc {}
                     read_netlist {} -top {}
                     "#,
+                cache_tlef,
+                pdk,
                 mmmc_tcl_path.display(),
                 netlist_string,
                 self.module
@@ -437,6 +441,8 @@ impl Innovus {
                 write_parasitics -spef_file {par_rundir}/{module}.ss_100C_1v60.par.spef -rc_corner ss_100C_1v60.setup_rc
                 write_parasitics -spef_file {par_rundir}/{module}.ff_n40C_1v95.par.spef -rc_corner ff_n40C_1v95.hold_rc
                 write_parasitics -spef_file {par_rundir}/{module}.tt_025C_1v80.par.spef -rc_corner tt_025C_1v80.extra_rc
+                write_db post_write_design
+                ln -sfn post_write_design latest
                 "#
             ),
             name: "write_design".into(),

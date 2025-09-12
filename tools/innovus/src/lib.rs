@@ -85,7 +85,13 @@ impl Innovus {
         Ok(())
     }
 
-    pub fn read_design_files(&self, netlist_path: &PathBuf, mmmc_conf: MmmcConfig, tlef: &PathBuf, pdk_lef: &PathBuf) -> Step {
+    pub fn read_design_files(
+        &self,
+        netlist_path: &PathBuf,
+        mmmc_conf: MmmcConfig,
+        tlef: &PathBuf,
+        pdk_lef: &PathBuf,
+    ) -> Step {
         let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
@@ -97,7 +103,6 @@ impl Innovus {
         let cache_tlef = tlef.display();
         let pdk = pdk_lef.display();
 
-        //TODO: fix the hardcoded cache lef
         Step {
             checkpoint: false,
             command: formatdoc!(
@@ -140,9 +145,7 @@ impl Innovus {
     }
 
     pub fn floorplan_design(&self) -> Step {
-        //create a pathbuf that is the {work_dir}/floorplan.tcl
-        //write this command "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }" to this file
-        //source it in the floorplan_design step
+        // TODO: Parametrize the floowplan.tcl command
         let floorplan_tcl_path = self.work_dir.join("floorplan.tcl");
         let mut floorplan_tcl_file =
             File::create(&floorplan_tcl_path).expect("failed to create file");

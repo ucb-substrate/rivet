@@ -18,38 +18,6 @@ struct CliArgs {
     config: PathBuf,
 }
 
-#[cfg(test)]
-
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_read_from_checkpt() {
-        use super::*;
-        use rivet::flow::ToolStart;
-        let mut tools = HashMap::new();
-        let conf_start = ToolStart {
-            step: "syn_map".to_string(),
-            checkpoint: Some(PathBuf::from("checkpoints/syn_map.cpf")),
-        };
-        let conf = ToolConfig {
-            start: Some(conf_start),
-            stop: Some("write_design".to_string()),
-            pin: None,
-        };
-        tools.insert("Genus".to_string(), conf.clone());
-        let config = Config {
-            tools: tools.clone(),
-        };
-        //fix hardcoding the pathbuf of the reference flow
-        let flow = reference_flow(PathBuf::from(
-            "/scratch/cs199-cby/rivet/examples/decoder/src",
-        ));
-        flow.execute("syn", &config);
-        assert_eq!(2 + 2, 4);
-    }
-}
-
 fn main() {
     // let args = CliArgs::parse();
     // let config_str = fs::read_to_string(&args.config).expect("Failed to read config file");

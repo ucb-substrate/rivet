@@ -5,49 +5,45 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Contains all the configs for tools used in the flow
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(flatten)]
     pub tools: HashMap<String, ToolConfig>,
 }
 
+/// Indicates the starting step for a tool and an optional checkpoint path
 #[derive(Deserialize, Debug, Clone)]
 pub struct ToolStart {
     pub step: String,
     pub checkpoint: Option<PathBuf>,
 }
 
+/// Configures a tool for the following properties:
+///     - start from a specified step or start from beginning
+///     - end at a specific step or end at the last step
+///     - be pinned and not be rebuilt in the flow
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct ToolConfig {
-    pub start: Option<ToolStart>, //start from a specified step or start from beginning
-    pub stop: Option<String>,     //end at a specific step or end at the end
+    pub start: Option<ToolStart>,
+    pub stop: Option<String>,
     pub pin: Option<bool>,
-    //output_dir: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
-pub struct Step {
-    pub name: String,
-    pub command: String,
-    pub checkpoint: bool,
+/// Contains all FlowNodes and maps them to a user-defined name
+#[derive(Debug)]
+pub struct Flow {
+    pub nodes: HashMap<String, FlowNode>,
 }
 
-pub struct AnnotatedStep {
-    pub step: Step,
-    pub checkpoint_path: PathBuf,
-}
-
-pub trait Tool: Debug {
-    /// Runs the tool for the given steps.
-    fn invoke(
-        &self,
-        work_dir: PathBuf,
-        start_checkpoint: Option<PathBuf>,
-        steps: Vec<AnnotatedStep>,
-    );
-}
-
+/// Represents a node in a design flow and describes the following properties:
+///     - the tool being used for the node
+///     - the work directory of the node for building
+///     - the directory where the node will output checkpoints
+///     - the steps that run in that node
+///     - the dependencies of the current FlowNode given by the labels of the other FlowNodes in
+///     the Flow
 #[derive(Debug)]
 pub struct FlowNode {
     pub tool: Arc<dyn Tool>,
@@ -57,9 +53,31 @@ pub struct FlowNode {
     pub deps: Vec<String>,
 }
 
-#[derive(Debug)]
-pub struct Flow {
-    pub nodes: HashMap<String, FlowNode>,
+/// Tool plugins adapt the api invoke to run the tool for the configured steps.
+pub trait Tool: Debug {
+    fn invoke(
+        &self,
+        work_dir: PathBuf,
+        start_checkpoint: Option<PathBuf>,
+        steps: Vec<AnnotatedStep>,
+    );
+}
+
+// Steps with a checkpoint for directly reading checkpoints
+pub struct AnnotatedStep {
+    pub step: Step,
+    pub checkpoint_path: PathBuf,
+}
+
+/// Steps have the following properties:
+///     - Labelled
+///     - Contain a TCL command
+///     - Can be checkpointed
+#[derive(Clone, Debug)]
+pub struct Step {
+    pub name: String,
+    pub command: String,
+    pub checkpoint: bool,
 }
 
 impl Flow {
@@ -67,29 +85,22 @@ impl Flow {
         Flow { nodes }
     }
 
-    //So have a bunch of nodes; each of these has a bunch of steps. Want to execute flow, so execute
-    //node but also have to deal w dependencies that may or may not be pinned
-
     /// Recursively executes a node and its dependencies, respecting pins and checkpoints.
     pub fn execute(&self, node: &str, config: &Config) {
         let mut executed = HashSet::new();
         self.execute_inner(node, config, &mut executed);
     }
 
-    //recusrively execute each node and dependencies, respecting the pins and checkpoints
-    //each node has steps that may or may not be checkpoints
     fn execute_inner(&self, node: &str, config: &Config, executed: &mut HashSet<String>) {
         let target_node = self
             .nodes
             .get(node)
             .expect(&format!("Error: Node {} not found in flow", node));
 
-        //need to check if this node has already been executed
         if executed.contains(node) {
             return;
         }
 
-        //evaluate all the dependency nodes first
         use colored::Colorize;
         println!(
             "{}",
@@ -104,10 +115,6 @@ impl Flow {
             self.execute_inner(dependency, config, executed);
         }
 
-        //now we execute the current node
-
-        //need to check if this node is pinned
-
         let tool_config = config.tools.get(node);
 
         if let Some(true) = tool_config.and_then(|c| c.pin) {
@@ -115,8 +122,6 @@ impl Flow {
             executed.insert(node.to_string());
             return;
         }
-
-        //now we execute the steps inside the node
 
         let steps_to_run = get_steps_for_tool(target_node, tool_config);
 
@@ -131,8 +136,6 @@ impl Flow {
                 .and_then(|tool_start_ref| tool_start_ref.checkpoint.as_ref())
                 .cloned();
 
-            // tool invokes the steps to run, but we need to specify checkpoint that we are running from
-            // TODO: need to change steps_to_run to be configured, go through the steps and fill in the ckecpoints
             target_node.tool.as_ref().invoke(
                 target_node.work_dir.clone(),
                 start_checkpoint,

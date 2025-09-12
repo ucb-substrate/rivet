@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     fs,
     fs::File,
-    io::{Write, BufRead, BufReader, BufWriter},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -113,53 +113,17 @@ fn sky130_connect_nets() -> Step {
 }
 
 pub fn setup_techlef(working_directory: &PathBuf, lef_file: &PathBuf) -> PathBuf {
-    // //create the tech-sky130-cache directory in the working directory
-    // //read in the lef file and then find and replace 
-    // fs::create_dir(working_directory.join("tech-sky130-cache")).expect("Failed to create directory");
-    // //get the sky130_scl_9T string from the lef_file pathbuf
-    
-    // let tlef_path = working_directory.join(format!("tech-sky130-cache/{}.tlef", "sky130_scl_9T".to_string() ));
-    // let reader = BufRead::new(File::open(lef_file)?);
-    // let techlef = BufWriter::new(File::create(tlef_path)?);
-
-
-    // let licon = r#"
-    // LAYER licon
-    //     TYPE CUT ;
-    // END licon 
-    // "#;
-    // let nwell = r#"
-    // LAYER nwell
-    //     TYPE MASTERSLICE ;
-    // END nwell
-    // LAYER pwell
-    //     TYPE MASTERSLICE ;
-    // END pwell
-    // LAYER li1
-    //     TYPE MASTERSLICE ;
-    // END li1
-    // "#;
-    // for line in reader.lines() {
-    //     writeln!(techlef, "{}", line);
-    //     if line.trim() == "END pwell" {
-    //         techlef.write_all(licon.as_bytes());
-    //     }
-    //     if line.trim() == "END poly" {
-    //         techlef.write_all(nwell.as_bytes() + licon.as_bytes());
-    //     }
-    // }
-
-    
     let cache_dir = working_directory.join("tech-sky130-cache");
     fs::create_dir(&cache_dir).expect("failed to create directory");
 
     // Dynamically get the file stem from the input LEF file
     let file_stem = lef_file
         .file_stem()
-        .and_then(|s| s.to_str()).expect("failed to create file stem");
-    
+        .and_then(|s| s.to_str())
+        .expect("failed to create file stem");
+
     let tlef_path = cache_dir.join(format!("{}.tlef", file_stem));
-    
+
     // Set up buffered reader and writer for efficiency
     let reader = BufReader::new(File::open(lef_file).expect("failed to read file"));
     let mut techlef = BufWriter::new(File::create(&tlef_path).expect("failed to write to file"));
@@ -188,12 +152,18 @@ END li1
 
         // Check the content of the line to insert new blocks
         if line.trim() == "END pwell" {
-            techlef.write_all(licon.as_bytes()).expect("failed to write");
+            techlef
+                .write_all(licon.as_bytes())
+                .expect("failed to write");
         }
         if line.trim() == "END poly" {
             // Write each byte slice separately instead of trying to add them
-            techlef.write_all(nwell.as_bytes()).expect("failed to write");
-            techlef.write_all(licon.as_bytes()).expect("failed to write");
+            techlef
+                .write_all(nwell.as_bytes())
+                .expect("failed to write");
+            techlef
+                .write_all(licon.as_bytes())
+                .expect("failed to write");
         }
     }
     tlef_path
@@ -250,13 +220,11 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
             add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
         }
     ];
-    
 
     let syn_con = MmmcConfig {
         sdc_files: vec![working_dir
-        .clone()
-        .join("syn-rundir/clock_pin_constraints.sdc")],
-
+            .clone()
+            .join("syn-rundir/clock_pin_constraints.sdc")],
 
         corners: vec![
             MmmcCorner {
@@ -290,12 +258,15 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
 
         leakage: "tt_025C_1v80.extra".to_string(),
     };
-    
+
     let par_con = MmmcConfig {
-        sdc_files: vec![working_dir
-        .clone()
-        .join("par-rundir/clock_pin_constraints.sdc"),
-        working_dir.clone().join(format!("syn-rundir/{}.mapped.sdc", module))
+        sdc_files: vec![
+            working_dir
+                .clone()
+                .join("par-rundir/clock_pin_constraints.sdc"),
+            working_dir
+                .clone()
+                .join(format!("syn-rundir/{}.mapped.sdc", module)),
         ],
         corners: vec![
             MmmcCorner {
@@ -329,7 +300,6 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
 
         leakage: "tt_025C_1v80.extra".to_string(),
     };
-
 
     fs::create_dir(working_dir.join("syn-rundir")).expect("Failed to create directory");
     fs::create_dir(working_dir.join("par-rundir")).expect("Failed to create directory");
@@ -340,7 +310,12 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
 
     let netlist = working_dir.join(format!("syn-rundir/{}.mapped.v", module.clone()));
     println!("{}", netlist.display());
-    let tlef = setup_techlef(&working_dir.clone(), &PathBuf::from("/home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"));
+    let tlef = setup_techlef(
+        &working_dir.clone(),
+        &PathBuf::from(
+            &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
+        ),
+    );
     Flow {
         nodes: HashMap::from_iter([
             (
@@ -353,7 +328,9 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
                         set_default_options(),
                         dont_avoid_lib_cells("ICGX1"),
                         genus.read_design_files(
-                            &PathBuf::from("/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v"),
+                            &PathBuf::from(
+                                "/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v",
+                            ),
                             syn_con.clone(),
                             &tlef,
                             &pdk_root.join(
@@ -379,11 +356,14 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
                     checkpoint_dir: working_dir.join("par-rundir/").join("checkpoints/"),
                     steps: vec![
                         set_default_process(130),
-                        innovus.read_design_files(&netlist, par_con.clone(),  &tlef,
+                        innovus.read_design_files(
+                            &netlist,
+                            par_con.clone(),
+                            &tlef,
                             &pdk_root.join(
                                 "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
                             ),
-),
+                        ),
                         Innovus::init_design(),
                         Innovus::innovus_settings(),
                         sky130_innovus_settings(),
@@ -405,4 +385,3 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
         ]),
     }
 }
-

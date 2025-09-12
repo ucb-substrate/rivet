@@ -11,6 +11,7 @@ use rivet::flow::{AnnotatedStep, Step, Tool};
 
 use crate::fs::File;
 
+/// Defines the working directory of the tool and which module to synthesize
 #[derive(Debug)]
 pub struct Genus {
     pub work_dir: PathBuf,
@@ -27,6 +28,7 @@ impl Genus {
         }
     }
 
+    /// Generates the tcl file for synthesis
     fn make_tcl_file(
         &self,
         path: &PathBuf,
@@ -90,6 +92,7 @@ impl Genus {
         Ok(())
     }
 
+    /// Reads the module verilog, mmmc.tcl, pdk lefs, ilms paths, and sdc constraints
     pub fn read_design_files(
         &self,
         module_path: &PathBuf,
@@ -97,8 +100,6 @@ impl Genus {
         tlef: &PathBuf,
         pdk_lef: &PathBuf,
     ) -> Step {
-        // Write SDC and mmmc.tcl, run commands up to read_hdl.
-
         let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         println!("{}", sdc_file_path.display());
         let mut sdc_file = File::create(sdc_file_path).expect("failed to create file");
@@ -108,7 +109,7 @@ impl Genus {
         fs::write(&mmmc_tcl_path, mmmc_tcl);
         let module_file_path = module_path.clone();
         let module_string = module_file_path.display();
-        let cache_tlef= tlef.display();
+        let cache_tlef = tlef.display();
         let pdk = pdk_lef.display();
         Step {
             checkpoint: false,
@@ -117,8 +118,12 @@ impl Genus {
                 read_mmmc {}
                 read_physical -lef {{ {} {} }}
                 read_hdl -sv {}
-                "#
-            ,mmmc_tcl_path.display(), cache_tlef, pdk, module_string),
+                "#,
+                mmmc_tcl_path.display(),
+                cache_tlef,
+                pdk,
+                module_string
+            ),
             name: "read_design_files".into(),
         }
     }
@@ -167,8 +172,8 @@ impl Genus {
         }
     }
 
+    /// Write power_spec.cpf and run power_intent TCL commands.
     pub fn power_intent(&self) -> Step {
-        // Write power_spec.cpf and run power_intent TCL commands.
         let power_spec_file_path = self.work_dir.join("power_spec.cpf");
         let mut power_spec_file =
             File::create(&power_spec_file_path).expect("failed to create file");

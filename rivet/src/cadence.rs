@@ -5,9 +5,8 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
+/// Returns the TCL for clock_constraints and pin_constraints
 pub fn sdc() -> String {
-    // Combine contents of clock_constraints_fragment.sdc and pin_constraints_fragment.sdc
-
     formatdoc!(
         r#"create_clock clk -name clk -period 2.0
             set_clock_uncertainty 0.01 [get_clocks clk]
@@ -18,6 +17,7 @@ pub fn sdc() -> String {
     )
 }
 
+/// Defines the properties of MMMC Corners with the label, library paths, and temperature
 #[derive(Clone)]
 pub struct MmmcCorner {
     pub name: String,
@@ -25,6 +25,7 @@ pub struct MmmcCorner {
     pub temperature: Decimal,
 }
 
+/// Contains the parameters for generating the mmmc.tcl
 #[derive(Clone)]
 pub struct MmmcConfig {
     pub sdc_files: Vec<PathBuf>,
@@ -35,8 +36,8 @@ pub struct MmmcConfig {
     pub leakage: String,
 }
 
+/// Generates the tcl for the MMMC views
 pub fn mmmc(config: MmmcConfig) -> String {
-    // Ensure that setup, hold, dynamic, and leakage corners are defined in `corners`.
     for corner in config
         .setup
         .iter()
@@ -49,8 +50,11 @@ pub fn mmmc(config: MmmcConfig) -> String {
         );
     }
 
-    //the sdc files need their paths not hardcoded to the chipyard directory
-    let sdc_files_vec: Vec<String> = config.sdc_files.iter().map(|p| p.display().to_string()).collect();
+    let sdc_files_vec: Vec<String> = config
+        .sdc_files
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
     let sdc_files = sdc_files_vec.join(" ");
     let mut mmmc = String::new();
     let constraint_mode_name = "my_constraint_mode";

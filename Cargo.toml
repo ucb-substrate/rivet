@@ -8,5 +8,5 @@ members = [
     "tools/genus",
     "tools/innovus",
     "tools/chipyard",
-    "tools/pegasus",
+    "tools/pegasus", "cadence", "flows/sky130_cadence",
 ]

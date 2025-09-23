@@ -34,7 +34,7 @@ pub struct ToolConfig {
 /// Contains all FlowNodes and maps them to a user-defined name
 #[derive(Debug)]
 pub struct Flow {
-    pub nodes: HashMap<String, FlowNode>,
+    pub nodes: HashMap<String, Step>,
 }
 
 /// Represents a node in a design flow and describes the following properties:
@@ -44,13 +44,28 @@ pub struct Flow {
 ///     - the steps that run in that node
 ///     - the dependencies of the current FlowNode given by the labels of the other FlowNodes in
 ///     the Flow
-#[derive(Debug)]
-pub struct FlowNode {
-    pub tool: Arc<dyn Tool>,
-    pub work_dir: PathBuf,
-    pub checkpoint_dir: PathBuf,
-    pub steps: Vec<Step>,
-    pub deps: Vec<String>,
+
+// #[derive(Debug)]
+// pub struct FlowNode {
+//     pub tool: Arc<dyn Tool>,
+//     pub work_dir: PathBuf,
+//     pub checkpoint_dir: PathBuf,
+//     pub steps: Vec<Step>,
+//     pub deps: Vec<String>,
+// }
+
+pub trait Step {
+    fn deps(&self) -> Vec<Arc<dyn Step>>;
+    fn pinned(&self) -> bool;
+    fn execute(&self);
+}
+
+pub fn execute(target: impl Step) {
+    //traverse dag, execute deps unless they are pinned
+}
+
+pub fn hierarchical(tree: Tree<M>, flat_flow_gen: impl Fn(&M) -> F) -> Tree<F> {
+    //TODO
 }
 
 /// Tool plugins adapt the api invoke to run the tool for the configured steps.
@@ -74,7 +89,7 @@ pub struct AnnotatedStep {
 ///     - Contain a TCL command
 ///     - Can be checkpointed
 #[derive(Clone, Debug)]
-pub struct Step {
+pub struct Substep {
     pub name: String,
     pub command: String,
     pub checkpoint: bool,

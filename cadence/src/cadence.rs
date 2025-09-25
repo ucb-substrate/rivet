@@ -121,13 +121,6 @@ pub fn mmmc(config: MmmcConfig) -> String {
     mmmc
 }
 
-// pub struct Corner {
-//     pub name: String,
-//     pub corner_type: String,
-//     pub voltage: f64,
-//     pub temperature: i64,
-// }
-//
 //fn get_timing_libs(lib_pref: String, corner: &Corner) -> String {
 //
 //    //prefilter the corner to get the prefilters
@@ -137,100 +130,6 @@ pub fn mmmc(config: MmmcConfig) -> String {
 //    //extra_pre_filters=pre_filters)
 //}
 
-// pub fn generate_mmmc_script(
-//     work_dir: &PathBuf,
-//     corners: Vec<Corner>,
-//     constraint_mode_name: String,
-//     sdc_files_arg: &PathBuf,
-//     ilm_sdc_files_arg: &PathBuf,
-//     timing_libs: &PathBuf,
-//     qrc: &PathBuf,
-// ) -> String {
-//     let mut mmmc_file = String::new();
-//
-//     //need to work on generated sdc files as well
-//     writeln!(
-//         &mut mmmc_file,
-//         "create_constraint_mode -name {} {} {}",
-//         constraint_mode_name,
-//         sdc_files_arg.display(),
-//         ilm_sdc_files_arg.display(),
-//     );
-//     let mut setup_views: Vec<String> = Vec::new();
-//     let mut hold_views: Vec<String> = Vec::new();
-//     let mut extra_views: Vec<String> = Vec::new();
-//
-//     //for corner in corners
-//     for corner in corners.iter() {
-//         //create innovus library sets
-//         //let list = get timing libs of corner
-//
-//         //let tempInCelsius = corner.temperature;
-//         //let qrc = get_mmmc_qrc(corner);
-//         //qrc="-qrc_tech {}".format(self.get_mmmc_qrc(corner)) if self.get_mmmc_qrc(corner) != '' else ''
-//         //
-//         //let constraint=self.constraint_mode
-//         if corner.corner_type == "setup" {
-//             setup_views.push(corner.name.clone());
-//         } else if corner.corner_type == "hold" {
-//             hold_views.push(corner.name.clone());
-//         } else {
-//             extra_views.push(corner.name.clone());
-//         }
-//
-//         writeln!(
-//             mmmc_file,
-//             "create_library_set -name {}_set -timing [list {}]",
-//             corner.name,
-//             timing_libs.display(),
-//         );
-//         //create Innovus timing conditions
-//         writeln!(
-//             &mut mmmc_file,
-//             "create_timing_condition -name {}_cond -library_sets [list {}_set]",
-//             corner.name, corner.name,
-//         );
-//         //create Innovus rc corners from qrc tech files
-//         writeln!(
-//             &mut mmmc_file,
-//             "create_rc_corner -name {}_rc -temperature {} {}",
-//             corner.name,
-//             corner.temperature,
-//             qrc.display(),
-//         );
-//         //create innovus delay corner
-//         writeln!(
-//             &mut mmmc_file,
-//             "create_delay_corner -name {}_delay -timing_condition {}_cond -rc_corner {}_rc",
-//             corner.name, corner.name, corner.name,
-//         );
-//         //create the analysis views
-//         writeln!(
-//             &mut mmmc_file,
-//             "create_analysis_view -name {}_view -delay_corner {}_delay -constraint_mode {}",
-//             corner.name, corner.name, constraint_mode_name,
-//         );
-//     }
-//
-//     let mut power = String::new();
-//     if extra_views.len() > 0 {
-//         writeln!(
-//             &mut power,
-//             "-dynamic {} -leakage {}",
-//             extra_views[0], extra_views[0]
-//         );
-//     }
-//     writeln!(
-//         &mut mmmc_file,
-//         "set_analysis_view -setup {{ {} }} -hold {{ {} {} }} {}",
-//         setup_views.join(" "),
-//         hold_views.join(" "),
-//         extra_views.join(" "),
-//         power,
-//     );
-//
-//     mmmc_file
-// }
 //
 // pub fn power_spec_commands(
 //     run_dir: &PathBuf,

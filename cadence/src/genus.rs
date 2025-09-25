@@ -13,7 +13,7 @@ use crate::fs::File;
 
 /// Defines the working directory of the tool and which module to synthesize
 #[derive(Debug)]
-pub struct Genus {
+pub struct GenusStep {
     pub work_dir: PathBuf,
     pub module: String,
 }
@@ -320,7 +320,7 @@ impl Genus {
     }
 }
 
-impl Tool for Genus {
+impl Step for Genus {
     fn invoke(
         &self,
         work_dir: PathBuf,

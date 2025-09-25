@@ -1,3 +1,23 @@
+struct ModuleInfo {
+    module_name: String,
+    pin: FlatPinInfo
+}
+
+enum FlatPinInfo {
+    None,
+    PinSyn(PathBuf),
+    PinPar(PathBuf),
+}
+
+
+struct Sky130FlatFlow {
+    module: String,
+    syn: GenusStep,
+    par: InnovusStep,
+}
+pub fn sky130_syn(pdk_root: &PathBuf, work_dir: &PathBuf, dep_info: syn_stff, pin_info: smth) -> GenusStep {
+    
+}
 pub fn sky130_innovus_settings() -> Step {
     Step {
         checkpoint: true,
@@ -287,3 +307,33 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
         ]),
     }
 }
+
+fn sky130_flat_flow(work_dir: PathBuf, module: &ModuleInfo, dep_info: &[(&ModuleInfo, &Sky130FlatFlow)]) -> Sky130FlatFlow {
+    let syn = sky130_syn(
+        pdk_root,
+        work_dir.join("syn-rundir"),
+        dep_info.get_syn_stuff(),
+        module.pin_info.get_pin_syn(),
+    );
+    let par = sky130_par(
+        pdk_root,
+        work_dir.join("par-rundir"),
+        syn.output_netlist_path(),
+        dep_info.get_par_stuff(),
+        module.pin_info.get_pin_par(),
+    );
+    Sky130FlatFlow {
+        module: module.module_name.to_string(),
+        syn,
+        par
+    }
+}
+
+fn sky130_reference_flow(pdk_root: PathBuf, work_dir: PathBuf, hierarchy: Tree<ModuleInfo>) -> Tree<Sky130FlatFlow> {
+    // `hierarchical` is a helper function defined in rivet.
+    hierarchical(hierarchy, |block: &ModuleInfo, sub_blocks: &[(&ModuleInfo, &Sky130FlatFlow)]| -> Sky130FlatFlow {
+        sky130_flat_flow(work_dir.join(block), block, sub_blocks)
+    })
+}
+
+

@@ -5,34 +5,43 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
+use crate::cadence::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
+use fs::File;
 use indoc::formatdoc;
-use rivet::cadence::{mmmc, sdc, MmmcConfig, MmmcCorner};
-use rivet::flow::{AnnotatedStep, Step, Tool};
-
-use crate::fs::File;
+use rivet::Step;
 
 /// Defines the working directory of the tool and which module to synthesize
 #[derive(Debug)]
 pub struct GenusStep {
     pub work_dir: PathBuf,
     pub module: String,
+    pub substeps: Vec<Substep>,
 }
 
-impl Genus {
-    pub fn new(work_dir: impl Into<PathBuf>, module: impl Into<String>) -> Self {
+impl GenusStep {
+    pub fn new(
+        work_dir: impl Into<PathBuf>,
+        module: impl Into<String>,
+        steps: Vec<Substep>,
+    ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
-        Genus {
+        GenusStep {
             work_dir: dir,
             module: modul,
+            substeps: steps,
         }
+    }
+
+    fn add_hook() -> Self {
+        //TODO
     }
 
     /// Generates the tcl file for synthesis
     fn make_tcl_file(
         &self,
         path: &PathBuf,
-        steps: Vec<AnnotatedStep>,
+        steps: Vec<Substep>,
         checkpoint_dir: Option<PathBuf>,
     ) -> io::Result<()> {
         let mut tcl_file = File::create(&path).expect("failed to create syn.tcl file");
@@ -60,29 +69,27 @@ impl Genus {
             .expect("Failed to write");
         }
 
-        for astep in steps.into_iter() {
+        for step in steps.into_iter() {
             use colored::Colorize;
-            println!("\n--> Parsing step: {}\n", astep.step.name.green());
-            if astep.step.checkpoint {
-                //generate tcl for checkpointing
-                let mut checkpoint_command = String::new();
+            println!("\n--> Parsing step: {}\n", step.name.green());
+            //generate tcl for checkpointing
+            let mut checkpoint_command = String::new();
 
-                //TODO: have the checkpoint file name contain pre_stepname
-                let checkpoint_file = astep
-                    .checkpoint_path
-                    .into_os_string()
-                    .into_string()
-                    .expect("Failed to create checkpoint file");
-                writeln!(
-                    checkpoint_command,
-                    "write_db -to_file {cdir}.cpf",
-                    cdir = checkpoint_file
-                )
-                .expect("Failed to write");
+            //TODO: have the checkpoint file name contain pre_stepname
+            let checkpoint_file = step
+                .checkpoint_path
+                .into_os_string()
+                .into_string()
+                .expect("Failed to create checkpoint file");
+            writeln!(
+                checkpoint_command,
+                "write_db -to_file {cdir}.cpf",
+                cdir = checkpoint_file
+            )
+            .expect("Failed to write");
 
-                writeln!(tcl_file, "{}", checkpoint_command)?;
-            }
-            writeln!(tcl_file, "{}", astep.step.command)?;
+            writeln!(tcl_file, "{}", checkpoint_command)?;
+            writeln!(tcl_file, "{}", step.command)?;
         }
         writeln!(tcl_file, "quit")?;
         use colored::Colorize;
@@ -99,7 +106,7 @@ impl Genus {
         mmmc_conf: MmmcConfig,
         tlef: &PathBuf,
         pdk_lef: &PathBuf,
-    ) -> Step {
+    ) -> Substep {
         let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         println!("{}", sdc_file_path.display());
         let mut sdc_file = File::create(sdc_file_path).expect("failed to create file");
@@ -111,8 +118,7 @@ impl Genus {
         let module_string = module_file_path.display();
         let cache_tlef = tlef.display();
         let pdk = pdk_lef.display();
-        Step {
-            checkpoint: false,
+        Substep {
             command: formatdoc!(
                 r#"
                 read_mmmc {}
@@ -156,24 +162,22 @@ impl Genus {
     //     }
     // }
 
-    pub fn elaborate(&self) -> Step {
-        Step {
-            checkpoint: false,
+    pub fn elaborate(&self) -> Substep {
+        Substep {
             command: format!("elaborate {}", self.module),
             name: "elaborate".to_string(),
         }
     }
 
-    pub fn init_design(&self) -> Step {
-        Step {
-            checkpoint: false,
+    pub fn init_design(&self) -> Substep {
+        Substep {
             command: format!("init_design -top {}", self.module),
             name: "init_design".to_string(),
         }
     }
 
     /// Write power_spec.cpf and run power_intent TCL commands.
-    pub fn power_intent(&self) -> Step {
+    pub fn power_intent(&self) -> Substep {
         let power_spec_file_path = self.work_dir.join("power_spec.cpf");
         let mut power_spec_file =
             File::create(&power_spec_file_path).expect("failed to create file");
@@ -207,8 +211,7 @@ impl Genus {
         )
         .expect("Failed to write");
         let power_spec_file_string = power_spec_file_path.display();
-        Step {
-            checkpoint: true,
+        Substep {
             command: formatdoc!(
                 r#"
             read_power_intent -cpf {power_spec_file_string}
@@ -220,25 +223,22 @@ impl Genus {
         }
     }
 
-    pub fn syn_generic() -> Step {
-        Step {
-            checkpoint: true,
+    pub fn syn_generic() -> Substep {
+        Substep {
             command: "syn_generic".to_string(),
             name: "syn_generic".to_string(),
         }
     }
 
-    pub fn syn_map() -> Step {
-        Step {
-            checkpoint: true,
+    pub fn syn_map() -> Substep {
+        Substep {
             command: "syn_map".to_string(),
             name: "syn_map".to_string(),
         }
     }
 
-    pub fn add_tieoffs() -> Step {
-        Step {
-            checkpoint: true,
+    pub fn add_tieoffs() -> Substep {
+        Substep {
             command: formatdoc!(
                 r#"set_db message:WSDF-201 .max_print 20
             set_db use_tiehilo_for_const duplicate
@@ -254,8 +254,7 @@ impl Genus {
 
     pub fn write_design(&self) -> Step {
         let module = self.module.clone();
-        Step {
-            checkpoint: true,
+        Substep {
             command: formatdoc!(
                 r#"
             set write_cells_ir "./find_regs_cells.json"
@@ -320,13 +319,8 @@ impl Genus {
     }
 }
 
-impl Step for Genus {
-    fn invoke(
-        &self,
-        work_dir: PathBuf,
-        start_checkpoint: Option<PathBuf>,
-        steps: Vec<AnnotatedStep>,
-    ) {
+impl Step for GenusStep {
+    fn execute(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Substep>) {
         let tcl_path = work_dir.clone().join("syn.tcl");
 
         self.make_tcl_file(&tcl_path, steps, start_checkpoint)
@@ -345,8 +339,8 @@ impl Step for Genus {
     }
 }
 
-pub fn set_default_options() -> Step {
-    Step {
+pub fn set_default_options() -> Substep {
+    Substep {
         name: "set_default_options".into(),
         command: r#"
             set_db hdl_error_on_blackbox true
@@ -361,16 +355,14 @@ pub fn set_default_options() -> Step {
             set_db root: .auto_ungroup none
 "#
         .into(),
-        checkpoint: false,
     }
 }
 
-pub fn dont_avoid_lib_cells(base_name: &str) -> Step {
-    Step {
+pub fn dont_avoid_lib_cells(base_name: &str) -> Substep {
+    Substep {
         name: format!("dont_avoid_lib_cells_{base_name}"),
         command: formatdoc!(
             r#"set_db [get_db lib_cells -if {{.base_name == {base_name}}}] .avoid false"#
         ),
-        checkpoint: false,
     }
 }

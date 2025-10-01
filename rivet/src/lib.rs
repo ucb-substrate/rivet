@@ -5,8 +5,6 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-
-
 pub trait Step {
     fn deps(&self) -> Vec<Arc<dyn Step>>;
     fn pinned(&self) -> bool;
@@ -15,58 +13,52 @@ pub trait Step {
 
 pub fn execute(target: impl Step) {
     //traverse dag, execute deps unless they are pinned
-    
+
     let mut executed = HashSet::new();
-    execute_inner(root, &mut executed);// this is assuming that a target is a Step not a tree of
-                                       // flat flows for now
-    
-     
+    execute_inner(target, &mut executed); // this is assuming that a target is a Step not a tree of
+                                          // flat flows for now
 }
 
-fn execute_inner(step: &Step, executed: &mut HashSet<Step>) {
-        if executed.contains(step) {
-            return;
-        }
-
-        // use colored::Colorize;
-        // println!(
-        //     "{}",
-        //     format!(
-        //         "\n{main_str} '{node_str}'...\n",
-        //         main_str = "Evaluating node".green(),
-        //         node_str = node.green()
-        //     )
-        // );
-        //
-        for dependency in &step.deps(){
-            execute_inner(dependency, executed);
-        }
-
-
-        if step.pinned() {
-            // println!("---> Node '{}' is pinned. Skipping execution.", node);
-            executed.insert(step.clone());
-            return;
-        }
-
-        step.execute();
-       
-        // let temp_str = format!(
-        //     "{main_str} '{node_str}'",
-        //     main_str = "--> Finished node".green(),
-        //     node_str = node.green()
-        // );
-        // println!("\n{}\n", temp_str);
-        executed.insert(step.clone());
+fn execute_inner(step: &impl Step, executed: &mut HashSet<dyn Step>) {
+    if executed.contains(step) {
+        return;
     }
 
+    // use colored::Colorize;
+    // println!(
+    //     "{}",
+    //     format!(
+    //         "\n{main_str} '{node_str}'...\n",
+    //         main_str = "Evaluating node".green(),
+    //         node_str = node.green()
+    //     )
+    // );
+    //
+    for dependency in &step.deps() {
+        execute_inner(dependency, executed);
+    }
 
-pub fn hierarchical(tree: Tree<M>, flat_flow_gen: impl Fn(&M) -> F) -> Tree<F> {
-    //TODO
-    // This is supposed to convert a tree of `ModuleInfo` into a tree of flat flows
-     
+    if step.pinned() {
+        // println!("---> Node '{}' is pinned. Skipping execution.", node);
+        executed.insert(step.clone());
+        return;
+    }
+
+    step.execute();
+
+    // let temp_str = format!(
+    //     "{main_str} '{node_str}'",
+    //     main_str = "--> Finished node".green(),
+    //     node_str = node.green()
+    // );
+    // println!("\n{}\n", temp_str);
+    executed.insert(step.clone());
 }
 
+pub fn hierarchical(dag: Dag<M>, flat_flow_gen: impl Fn(&M) -> F) -> Dag<F> {
+    //TODO
+    // This is supposed to convert a dag of `ModuleInfo` and `FlatFlow` into a dag of flat flows
+}
 
 // /// Contains all the configs for tools used in the flow
 // #[derive(Deserialize, Debug, Clone)]
@@ -116,7 +108,6 @@ pub fn hierarchical(tree: Tree<M>, flat_flow_gen: impl Fn(&M) -> F) -> Tree<F> {
 //     pub steps: Vec<Step>,
 //     pub deps: Vec<String>,
 // }
-
 
 //
 // /// Tool plugins adapt the api invoke to run the tool for the configured steps.

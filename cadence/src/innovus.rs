@@ -5,32 +5,38 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::fs::File;
+use crate::cadence::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
+use fs::File;
 use indoc::formatdoc;
-use rivet::cadence::{mmmc, sdc, MmmcConfig, MmmcCorner};
-use rivet::flow::{AnnotatedStep, Step, Tool};
+use rivet::Step;
 use rust_decimal::Decimal;
 
 #[derive(Debug)]
-pub struct Innovus {
+pub struct InnovusStep {
     pub work_dir: PathBuf,
     pub module: String,
+    pub steps: Vec<Substep>,
 }
 
-impl Innovus {
-    pub fn new(work_dir: impl Into<PathBuf>, module: impl Into<String>) -> Self {
+impl InnovusStep {
+    pub fn new(
+        work_dir: impl Into<PathBuf>,
+        module: impl Into<String>,
+        steps: Vec<Substep>,
+    ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
-        Innovus {
+        InnovusStep {
             work_dir: dir,
             module: modul,
+            steps: steps,
         }
     }
 
     fn make_tcl_file(
         &self,
         path: &PathBuf,
-        steps: Vec<AnnotatedStep>,
+        steps: Vec<Substep>,
         checkpoint_dir: Option<PathBuf>,
     ) -> io::Result<()> {
         let mut tcl_file = File::create(&path).expect("failed to create par.tcl file");
@@ -91,7 +97,7 @@ impl Innovus {
         mmmc_conf: MmmcConfig,
         tlef: &PathBuf,
         pdk_lef: &PathBuf,
-    ) -> Step {
+    ) -> Substep {
         let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
@@ -103,8 +109,7 @@ impl Innovus {
         let cache_tlef = tlef.display();
         let pdk = pdk_lef.display();
 
-        Step {
-            checkpoint: false,
+        Substep {
             command: formatdoc!(
                 r#"
                     read_physical -lef {{ {} {} }}
@@ -121,17 +126,15 @@ impl Innovus {
         }
     }
 
-    pub fn init_design() -> Step {
-        Step {
-            checkpoint: false,
+    pub fn init_design() -> Substep {
+        Substep {
             command: format!("init_design"),
             name: "init_design".to_string(),
         }
     }
 
-    pub fn innovus_settings() -> Step {
-        Step {
-            checkpoint: false,
+    pub fn innovus_settings() -> Substep {
+        Substep {
             command: formatdoc!(
                 r#"
                 set_db design_bottom_routing_layer 2
@@ -144,7 +147,7 @@ impl Innovus {
         }
     }
 
-    pub fn floorplan_design(&self) -> Step {
+    pub fn floorplan_design(&self) -> Substep {
         // TODO: Parametrize the floowplan.tcl command
         let floorplan_tcl_path = self.work_dir.join("floorplan.tcl");
         let mut floorplan_tcl_file =
@@ -185,8 +188,7 @@ impl Innovus {
         )
         .expect("Failed to write");
         let power_spec_file_string = power_spec_file_path.display();
-        Step {
-            checkpoint: true,
+        Substep {
             command: formatdoc!(
                 r#"
                 source -echo -verbose {floorplan_path_string} 
@@ -200,15 +202,14 @@ impl Innovus {
     }
 
     //TODO: for non cadence standard cells which do not come pretapped
-    pub fn place_tap_cells() -> Step {
-        Step {
-            checkpoint: true,
+    pub fn place_tap_cells() -> Substep {
+        Substep {
             command: "".into(),
             name: "place_tap_cells".into(),
         }
     }
 
-    pub fn power_straps(straps: Vec<Layer>) -> Step {
+    pub fn power_straps(straps: Vec<Layer>) -> Substep {
         let mut definitions = String::new();
         for strap in straps.into_iter() {
             writeln!(
@@ -246,14 +247,17 @@ impl Innovus {
             writeln!(&mut definitions, "{}", strap.add_stripes_command).expect("Failed to write");
         }
 
-        Step {
-            checkpoint: true,
+        Substep {
             command: definitions.into(),
             name: "power_straps".into(),
         }
     }
 
-    pub fn place_pins(top_layer: &str, bot_layer: &str, assignments: Vec<PinAssignment>) -> Step {
+    pub fn place_pins(
+        top_layer: &str,
+        bot_layer: &str,
+        assignments: Vec<PinAssignment>,
+    ) -> Substep {
         let mut place_pins_commands = String::new();
         writeln!(place_pins_commands, "set_db assign_pins_edit_in_batch true")
             .expect("Failed to write");
@@ -296,16 +300,14 @@ impl Innovus {
         )
         .expect("Failed to write");
 
-        Step {
-            checkpoint: true,
+        Substep {
             command: place_pins_commands,
             name: "place_pins".into(),
         }
     }
 
-    pub fn place_opt_design() -> Step {
-        Step {
-            checkpoint: true,
+    pub fn place_opt_design() -> Substep {
+        Substep {
             command: formatdoc!(
                 r#"
                 set unplaced_pins [get_db ports -if {{.place_status == unplaced}}]
@@ -321,10 +323,9 @@ impl Innovus {
         }
     }
 
-    pub fn add_fillers(filler_cells: Vec<String>) -> Step {
+    pub fn add_fillers(filler_cells: Vec<String>) -> Substep {
         let cells = format!("\"{}\"", filler_cells.join(" "));
-        Step {
-            checkpoint: true,
+        Substep {
             command: formatdoc!(
                 r#"
                 set_db add_fillers_cells {cells}
@@ -335,9 +336,8 @@ impl Innovus {
         }
     }
 
-    pub fn route_design() -> Step {
-        Step {
-            checkpoint: true,
+    pub fn route_design() -> Substep {
+        Substep {
             command: formatdoc!(
                 r#"
             puts "set_db design_express_route true" 
@@ -350,9 +350,8 @@ impl Innovus {
         }
     }
 
-    pub fn opt_design() -> Step {
-        Step {
-            checkpoint: true,
+    pub fn opt_design() -> Substep {
+        Substep {
             command: formatdoc!(
                 r#"
                     set_db opt_post_route_hold_recovery auto
@@ -368,9 +367,8 @@ impl Innovus {
     }
 
     //TODO:needs to be updated to be hierarchal
-    pub fn write_regs() -> Step {
-        Step {
-            checkpoint: true,
+    pub fn write_regs() -> Substep {
+        Substep {
             command: formatdoc!(
                 r#"
             set write_cells_ir "./find_regs_cells.json"
@@ -419,11 +417,10 @@ impl Innovus {
     }
 
     //TODO: add a parameter of a list of excluded cells
-    pub fn write_design(&self) -> Step {
+    pub fn write_design(&self) -> Substep {
         let par_rundir = self.work_dir.display();
         let module = self.module.clone();
-        Step {
-            checkpoint: true,
+        Substep {
             command: formatdoc!(
                 r#"
                 set_db timing_enable_simultaneous_setup_hold_mode true
@@ -453,13 +450,8 @@ impl Innovus {
     }
 }
 
-impl Tool for Innovus {
-    fn invoke(
-        &self,
-        work_dir: PathBuf,
-        start_checkpoint: Option<PathBuf>,
-        steps: Vec<AnnotatedStep>,
-    ) {
+impl Step for InnovusStep {
+    fn execute(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Substep>) {
         let tcl_path = work_dir.clone().join("par.tcl");
 
         self.make_tcl_file(&tcl_path, steps, start_checkpoint)
@@ -499,8 +491,8 @@ pub struct PinAssignment {
     pub depth: String,
 }
 
-pub fn set_default_process(node_size: i64) -> Step {
-    Step {
+pub fn set_default_process(node_size: i64) -> Substep {
+    Substep {
         name: "set_default_options".into(),
         command: formatdoc!(
             r#"
@@ -512,6 +504,5 @@ pub fn set_default_process(node_size: i64) -> Step {
             node_size
         )
         .into(),
-        checkpoint: false,
     }
 }

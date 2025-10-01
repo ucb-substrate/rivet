@@ -5,6 +5,12 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
+pub struct Substep {
+    //could make this a cadence concept inside the cadence.rs file
+    pub name: String,
+    pub command: String,
+}
+
 /// Returns the TCL for clock_constraints and pin_constraints
 pub fn sdc() -> String {
     formatdoc!(

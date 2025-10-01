@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rivet = { path = "../../rivet" } 
+cadence = { version = "0.1.0", path = "../../cadence" }
+indoc = "2"
+rust_decimal = "1"
+rust_decimal_macros = "1"

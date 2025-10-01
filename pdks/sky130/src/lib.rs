@@ -8,17 +8,16 @@ use std::{
     sync::Arc,
 };
 
-use genus::{dont_avoid_lib_cells, set_default_options, Genus};
+use cadence::cadence::{mmmc, sdc, MmmcConfig, MmmcCorner, Substep};
+use cadence::genus::{dont_avoid_lib_cells, set_default_options, GenusStep};
+use cadence::innovus::{set_default_process, InnovusStep, Layer, PinAssignment};
 use indoc::formatdoc;
-use innovus::{set_default_process, Innovus, Layer, PinAssignment};
-use rivet::cadence::{mmmc, sdc, MmmcConfig, MmmcCorner};
-use rivet::flow::{Flow, FlowNode, Step};
+use rivet::Step;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-fn sky130_connect_nets() -> Step {
-    Step {
-        checkpoint: true,
+fn sky130_connect_nets() -> Substep {
+    Substep {
         command: formatdoc!(
             r#"
             connect_global_net VDD -type pg_pin -pin_base_name VPWR -all -auto_tie -netlist_override

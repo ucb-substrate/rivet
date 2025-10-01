@@ -1,6 +1,33 @@
+use std::fmt::Debug;
+use std::fmt::Write as FmtWrite;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::{fs, io};
+
+use crate::fs::File;
+use cadence::cadence::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
+use cadence::genus::{GenusStep, dont_avoid_lib_cells, set_default_options};
+use cadence::innovus::{InnovusStep, Layer, PinAssignment, set_default_process};
+use indoc::formatdoc;
+use rivet::Step;
+
+use std::fmt::Write as FmtWrite;
+use std::{
+    collections::HashMap,
+    fs,
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
+
 struct ModuleInfo {
     module_name: String,
-    pin: FlatPinInfo
+    pin: FlatPinInfo,
 }
 
 enum FlatPinInfo {
@@ -9,18 +36,22 @@ enum FlatPinInfo {
     PinPar(PathBuf),
 }
 
-
 struct Sky130FlatFlow {
     module: String,
     syn: GenusStep,
     par: InnovusStep,
 }
-pub fn sky130_syn(pdk_root: &PathBuf, work_dir: &PathBuf, dep_info: syn_stff, pin_info: smth) -> GenusStep {
-    
+
+pub fn sky130_syn(
+    pdk_root: &PathBuf,
+    work_dir: &PathBuf,
+    dep_info: syn_stff,
+    pin_info: smth,
+) -> GenusStep {
 }
-pub fn sky130_innovus_settings() -> Step {
-    Step {
-        checkpoint: true,
+
+pub fn sky130_innovus_settings() -> Substep {
+    Substep {
         command: formatdoc!(
             r#"
             ln -sfn pre_sky130_innovus_settings latest
@@ -73,11 +104,11 @@ pub fn sky130_innovus_settings() -> Step {
             set_db route_design_concurrent_minimize_via_count_effort high
             set_db opt_consider_routing_congestion true
             set_db route_design_detail_use_multi_cut_via_effort medium
-                
+
 
             # For top module: snap die to manufacturing grid, not placement grid
             set_db floorplan_snap_die_grid manufacturing
-                    
+
 
             # note this is required for sky130_fd_sc_hd, the design has a ton of drcs if bottom layer is 1
                             # TODO: why is setting routing_layer not enough?
@@ -92,8 +123,8 @@ pub fn sky130_innovus_settings() -> Step {
 }
 
 pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> Flow {
-    let genus = Arc::new(Genus::new(&working_dir.join("syn-rundir"), module));
-    let innovus = Arc::new(Innovus::new(&working_dir.join("par-rundir"), module));
+    let genus = Arc::new(GenusStep::new(&working_dir.join("syn-rundir"), module));
+    let innovus = Arc::new(InnovusStep::new(&working_dir.join("par-rundir"), module));
 
     let filler_cells = vec![
         "FILL0".into(),
@@ -143,85 +174,95 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
         }
     ];
 
-    let syn_con = MmmcConfig {
-        sdc_files: vec![working_dir
-            .clone()
-            .join("syn-rundir/clock_pin_constraints.sdc")],
+    let syn_con =
+        MmmcConfig {
+            sdc_files: vec![
+                working_dir
+                    .clone()
+                    .join("syn-rundir/clock_pin_constraints.sdc"),
+            ],
 
-        corners: vec![
-            MmmcCorner {
-                name: "ss_100C_1v60.setup".to_string(),
-                libs: vec![pdk_root
-                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib")],
-                temperature: dec!(100.0),
-            },
-            MmmcCorner {
-                name: "ff_n40C_1v95.hold".to_string(),
-                libs: vec![pdk_root
-                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib")],
-                temperature: dec!(-40.0),
-            },
-            MmmcCorner {
-                name: "tt_025C_1v80.extra".to_string(),
-                libs: vec![pdk_root
-                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib")],
-                temperature: dec!(25.0),
-            },
-        ],
+            corners: vec![
+                MmmcCorner {
+                    name: "ss_100C_1v60.setup".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib",
+                    )],
+                    temperature: dec!(100.0),
+                },
+                MmmcCorner {
+                    name: "ff_n40C_1v95.hold".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib",
+                    )],
+                    temperature: dec!(-40.0),
+                },
+                MmmcCorner {
+                    name: "tt_025C_1v80.extra".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib",
+                    )],
+                    temperature: dec!(25.0),
+                },
+            ],
 
-        setup: vec!["ss_100C_1v60.setup".to_string()],
+            setup: vec!["ss_100C_1v60.setup".to_string()],
 
-        hold: vec![
-            "ff_n40C_1v95.hold".to_string(),
-            "tt_025C_1v80.extra".to_string(),
-        ],
+            hold: vec![
+                "ff_n40C_1v95.hold".to_string(),
+                "tt_025C_1v80.extra".to_string(),
+            ],
 
-        dynamic: "tt_025C_1v80.extra".to_string(),
+            dynamic: "tt_025C_1v80.extra".to_string(),
 
-        leakage: "tt_025C_1v80.extra".to_string(),
-    };
+            leakage: "tt_025C_1v80.extra".to_string(),
+        };
 
-    let par_con = MmmcConfig {
-        sdc_files: vec![
-            working_dir
-                .clone()
-                .join("par-rundir/clock_pin_constraints.sdc"),
-            working_dir
-                .clone()
-                .join(format!("syn-rundir/{}.mapped.sdc", module)),
-        ],
-        corners: vec![
-            MmmcCorner {
-                name: "ss_100C_1v60.setup".to_string(),
-                libs: vec![pdk_root
-                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib")],
-                temperature: dec!(100.0),
-            },
-            MmmcCorner {
-                name: "ff_n40C_1v95.hold".to_string(),
-                libs: vec![pdk_root
-                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib")],
-                temperature: dec!(-40.0),
-            },
-            MmmcCorner {
-                name: "tt_025C_1v80.extra".to_string(),
-                libs: vec![pdk_root
-                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib")],
-                temperature: dec!(25.0),
-            },
-        ],
+    let par_con =
+        MmmcConfig {
+            sdc_files: vec![
+                working_dir
+                    .clone()
+                    .join("par-rundir/clock_pin_constraints.sdc"),
+                working_dir
+                    .clone()
+                    .join(format!("syn-rundir/{}.mapped.sdc", module)),
+            ],
+            corners: vec![
+                MmmcCorner {
+                    name: "ss_100C_1v60.setup".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib",
+                    )],
+                    temperature: dec!(100.0),
+                },
+                MmmcCorner {
+                    name: "ff_n40C_1v95.hold".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib",
+                    )],
+                    temperature: dec!(-40.0),
+                },
+                MmmcCorner {
+                    name: "tt_025C_1v80.extra".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib",
+                    )],
+                    temperature: dec!(25.0),
+                },
+            ],
 
-        setup: vec!["ss_100C_1v60.setup".to_string()],
+            setup: vec!["ss_100C_1v60.setup".to_string()],
 
-        hold: vec![
-            "ff_n40C_1v95.hold".to_string(),
-            "tt_025C_1v80.extra".to_string(),
-        ],
+            hold: vec![
+                "ff_n40C_1v95.hold".to_string(),
+                "tt_025C_1v80.extra".to_string(),
+            ],
 
-        dynamic: "tt_025C_1v80.extra".to_string(),
+            dynamic: "tt_025C_1v80.extra".to_string(),
 
-        leakage: "tt_025C_1v80.extra".to_string(),
-    };
+            leakage: "tt_025C_1v80.extra".to_string(),
+        };
 
     fs::create_dir(working_dir.join("syn-rundir")).expect("Failed to create directory");
     fs::create_dir(working_dir.join("par-rundir")).expect("Failed to create directory");
@@ -308,7 +349,11 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
     }
 }
 
-fn sky130_flat_flow(work_dir: PathBuf, module: &ModuleInfo, dep_info: &[(&ModuleInfo, &Sky130FlatFlow)]) -> Sky130FlatFlow {
+fn sky130_flat_flow(
+    work_dir: PathBuf,
+    module: &ModuleInfo,
+    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
+) -> Sky130FlatFlow {
     let syn = sky130_syn(
         pdk_root,
         work_dir.join("syn-rundir"),
@@ -325,15 +370,20 @@ fn sky130_flat_flow(work_dir: PathBuf, module: &ModuleInfo, dep_info: &[(&Module
     Sky130FlatFlow {
         module: module.module_name.to_string(),
         syn,
-        par
+        par,
     }
 }
 
-fn sky130_reference_flow(pdk_root: PathBuf, work_dir: PathBuf, hierarchy: Tree<ModuleInfo>) -> Tree<Sky130FlatFlow> {
+fn sky130_reference_flow(
+    pdk_root: PathBuf,
+    work_dir: PathBuf,
+    hierarchy: Tree<ModuleInfo>,
+) -> Tree<Sky130FlatFlow> {
     // `hierarchical` is a helper function defined in rivet.
-    hierarchical(hierarchy, |block: &ModuleInfo, sub_blocks: &[(&ModuleInfo, &Sky130FlatFlow)]| -> Sky130FlatFlow {
-        sky130_flat_flow(work_dir.join(block), block, sub_blocks)
-    })
+    hierarchical(
+        hierarchy,
+        |block: &ModuleInfo, sub_blocks: &[(&ModuleInfo, &Sky130FlatFlow)]| -> Sky130FlatFlow {
+            sky130_flat_flow(work_dir.join(block), block, sub_blocks)
+        },
+    )
 }
-
-

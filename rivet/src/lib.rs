@@ -5,6 +5,11 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub struct Dag<F> {
+    node: F,
+    directed_edges: Vec<F>,
+}
+
 pub trait Step {
     fn deps(&self) -> Vec<Arc<dyn Step>>;
     fn pinned(&self) -> bool;

@@ -51,23 +51,23 @@ impl GenusStep {
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
-        if let Some(actual_checkpt_dir) = checkpoint_dir {
-            use colored::Colorize;
-            println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
-            let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
-            writeln!(
-                tcl_file,
-                "{}",
-                format!(
-                    "read_db {}",
-                    complete_checkpoint_path
-                        .into_os_string()
-                        .into_string()
-                        .expect("Failed to read from checkpoint path")
-                )
-            )
-            .expect("Failed to write");
-        }
+        // if let Some(actual_checkpt_dir) = checkpoint_dir {
+        //     use colored::Colorize;
+        //     println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
+        //     let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
+        //     writeln!(
+        //         tcl_file,
+        //         "{}",
+        //         format!(
+        //             "read_db {}",
+        //             complete_checkpoint_path
+        //                 .into_os_string()
+        //                 .into_string()
+        //                 .expect("Failed to read from checkpoint path")
+        //         )
+        //     )
+        //     .expect("Failed to write");
+        // }
 
         for step in steps.into_iter() {
             use colored::Colorize;

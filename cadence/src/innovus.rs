@@ -60,28 +60,26 @@ impl InnovusStep {
             .expect("Failed to write");
         }
 
-        for astep in steps.into_iter() {
+        for step in steps.into_iter() {
             use colored::Colorize;
-            println!("\n--> Parsing step: {}\n", astep.step.name.green());
-            if astep.step.checkpoint {
-                //generate tcl for checkpointing
-                let mut checkpoint_command = String::new();
+            println!("\n--> Parsing step: {}\n", step.name.green());
+            //generate tcl for checkpointing
+            let mut checkpoint_command = String::new();
 
-                let mut checkpoint_file = astep
-                    .checkpoint_path
-                    .into_os_string()
-                    .into_string()
-                    .expect("Failed to create checkpoint file");
-                writeln!(
-                    checkpoint_command,
-                    "write_db {cdir}.cpf",
-                    cdir = checkpoint_file
-                )
-                .expect("Failed to write");
+            let mut checkpoint_file = step
+                .checkpoint_path
+                .into_os_string()
+                .into_string()
+                .expect("Failed to create checkpoint file");
+            writeln!(
+                checkpoint_command,
+                "write_db {cdir}.cpf",
+                cdir = checkpoint_file
+            )
+            .expect("Failed to write");
 
-                writeln!(tcl_file, "{}", checkpoint_command)?;
-            }
-            writeln!(tcl_file, "{}", astep.step.command)?;
+            writeln!(tcl_file, "{}", checkpoint_command)?;
+            writeln!(tcl_file, "{}", step.command)?;
         }
         writeln!(tcl_file, "exit")?;
         use colored::Colorize;

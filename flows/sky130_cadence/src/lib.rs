@@ -45,9 +45,18 @@ struct Sky130FlatFlow {
 pub fn sky130_syn(
     pdk_root: &PathBuf,
     work_dir: &PathBuf,
-    dep_info: syn_stff,
-    pin_info: smth,
+    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
+    pin_info: FlatPinInfo,
 ) -> GenusStep {
+}
+
+pub fn sky130_par(
+    pdk_root: &PathBuf,
+    work_dir: &PathBuf,
+    netlist: &PathBuf,
+    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
+    pin_info: FlatPinInfo,
+) -> InnovusStep {
 }
 
 pub fn sky130_innovus_settings() -> Substep {
@@ -350,6 +359,7 @@ pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> 
 }
 
 fn sky130_flat_flow(
+    pdk_root: PathBuf,
     work_dir: PathBuf,
     module: &ModuleInfo,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],

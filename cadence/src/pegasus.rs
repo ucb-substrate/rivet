@@ -17,16 +17,24 @@ pub struct PegasusStep {
     pub func: String,
     pub module: String,
     pub pinned: bool,
+    pub dependencies: Vec<Arc<dyn Step>>,
 }
 
 impl PegasusStep {
-    pub fn new(work_dir: impl Into<PathBuf>, func: String, module: String, pinned: bool) -> Self {
+    pub fn new(
+        work_dir: impl Into<PathBuf>,
+        func: String,
+        module: String,
+        pinned: bool,
+        deps: Vec<Arc<dyn Step>>,
+    ) -> Self {
         let dir = work_dir.into();
         PegasusStep {
             work_dir: dir,
             func: func,
             module: module,
             pinned: pinned,
+            dependencies: deps,
         }
     }
 
@@ -155,7 +163,9 @@ impl Step for PegasusStep {
             }
         }
     }
-    fn deps(&self) -> Vec<Arc<dyn Step>> {}
+    fn deps(&self) -> Vec<Arc<dyn Step>> {
+        self.dependencies.clone()
+    }
 
     fn pinned(&self) -> bool {
         self.pinned

@@ -19,6 +19,7 @@ pub struct GenusStep {
     pub substeps: Vec<Substep>,
     pub pinned: bool,
     pub start_checkpoint: Option<PathBuf>,
+    pub dependencies: Vec<Arc<dyn Step>>,
 }
 
 impl GenusStep {
@@ -28,6 +29,7 @@ impl GenusStep {
         steps: Vec<Substep>,
         pinned: bool,
         checkpoint: Option<PathBuf>,
+        deps: Vec<Arc<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
@@ -37,6 +39,7 @@ impl GenusStep {
             substeps: steps,
             pinned: pinned,
             start_checkpoint: checkpoint,
+            dependencies: deps,
         }
     }
 
@@ -345,7 +348,9 @@ impl Step for GenusStep {
         }
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {}
+    fn deps(&self) -> Vec<Arc<dyn Step>> {
+        self.dependencies.clone()
+    }
 
     fn pinned(&self) -> bool {
         self.pinned

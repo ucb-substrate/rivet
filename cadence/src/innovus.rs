@@ -19,6 +19,7 @@ pub struct InnovusStep {
     pub steps: Vec<Substep>,
     pub pinned: bool,
     pub start_checkpoint: Option<PathBuf>,
+    pub dependencies: Vec<Arc<dyn Step>>,
 }
 
 impl InnovusStep {
@@ -28,6 +29,7 @@ impl InnovusStep {
         steps: Vec<Substep>,
         pinned: bool,
         checkpoint: Option<PathBuf>,
+        deps: Vec<Arc<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
@@ -37,6 +39,7 @@ impl InnovusStep {
             steps: steps,
             pinned: pinned,
             start_checkpoint: checkpoint,
+            dependencies: deps,
         }
     }
 
@@ -470,7 +473,9 @@ impl Step for InnovusStep {
         }
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {}
+    fn deps(&self) -> Vec<Arc<dyn Step>> {
+        self.dependencies.clone()
+    }
 
     fn pinned(&self) -> bool {
         self.pinned

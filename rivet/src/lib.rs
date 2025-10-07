@@ -12,7 +12,7 @@ pub struct Dag<F> {
     directed_edges: Vec<F>,
 }
 
-pub trait Step {
+pub trait Step: Debug {
     fn deps(&self) -> Vec<Arc<dyn Step>>;
     fn pinned(&self) -> bool;
     fn execute(&self);
@@ -30,7 +30,7 @@ fn execute_inner(
     step: Arc<dyn Step>,
     executed: &mut HashMap<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>,
 ) {
-    if executed.contains_key(ByAddress(step)) {
+    if executed.contains_key(&ByAddress(step.clone())) {
         return;
     }
     for dependency in step.deps() {
@@ -38,13 +38,13 @@ fn execute_inner(
     }
 
     if step.pinned() {
-        executed.insert(ByAddress(step), Arc::clone(step));
+        executed.insert(ByAddress(step.clone()), Arc::clone(&step));
         return;
     }
 
     step.execute();
 
-    executed.insert(ByAddress(step), Arc::clone(step));
+    executed.insert(ByAddress(step.clone()), Arc::clone(&step));
 }
 
 pub fn hierarchical<M, F>(dag: Dag<M>, flat_flow_gen: impl Fn(&M) -> F) -> Dag<F> {

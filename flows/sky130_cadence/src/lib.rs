@@ -12,13 +12,9 @@ use cadence::innovus::{InnovusStep, Layer, PinAssignment, set_default_process};
 use indoc::formatdoc;
 use rivet::Step;
 
-use std::fmt::Write as FmtWrite;
 use std::{
     collections::HashMap,
-    fs,
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    path::{Path, PathBuf},
+    io::{BufRead, BufReader, BufWriter},
     sync::Arc,
 };
 
@@ -48,6 +44,73 @@ pub fn sky130_syn(
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     pin_info: FlatPinInfo,
 ) -> GenusStep {
+    // steps: vec![
+    //     set_default_options(),
+    //     dont_avoid_lib_cells("ICGX1"),
+    //     genus.read_design_files(
+    //         &PathBuf::from(
+    //             "/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v",
+    //         ),
+    //         syn_con.clone(),
+    //         &tlef,
+    //         &pdk_root.join(
+    //             "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
+    //         ),
+    //     ),
+    //     genus.elaborate(),
+    //     genus.init_design(),
+    //     genus.power_intent(),
+    //     Genus::syn_generic(),
+    //     Genus::syn_map(),
+    //     Genus::add_tieoffs(),
+    //     genus.write_design(),
+
+    let syn_con =
+        MmmcConfig {
+            sdc_files: vec![
+                working_dir
+                    .clone()
+                    .join("syn-rundir/clock_pin_constraints.sdc"),
+            ],
+
+            corners: vec![
+                MmmcCorner {
+                    name: "ss_100C_1v60.setup".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib",
+                    )],
+                    temperature: dec!(100.0),
+                },
+                MmmcCorner {
+                    name: "ff_n40C_1v95.hold".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib",
+                    )],
+                    temperature: dec!(-40.0),
+                },
+                MmmcCorner {
+                    name: "tt_025C_1v80.extra".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib",
+                    )],
+                    temperature: dec!(25.0),
+                },
+            ],
+
+            setup: vec!["ss_100C_1v60.setup".to_string()],
+
+            hold: vec![
+                "ff_n40C_1v95.hold".to_string(),
+                "tt_025C_1v80.extra".to_string(),
+            ],
+
+            dynamic: "tt_025C_1v80.extra".to_string(),
+
+            leakage: "tt_025C_1v80.extra".to_string(),
+        };
+    fs::create_dir(working_dir.join("syn-rundir")).expect("Failed to create directory");
+    fs::create_dir(working_dir.join("syn-rundir/").join("checkpoints/"))
+        .expect("Failed to create directory");
 }
 
 pub fn sky130_par(
@@ -57,6 +120,138 @@ pub fn sky130_par(
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     pin_info: FlatPinInfo,
 ) -> InnovusStep {
+    // steps: vec![
+    //     set_default_process(130),
+    //     innovus.read_design_files(
+    //         &netlist,
+    //         par_con.clone(),
+    //         &tlef,
+    //         &pdk_root.join(
+    //             "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
+    //         ),
+    //     ),
+    //     Innovus::init_design(),
+    //     Innovus::innovus_settings(),
+    //     sky130_innovus_settings(),
+    //     innovus.floorplan_design(),
+    //     sky130_connect_nets(),
+    //     Innovus::power_straps(layers),
+    //     Innovus::place_pins("5", "1", vec![assignment]),
+    //     Innovus::place_opt_design(),
+    //     Innovus::add_fillers(filler_cells),
+    //     Innovus::route_design(),
+    //     Innovus::opt_design(),
+    //     Innovus::write_regs(),
+    //     sky130_connect_nets(),
+    //     innovus.write_design(),
+    // ],
+
+    let filler_cells = vec![
+        "FILL0".into(),
+        "FILL1".into(),
+        "FILL4".into(),
+        "FILL9".into(),
+        "FILL16".into(),
+        "FILL25".into(),
+        "FILL36".into(),
+    ];
+
+    let assignment = PinAssignment {
+        pins: "*".into(),
+        module: "decoder".into(),
+        patterns: "-spread_type range".into(),
+        layer: "-layer {met4}".into(),
+        side: "-side bottom".into(),
+        start: "-start {30 0}".into(),
+        end: "-end {0 0}".into(),
+        assign: "".into(),
+        width: "".into(),
+        depth: "".into(),
+    };
+
+    let layers = vec![
+        Layer {
+            top: "met1".into(),
+            bot: "met1".into(),
+            spacing: dec!(4.000),
+            trim_antenna: false,
+            add_stripes_command: r#"add_stripes -nets {VDD VSS} -layer met1 -direction horizontal -start_offset -.2 -width .4 -spacing 3.74 -set_to_set_distance 8.28 -start_from bottom -switch_layer_over_obs false -max_same_layer_jog_length 2 -pad_core_ring_top_layer_limit met5 -pad_core_ring_bottom_layer_limit met1 -block_ring_top_layer_limit met5 -block_ring_bottom_layer_limit met1 -use_wire_group 0 -snap_wire_center_to_grid none"#.to_string(),
+        },
+
+        Layer {
+            top: "met4".to_string(),
+            bot: "met1".to_string(),
+            spacing: dec!(2.000),
+            trim_antenna: true,
+            add_stripes_command: r#"add_stripes -create_pins 0 -block_ring_bottom_layer_limit met4 -block_ring_top_layer_limit met1 -direction vertical -layer met4 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met1 -set_to_set_distance 75.90 -spacing 3.66 -switch_layer_over_obs 0 -width 1.86 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 0] + 7.35]"#.to_string(),
+        },
+        Layer {
+            top: "met5".to_string(),
+            bot: "met4".to_string(),
+            spacing: dec!(2.000),
+            trim_antenna: true,
+            add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
+        }
+    ];
+
+    let par_con =
+        MmmcConfig {
+            sdc_files: vec![
+                working_dir
+                    .clone()
+                    .join("par-rundir/clock_pin_constraints.sdc"),
+                working_dir
+                    .clone()
+                    .join(format!("syn-rundir/{}.mapped.sdc", module)),
+            ],
+            corners: vec![
+                MmmcCorner {
+                    name: "ss_100C_1v60.setup".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib",
+                    )],
+                    temperature: dec!(100.0),
+                },
+                MmmcCorner {
+                    name: "ff_n40C_1v95.hold".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib",
+                    )],
+                    temperature: dec!(-40.0),
+                },
+                MmmcCorner {
+                    name: "tt_025C_1v80.extra".to_string(),
+                    libs: vec![pdk_root.join(
+                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib",
+                    )],
+                    temperature: dec!(25.0),
+                },
+            ],
+
+            setup: vec!["ss_100C_1v60.setup".to_string()],
+
+            hold: vec![
+                "ff_n40C_1v95.hold".to_string(),
+                "tt_025C_1v80.extra".to_string(),
+            ],
+
+            dynamic: "tt_025C_1v80.extra".to_string(),
+
+            leakage: "tt_025C_1v80.extra".to_string(),
+        };
+
+    fs::create_dir(working_dir.join("par-rundir")).expect("Failed to create directory");
+    fs::create_dir(working_dir.join("par-rundir/").join("checkpoints/"))
+        .expect("Failed to create directory");
+
+    let netlist = working_dir.join(format!("syn-rundir/{}.mapped.v", module.clone()));
+    println!("{}", netlist.display());
+    let tlef = setup_techlef(
+        &working_dir.clone(),
+        &PathBuf::from(
+            &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
+        ),
+    );
 }
 
 pub fn sky130_innovus_settings() -> Substep {
@@ -131,233 +326,6 @@ pub fn sky130_innovus_settings() -> Substep {
     }
 }
 
-pub fn reference_flow(pdk_root: PathBuf, working_dir: PathBuf, module: &str) -> Flow {
-    let genus = Arc::new(GenusStep::new(&working_dir.join("syn-rundir"), module));
-    let innovus = Arc::new(InnovusStep::new(&working_dir.join("par-rundir"), module));
-
-    let filler_cells = vec![
-        "FILL0".into(),
-        "FILL1".into(),
-        "FILL4".into(),
-        "FILL9".into(),
-        "FILL16".into(),
-        "FILL25".into(),
-        "FILL36".into(),
-    ];
-
-    let assignment = PinAssignment {
-        pins: "*".into(),
-        module: "decoder".into(),
-        patterns: "-spread_type range".into(),
-        layer: "-layer {met4}".into(),
-        side: "-side bottom".into(),
-        start: "-start {30 0}".into(),
-        end: "-end {0 0}".into(),
-        assign: "".into(),
-        width: "".into(),
-        depth: "".into(),
-    };
-
-    let layers = vec![
-        Layer {
-            top: "met1".into(),
-            bot: "met1".into(),
-            spacing: dec!(4.000),
-            trim_antenna: false,
-            add_stripes_command: r#"add_stripes -nets {VDD VSS} -layer met1 -direction horizontal -start_offset -.2 -width .4 -spacing 3.74 -set_to_set_distance 8.28 -start_from bottom -switch_layer_over_obs false -max_same_layer_jog_length 2 -pad_core_ring_top_layer_limit met5 -pad_core_ring_bottom_layer_limit met1 -block_ring_top_layer_limit met5 -block_ring_bottom_layer_limit met1 -use_wire_group 0 -snap_wire_center_to_grid none"#.to_string(),
-        },
-
-        Layer {
-            top: "met4".to_string(),
-            bot: "met1".to_string(),
-            spacing: dec!(2.000),
-            trim_antenna: true,
-            add_stripes_command: r#"add_stripes -create_pins 0 -block_ring_bottom_layer_limit met4 -block_ring_top_layer_limit met1 -direction vertical -layer met4 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met1 -set_to_set_distance 75.90 -spacing 3.66 -switch_layer_over_obs 0 -width 1.86 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 0] + 7.35]"#.to_string(),
-        },
-        Layer {
-            top: "met5".to_string(),
-            bot: "met4".to_string(),
-            spacing: dec!(2.000),
-            trim_antenna: true,
-            add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
-        }
-    ];
-
-    let syn_con =
-        MmmcConfig {
-            sdc_files: vec![
-                working_dir
-                    .clone()
-                    .join("syn-rundir/clock_pin_constraints.sdc"),
-            ],
-
-            corners: vec![
-                MmmcCorner {
-                    name: "ss_100C_1v60.setup".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib",
-                    )],
-                    temperature: dec!(100.0),
-                },
-                MmmcCorner {
-                    name: "ff_n40C_1v95.hold".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib",
-                    )],
-                    temperature: dec!(-40.0),
-                },
-                MmmcCorner {
-                    name: "tt_025C_1v80.extra".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib",
-                    )],
-                    temperature: dec!(25.0),
-                },
-            ],
-
-            setup: vec!["ss_100C_1v60.setup".to_string()],
-
-            hold: vec![
-                "ff_n40C_1v95.hold".to_string(),
-                "tt_025C_1v80.extra".to_string(),
-            ],
-
-            dynamic: "tt_025C_1v80.extra".to_string(),
-
-            leakage: "tt_025C_1v80.extra".to_string(),
-        };
-
-    let par_con =
-        MmmcConfig {
-            sdc_files: vec![
-                working_dir
-                    .clone()
-                    .join("par-rundir/clock_pin_constraints.sdc"),
-                working_dir
-                    .clone()
-                    .join(format!("syn-rundir/{}.mapped.sdc", module)),
-            ],
-            corners: vec![
-                MmmcCorner {
-                    name: "ss_100C_1v60.setup".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib",
-                    )],
-                    temperature: dec!(100.0),
-                },
-                MmmcCorner {
-                    name: "ff_n40C_1v95.hold".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib",
-                    )],
-                    temperature: dec!(-40.0),
-                },
-                MmmcCorner {
-                    name: "tt_025C_1v80.extra".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib",
-                    )],
-                    temperature: dec!(25.0),
-                },
-            ],
-
-            setup: vec!["ss_100C_1v60.setup".to_string()],
-
-            hold: vec![
-                "ff_n40C_1v95.hold".to_string(),
-                "tt_025C_1v80.extra".to_string(),
-            ],
-
-            dynamic: "tt_025C_1v80.extra".to_string(),
-
-            leakage: "tt_025C_1v80.extra".to_string(),
-        };
-
-    fs::create_dir(working_dir.join("syn-rundir")).expect("Failed to create directory");
-    fs::create_dir(working_dir.join("par-rundir")).expect("Failed to create directory");
-    fs::create_dir(working_dir.join("syn-rundir/").join("checkpoints/"))
-        .expect("Failed to create directory");
-    fs::create_dir(working_dir.join("par-rundir/").join("checkpoints/"))
-        .expect("Failed to create directory");
-
-    let netlist = working_dir.join(format!("syn-rundir/{}.mapped.v", module.clone()));
-    println!("{}", netlist.display());
-    let tlef = setup_techlef(
-        &working_dir.clone(),
-        &PathBuf::from(
-            &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
-        ),
-    );
-    Flow {
-        nodes: HashMap::from_iter([
-            (
-                "syn".into(),
-                FlowNode {
-                    tool: genus.clone(),
-                    work_dir: working_dir.join("syn-rundir/"),
-                    checkpoint_dir: working_dir.join("syn-rundir/").join("checkpoints/"),
-                    steps: vec![
-                        set_default_options(),
-                        dont_avoid_lib_cells("ICGX1"),
-                        genus.read_design_files(
-                            &PathBuf::from(
-                                "/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v",
-                            ),
-                            syn_con.clone(),
-                            &tlef,
-                            &pdk_root.join(
-                                "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
-                            ),
-                        ),
-                        genus.elaborate(),
-                        genus.init_design(),
-                        genus.power_intent(),
-                        Genus::syn_generic(),
-                        Genus::syn_map(),
-                        Genus::add_tieoffs(),
-                        genus.write_design(),
-                    ],
-                    deps: Vec::new(),
-                },
-            ),
-            (
-                "par".into(),
-                FlowNode {
-                    tool: innovus.clone(),
-                    work_dir: working_dir.join("par-rundir"),
-                    checkpoint_dir: working_dir.join("par-rundir/").join("checkpoints/"),
-                    steps: vec![
-                        set_default_process(130),
-                        innovus.read_design_files(
-                            &netlist,
-                            par_con.clone(),
-                            &tlef,
-                            &pdk_root.join(
-                                "sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef",
-                            ),
-                        ),
-                        Innovus::init_design(),
-                        Innovus::innovus_settings(),
-                        sky130_innovus_settings(),
-                        innovus.floorplan_design(),
-                        sky130_connect_nets(),
-                        Innovus::power_straps(layers),
-                        Innovus::place_pins("5", "1", vec![assignment]),
-                        Innovus::place_opt_design(),
-                        Innovus::add_fillers(filler_cells),
-                        Innovus::route_design(),
-                        Innovus::opt_design(),
-                        Innovus::write_regs(),
-                        sky130_connect_nets(),
-                        innovus.write_design(),
-                    ],
-                    deps: vec!["syn".into()],
-                },
-            ),
-        ]),
-    }
-}
-
 fn sky130_flat_flow(
     pdk_root: PathBuf,
     work_dir: PathBuf,
@@ -387,8 +355,8 @@ fn sky130_flat_flow(
 fn sky130_reference_flow(
     pdk_root: PathBuf,
     work_dir: PathBuf,
-    hierarchy: Tree<ModuleInfo>,
-) -> Tree<Sky130FlatFlow> {
+    hierarchy: Dag<ModuleInfo>,
+) -> Dag<Sky130FlatFlow> {
     // `hierarchical` is a helper function defined in rivet.
     hierarchical(
         hierarchy,

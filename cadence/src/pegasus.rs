@@ -5,32 +5,35 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::{fs, io};
 
+use crate::cadence::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
+use fs::File;
 use indoc::formatdoc;
-use rivet::flow::{AnnotatedStep, Step, Tool};
-
-use crate::fs::File;
+use rivet::Step;
+use std::sync::Arc;
 
 #[derive(Debug)]
-pub struct Pegasus {
+pub struct PegasusStep {
     pub work_dir: PathBuf,
     pub func: String,
     pub module: String,
+    pub pinned: bool,
 }
 
-impl Pegasus {
-    pub fn new(work_dir: impl Into<PathBuf>, func: String, module: String) -> Self {
+impl PegasusStep {
+    pub fn new(work_dir: impl Into<PathBuf>, func: String, module: String, pinned: bool) -> Self {
         let dir = work_dir.into();
-        Pegasus {
+        PegasusStep {
             work_dir: dir,
             func: func,
             module: module,
+            pinned: pinned,
         }
     }
 
     fn make_ctl_file(
         &self,
         path: &PathBuf,
-        steps: Vec<AnnotatedStep>,
+        steps: Vec<Substep>,
         checkpoint_dir: Option<PathBuf>,
         work_dir: PathBuf,
     ) -> io::Result<()> {
@@ -55,28 +58,21 @@ impl Pegasus {
             );
         }
 
-        for astep in steps.into_iter() {
+        for step in steps.into_iter() {
             use colored::Colorize;
-            println!("\n--> Parsing step: {}\n", astep.step.name.green());
-            if astep.step.checkpoint {
-                //generate ctl for checkpointing
-                let mut checkpoint_command = String::new();
+            println!("\n--> Parsing step: {}\n", step.name.green());
+            //generate ctl for checkpointing
+            let mut checkpoint_command = String::new();
 
-                let mut checkpoint_file = astep
-                    .checkpoint_path
-                    .into_os_string()
-                    .into_string()
-                    .expect("Failed to create checkpoint file");
-                //before had write_db -to_file pre_{astep.step.name} -> no checkpt dir
-                writeln!(
-                    checkpoint_command,
-                    "write_db -to_file {cdir}.cpf",
-                    cdir = checkpoint_file
-                );
+            let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
+            writeln!(
+                checkpoint_command,
+                "write_db -to_file {cdir}.cpf",
+                cdir = checkpoint_file.display()
+            );
 
-                writeln!(ctl_file, "{}", checkpoint_command)?;
-            }
-            writeln!(ctl_file, "{}", astep.step.command)?;
+            writeln!(ctl_file, "{}", checkpoint_command)?;
+            writeln!(ctl_file, "{}", step.command)?;
         }
         // writeln!(ctl_file, "puts \"{}\"", "quit")?;
         writeln!(ctl_file, "quit")?;
@@ -88,21 +84,16 @@ impl Pegasus {
     }
 }
 
-impl Tool for Pegasus {
-    fn invoke(
-        &self,
-        work_dir: PathBuf,
-        start_checkpoint: Option<PathBuf>,
-        steps: Vec<AnnotatedStep>,
-    ) {
-        let ctl_path = work_dir.clone().join("{}.ctl");
+impl Step for PegasusStep {
+    fn execute(&self) {
+        let ctl_path = self.work_dir.clone().join("{}.ctl");
         let schematic = format!("./{}.spice", self.module);
         let layout = format!("./{}.gds", self.module);
 
         if self.func == "lvs" {
             let status = Command::new("pegasus")
                 .args(["-f", ctl_path.to_str().unwrap()])
-                .current_dir(work_dir.clone())
+                .current_dir(self.work_dir.clone())
                 .status()
                 .expect("Failed to execute pegasus");
 
@@ -126,7 +117,7 @@ impl Tool for Pegasus {
                     &self.module,
                     "/home/ff/eecs251b/sky130/sky130_cds/sky130_release_0.0.4/Sky130_LVS/sky130.lvs.pvl",
                 ])
-                .current_dir(work_dir.clone())
+                .current_dir(self.work_dir.clone())
                 .status()
                 .expect("Failed to execute pegasus for LVS");
 
@@ -152,7 +143,7 @@ impl Tool for Pegasus {
                     "-ui_data",
                     "/home/ff/eecs251b/sky130/sky130_cds/sky130_release_0.0.4/Sky130_DRC/sky130_rev_0.0_1.0.drc.pvl",
                 ])
-                .current_dir(work_dir.clone())
+                .current_dir(self.work_dir.clone())
                 .status()
                 .expect("Failed to execute pegasus for DRC");
 
@@ -163,5 +154,10 @@ impl Tool for Pegasus {
                 println!("Pegasus DRC completed successfully.");
             }
         }
+    }
+    fn deps(&self) -> Vec<Arc<dyn Step>> {}
+
+    fn pinned(&self) -> bool {
+        self.pinned
     }
 }

@@ -9,6 +9,7 @@ use crate::cadence::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
+use std::sync::Arc;
 
 /// Defines the working directory of the tool and which module to synthesize
 #[derive(Debug)]
@@ -16,6 +17,8 @@ pub struct GenusStep {
     pub work_dir: PathBuf,
     pub module: String,
     pub substeps: Vec<Substep>,
+    pub pinned: bool,
+    pub start_checkpoint: Option<PathBuf>,
 }
 
 impl GenusStep {
@@ -23,6 +26,8 @@ impl GenusStep {
         work_dir: impl Into<PathBuf>,
         module: impl Into<String>,
         steps: Vec<Substep>,
+        pinned: bool,
+        checkpoint: Option<PathBuf>,
     ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
@@ -30,12 +35,14 @@ impl GenusStep {
             work_dir: dir,
             module: modul,
             substeps: steps,
+            pinned: pinned,
+            start_checkpoint: checkpoint,
         }
     }
 
-    fn add_hook() -> Self {
-        //TODO
-    }
+    // fn add_hook() -> Self {
+    //     //TODO: insert hook into substeps
+    // }
 
     /// Generates the tcl file for synthesis
     fn make_tcl_file(
@@ -51,23 +58,23 @@ impl GenusStep {
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
-        // if let Some(actual_checkpt_dir) = checkpoint_dir {
-        //     use colored::Colorize;
-        //     println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
-        //     let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
-        //     writeln!(
-        //         tcl_file,
-        //         "{}",
-        //         format!(
-        //             "read_db {}",
-        //             complete_checkpoint_path
-        //                 .into_os_string()
-        //                 .into_string()
-        //                 .expect("Failed to read from checkpoint path")
-        //         )
-        //     )
-        //     .expect("Failed to write");
-        // }
+        if let Some(actual_checkpt_dir) = checkpoint_dir {
+            use colored::Colorize;
+            println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
+            let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
+            writeln!(
+                tcl_file,
+                "{}",
+                format!(
+                    "read_db {}",
+                    complete_checkpoint_path
+                        .into_os_string()
+                        .into_string()
+                        .expect("Failed to read from checkpoint path")
+                )
+            )
+            .expect("Failed to write");
+        }
 
         for step in steps.into_iter() {
             use colored::Colorize;
@@ -76,15 +83,11 @@ impl GenusStep {
             let mut checkpoint_command = String::new();
 
             //TODO: have the checkpoint file name contain pre_stepname
-            let checkpoint_file = step
-                .checkpoint_path
-                .into_os_string()
-                .into_string()
-                .expect("Failed to create checkpoint file");
+            let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
             writeln!(
                 checkpoint_command,
                 "write_db -to_file {cdir}.cpf",
-                cdir = checkpoint_file
+                cdir = checkpoint_file.display()
             )
             .expect("Failed to write");
 
@@ -252,7 +255,7 @@ impl GenusStep {
         }
     }
 
-    pub fn write_design(&self) -> Step {
+    pub fn write_design(&self) -> Substep {
         let module = self.module.clone();
         Substep {
             command: formatdoc!(
@@ -320,15 +323,19 @@ impl GenusStep {
 }
 
 impl Step for GenusStep {
-    fn execute(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Substep>) {
-        let tcl_path = work_dir.clone().join("syn.tcl");
+    fn execute(&self) {
+        let tcl_path = self.work_dir.clone().join("syn.tcl");
 
-        self.make_tcl_file(&tcl_path, steps, start_checkpoint)
-            .expect("Failed to create syn.tcl");
+        self.make_tcl_file(
+            &tcl_path,
+            self.substeps.clone(),
+            self.start_checkpoint.clone(),
+        )
+        .expect("Failed to create syn.tcl");
 
         let status = Command::new("genus")
             .args(["-f", tcl_path.to_str().unwrap()])
-            .current_dir(work_dir)
+            .current_dir(self.work_dir.clone())
             .status()
             .expect("Failed to execute syn.tcl");
 
@@ -336,6 +343,12 @@ impl Step for GenusStep {
             eprintln!("Failed to execute syn.tcl");
             panic!("Stopped flow");
         }
+    }
+
+    fn deps(&self) -> Vec<Arc<dyn Step>> {}
+
+    fn pinned(&self) -> bool {
+        self.pinned
     }
 }
 

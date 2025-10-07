@@ -10,12 +10,15 @@ use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
 use rust_decimal::Decimal;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct InnovusStep {
     pub work_dir: PathBuf,
     pub module: String,
     pub steps: Vec<Substep>,
+    pub pinned: bool,
+    pub start_checkpoint: Option<PathBuf>,
 }
 
 impl InnovusStep {
@@ -23,6 +26,8 @@ impl InnovusStep {
         work_dir: impl Into<PathBuf>,
         module: impl Into<String>,
         steps: Vec<Substep>,
+        pinned: bool,
+        checkpoint: Option<PathBuf>,
     ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
@@ -30,6 +35,8 @@ impl InnovusStep {
             work_dir: dir,
             module: modul,
             steps: steps,
+            pinned: pinned,
+            start_checkpoint: checkpoint,
         }
     }
 
@@ -66,15 +73,11 @@ impl InnovusStep {
             //generate tcl for checkpointing
             let mut checkpoint_command = String::new();
 
-            let mut checkpoint_file = step
-                .checkpoint_path
-                .into_os_string()
-                .into_string()
-                .expect("Failed to create checkpoint file");
+            let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
             writeln!(
                 checkpoint_command,
                 "write_db {cdir}.cpf",
-                cdir = checkpoint_file
+                cdir = checkpoint_file.display()
             )
             .expect("Failed to write");
 
@@ -449,15 +452,15 @@ impl InnovusStep {
 }
 
 impl Step for InnovusStep {
-    fn execute(&self, work_dir: PathBuf, start_checkpoint: Option<PathBuf>, steps: Vec<Substep>) {
-        let tcl_path = work_dir.clone().join("par.tcl");
+    fn execute(&self) {
+        let tcl_path = self.work_dir.clone().join("par.tcl");
 
-        self.make_tcl_file(&tcl_path, steps, start_checkpoint)
+        self.make_tcl_file(&tcl_path, self.steps.clone(), self.start_checkpoint.clone())
             .expect("Failed to create par.tcl");
 
         let status = Command::new("innovus")
             .args(["-file", tcl_path.to_str().unwrap(), "-stylus"])
-            .current_dir(work_dir)
+            .current_dir(self.work_dir.clone())
             .status()
             .expect("Failed to execute par.tcl");
 
@@ -465,6 +468,12 @@ impl Step for InnovusStep {
             eprintln!("Failed to execute par.tcl");
             panic!("Stopped flow");
         }
+    }
+
+    fn deps(&self) -> Vec<Arc<dyn Step>> {}
+
+    fn pinned(&self) -> bool {
+        self.pinned
     }
 }
 

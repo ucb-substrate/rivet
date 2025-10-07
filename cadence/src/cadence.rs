@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
 pub struct Substep {
     //could make this a cadence concept inside the cadence.rs file
     pub name: String,

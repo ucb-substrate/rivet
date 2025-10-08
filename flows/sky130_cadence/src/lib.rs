@@ -43,19 +43,14 @@ pub struct Sky130FlatFlow {
 pub fn sky130_syn(
     pdk_root: &PathBuf,
     work_dir: &PathBuf,
-    module_name: &str,
+    module: &String,
     verilog_path: &PathBuf,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     pin_info: &FlatPinInfo,
 ) -> GenusStep {
-    let mut sdc_files = vec![work_dir.join("clock_pin_constraints.sdc")];
-    if let FlatPinInfo::PinSyn(path) = pin_info {
-        sdc_files.push(path.clone());
-    }
-
     let syn_con =
         MmmcConfig {
-            sdc_files: sdc_files,
+            sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
 
             corners: vec![
                 MmmcCorner {
@@ -94,8 +89,6 @@ pub fn sky130_syn(
         };
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
 
-    let genus = GenusStep::new(work_dir, module_name, vec![], false, None, vec![]);
-
     let tlef = setup_techlef(
         &work_dir,
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
@@ -103,23 +96,24 @@ pub fn sky130_syn(
 
     GenusStep::new(
         work_dir,
-        module_name,
+        module,
         vec![
             set_default_options(),
             dont_avoid_lib_cells("ICGX1"),
-            genus.read_design_files(
+            GenusStep::read_design_files(
+                work_dir,
                 verilog_path,
                 syn_con.clone(),
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
             ),
-            genus.elaborate(),
-            genus.init_design(),
-            genus.power_intent(),
+            GenusStep::elaborate(module),
+            GenusStep::init_design(module),
+            GenusStep::power_intent(work_dir),
             GenusStep::syn_generic(),
             GenusStep::syn_map(),
             GenusStep::add_tieoffs(),
-            genus.write_design(),
+            GenusStep::write_design(module),
         ],
         false,
         None,
@@ -130,7 +124,7 @@ pub fn sky130_syn(
 pub fn sky130_par(
     pdk_root: &PathBuf,
     work_dir: &PathBuf,
-    module: &str,
+    module: &String,
     netlist: &PathBuf,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     pin_info: &FlatPinInfo,
@@ -231,8 +225,6 @@ pub fn sky130_par(
 
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
 
-    let innovus = InnovusStep::new(work_dir, module, vec![], false, None, vec![]);
-
     let tlef = setup_techlef(
         &work_dir,
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
@@ -243,7 +235,9 @@ pub fn sky130_par(
         module,
         vec![
             set_default_process(130),
-            innovus.read_design_files(
+            InnovusStep::read_design_files(
+                work_dir,
+                module,
                 &netlist,
                 par_con.clone(),
                 &tlef,
@@ -252,7 +246,7 @@ pub fn sky130_par(
             InnovusStep::init_design(),
             InnovusStep::innovus_settings(),
             sky130_innovus_settings(),
-            innovus.floorplan_design(),
+            InnovusStep::floorplan_design(work_dir),
             sky130_connect_nets(),
             InnovusStep::power_straps(layers),
             InnovusStep::place_pins("5", "1", vec![assignment]),
@@ -262,7 +256,7 @@ pub fn sky130_par(
             InnovusStep::opt_design(),
             InnovusStep::write_regs(),
             sky130_connect_nets(),
-            innovus.write_design(),
+            InnovusStep::write_design(work_dir, module),
         ],
         false,
         None,

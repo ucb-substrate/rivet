@@ -97,17 +97,18 @@ impl InnovusStep {
     }
 
     pub fn read_design_files(
-        &self,
+        work_dir: &PathBuf,
+        module: &String,
         netlist_path: &PathBuf,
         mmmc_conf: MmmcConfig,
         tlef: &PathBuf,
         pdk_lef: &PathBuf,
     ) -> Substep {
-        let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
+        let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
         let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
-        let mmmc_tcl_path = self.work_dir.clone().join("mmmc.tcl");
+        let mmmc_tcl_path = work_dir.clone().join("mmmc.tcl");
         fs::write(&mmmc_tcl_path, mmmc_tcl);
         let netlist_file_path = netlist_path.clone();
         let netlist_string = netlist_file_path.display();
@@ -126,7 +127,7 @@ impl InnovusStep {
                 pdk,
                 mmmc_tcl_path.display(),
                 netlist_string,
-                self.module
+                module.clone(),
             ),
             name: "read_design_files".into(),
         }
@@ -155,15 +156,15 @@ impl InnovusStep {
         }
     }
 
-    pub fn floorplan_design(&self) -> Substep {
+    pub fn floorplan_design(work_dir: &PathBuf) -> Substep {
         // TODO: Parametrize the floowplan.tcl command
-        let floorplan_tcl_path = self.work_dir.join("floorplan.tcl");
+        let floorplan_tcl_path = work_dir.join("floorplan.tcl");
         let mut floorplan_tcl_file =
             File::create(&floorplan_tcl_path).expect("failed to create file");
         writeln!(floorplan_tcl_file, "{}", "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }").expect("Failed to write");
         let floorplan_path_string = floorplan_tcl_path.display();
 
-        let power_spec_file_path = self.work_dir.join("power_spec.cpf");
+        let power_spec_file_path = work_dir.join("power_spec.cpf");
         let mut power_spec_file =
             File::create(&power_spec_file_path).expect("failed to create file");
         writeln!(
@@ -434,9 +435,9 @@ impl InnovusStep {
     }
 
     //TODO: add a parameter of a list of excluded cells
-    pub fn write_design(&self) -> Substep {
-        let par_rundir = self.work_dir.display();
-        let module = self.module.clone();
+    pub fn write_design(work_dir: &PathBuf, module: &String) -> Substep {
+        let par_rundir = work_dir.display();
+        let module = module.clone();
         Substep {
             checkpoint: true,
             command: formatdoc!(

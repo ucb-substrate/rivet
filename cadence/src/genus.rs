@@ -108,18 +108,18 @@ impl GenusStep {
 
     /// Reads the module verilog, mmmc.tcl, pdk lefs, ilms paths, and sdc constraints
     pub fn read_design_files(
-        &self,
+        work_dir: &PathBuf,
         module_path: &PathBuf,
         mmmc_conf: MmmcConfig,
         tlef: &PathBuf,
         pdk_lef: &PathBuf,
     ) -> Substep {
-        let sdc_file_path = self.work_dir.join("clock_pin_constraints.sdc");
+        let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
         println!("{}", sdc_file_path.display());
         let mut sdc_file = File::create(sdc_file_path).expect("failed to create file");
         writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
         let mmmc_tcl = mmmc(mmmc_conf);
-        let mmmc_tcl_path = self.work_dir.clone().join("mmmc.tcl");
+        let mmmc_tcl_path = work_dir.clone().join("mmmc.tcl");
         fs::write(&mmmc_tcl_path, mmmc_tcl);
         let module_file_path = module_path.clone();
         let module_string = module_file_path.display();
@@ -170,25 +170,25 @@ impl GenusStep {
     //     }
     // }
 
-    pub fn elaborate(&self) -> Substep {
+    pub fn elaborate(module: &String) -> Substep {
         Substep {
             checkpoint: false,
-            command: format!("elaborate {}", self.module),
+            command: format!("elaborate {}", module),
             name: "elaborate".to_string(),
         }
     }
 
-    pub fn init_design(&self) -> Substep {
+    pub fn init_design(module: &String) -> Substep {
         Substep {
             checkpoint: false,
-            command: format!("init_design -top {}", self.module),
+            command: format!("init_design -top {}", module),
             name: "init_design".to_string(),
         }
     }
 
     /// Write power_spec.cpf and run power_intent TCL commands.
-    pub fn power_intent(&self) -> Substep {
-        let power_spec_file_path = self.work_dir.join("power_spec.cpf");
+    pub fn power_intent(work_dir: &PathBuf) -> Substep {
+        let power_spec_file_path = work_dir.join("power_spec.cpf");
         let mut power_spec_file =
             File::create(&power_spec_file_path).expect("failed to create file");
         writeln!(
@@ -266,8 +266,8 @@ impl GenusStep {
         }
     }
 
-    pub fn write_design(&self) -> Substep {
-        let module = self.module.clone();
+    pub fn write_design(module: &String) -> Substep {
+        let module = module.clone();
         Substep {
             checkpoint: true,
             command: formatdoc!(

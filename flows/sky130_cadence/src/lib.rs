@@ -403,9 +403,9 @@ pub enum FlatPinInfo {
 }
 
 pub struct Sky130FlatFlow {
-    module: String,
-    syn: Arc<GenusStep>,
-    par: Arc<InnovusStep>,
+    pub module: String,
+    pub syn: Arc<GenusStep>,
+    pub par: Arc<InnovusStep>,
 }
 
 pub fn sky130_syn(
@@ -551,8 +551,9 @@ pub fn sky130_par(
             sdc_files: vec![
                 work_dir.clone().join("clock_pin_constraints.sdc"),
                 work_dir
-                    .clone()
-                    .join(format!("../syn-rundir/{}.mapped.sdc", module)),
+                    .parent()
+                    .unwrap()
+                    .join(format!("syn-rundir/{}.mapped.sdc", module)),
             ],
             corners: vec![
                 MmmcCorner {
@@ -633,6 +634,7 @@ pub fn sky130_par(
 
 pub fn sky130_innovus_settings() -> Substep {
     Substep {
+        checkpoint: true,
         command: formatdoc!(
             r#"
             ln -sfn pre_sky130_innovus_settings latest
@@ -749,7 +751,7 @@ pub fn sky130_reference_flow(
      -> Sky130FlatFlow {
         sky130_flat_flow(
             &pdk_root,
-            &work_dir.join(&block.module_name),
+            &work_dir.join(format!("build-{}", &block.module_name)),
             block,
             &sub_blocks,
         )

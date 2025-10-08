@@ -75,16 +75,17 @@ impl InnovusStep {
             println!("\n--> Parsing step: {}\n", step.name.green());
             //generate tcl for checkpointing
             let mut checkpoint_command = String::new();
+            if step.checkpoint {
+                let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
+                writeln!(
+                    checkpoint_command,
+                    "write_db {cdir}.cpf",
+                    cdir = checkpoint_file.display()
+                )
+                .expect("Failed to write");
 
-            let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
-            writeln!(
-                checkpoint_command,
-                "write_db {cdir}.cpf",
-                cdir = checkpoint_file.display()
-            )
-            .expect("Failed to write");
-
-            writeln!(tcl_file, "{}", checkpoint_command)?;
+                writeln!(tcl_file, "{}", checkpoint_command)?;
+            }
             writeln!(tcl_file, "{}", step.command)?;
         }
         writeln!(tcl_file, "exit")?;
@@ -114,6 +115,7 @@ impl InnovusStep {
         let pdk = pdk_lef.display();
 
         Substep {
+            checkpoint: false,
             command: formatdoc!(
                 r#"
                     read_physical -lef {{ {} {} }}
@@ -132,6 +134,7 @@ impl InnovusStep {
 
     pub fn init_design() -> Substep {
         Substep {
+            checkpoint: false,
             command: format!("init_design"),
             name: "init_design".to_string(),
         }
@@ -139,6 +142,7 @@ impl InnovusStep {
 
     pub fn innovus_settings() -> Substep {
         Substep {
+            checkpoint: false,
             command: formatdoc!(
                 r#"
                 set_db design_bottom_routing_layer 2
@@ -193,6 +197,7 @@ impl InnovusStep {
         .expect("Failed to write");
         let power_spec_file_string = power_spec_file_path.display();
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
                 source -echo -verbose {floorplan_path_string} 
@@ -208,6 +213,7 @@ impl InnovusStep {
     //TODO: for non cadence standard cells which do not come pretapped
     pub fn place_tap_cells() -> Substep {
         Substep {
+            checkpoint: true,
             command: "".into(),
             name: "place_tap_cells".into(),
         }
@@ -252,6 +258,7 @@ impl InnovusStep {
         }
 
         Substep {
+            checkpoint: true,
             command: definitions.into(),
             name: "power_straps".into(),
         }
@@ -305,6 +312,7 @@ impl InnovusStep {
         .expect("Failed to write");
 
         Substep {
+            checkpoint: true,
             command: place_pins_commands,
             name: "place_pins".into(),
         }
@@ -312,6 +320,7 @@ impl InnovusStep {
 
     pub fn place_opt_design() -> Substep {
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
                 set unplaced_pins [get_db ports -if {{.place_status == unplaced}}]
@@ -330,6 +339,7 @@ impl InnovusStep {
     pub fn add_fillers(filler_cells: Vec<String>) -> Substep {
         let cells = format!("\"{}\"", filler_cells.join(" "));
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
                 set_db add_fillers_cells {cells}
@@ -342,6 +352,7 @@ impl InnovusStep {
 
     pub fn route_design() -> Substep {
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
             puts "set_db design_express_route true" 
@@ -356,6 +367,7 @@ impl InnovusStep {
 
     pub fn opt_design() -> Substep {
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
                     set_db opt_post_route_hold_recovery auto
@@ -373,6 +385,7 @@ impl InnovusStep {
     //TODO:needs to be updated to be hierarchal
     pub fn write_regs() -> Substep {
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
             set write_cells_ir "./find_regs_cells.json"
@@ -425,6 +438,7 @@ impl InnovusStep {
         let par_rundir = self.work_dir.display();
         let module = self.module.clone();
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
                 set_db timing_enable_simultaneous_setup_hold_mode true
@@ -505,6 +519,7 @@ pub struct PinAssignment {
 
 pub fn set_default_process(node_size: i64) -> Substep {
     Substep {
+        checkpoint: false,
         name: "set_default_options".into(),
         command: formatdoc!(
             r#"

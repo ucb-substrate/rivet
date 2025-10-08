@@ -10,6 +10,7 @@ pub struct Substep {
     //could make this a cadence concept inside the cadence.rs file
     pub name: String,
     pub command: String,
+    pub checkpoint: bool,
 }
 
 /// Returns the TCL for clock_constraints and pin_constraints

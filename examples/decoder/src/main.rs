@@ -1,5 +1,5 @@
 use clap::Parser;
-use rivet::Dag;
+use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_reference_flow};
 use std::collections::HashMap;
 use std::fs;
@@ -28,9 +28,13 @@ fn main() {
             node: ModuleInfo {
                 module_name: "decoder".into(),
                 pin_info: FlatPinInfo::None,
-                verilog_path: PathBuf::from("decoder.v"),
+                verilog_path: PathBuf::from(
+                    "/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v",
+                ),
             },
             directed_edges: vec![],
         },
     );
+
+    execute(flow.node.par);
 }

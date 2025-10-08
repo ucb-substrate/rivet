@@ -85,16 +85,17 @@ impl GenusStep {
             //generate tcl for checkpointing
             let mut checkpoint_command = String::new();
 
-            //TODO: have the checkpoint file name contain pre_stepname
-            let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
-            writeln!(
-                checkpoint_command,
-                "write_db -to_file {cdir}.cpf",
-                cdir = checkpoint_file.display()
-            )
-            .expect("Failed to write");
+            if step.checkpoint {
+                let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
+                writeln!(
+                    checkpoint_command,
+                    "write_db -to_file {cdir}.cpf",
+                    cdir = checkpoint_file.display()
+                )
+                .expect("Failed to write");
 
-            writeln!(tcl_file, "{}", checkpoint_command)?;
+                writeln!(tcl_file, "{}", checkpoint_command)?;
+            }
             writeln!(tcl_file, "{}", step.command)?;
         }
         writeln!(tcl_file, "quit")?;
@@ -125,6 +126,7 @@ impl GenusStep {
         let cache_tlef = tlef.display();
         let pdk = pdk_lef.display();
         Substep {
+            checkpoint: false,
             command: formatdoc!(
                 r#"
                 read_mmmc {}
@@ -170,6 +172,7 @@ impl GenusStep {
 
     pub fn elaborate(&self) -> Substep {
         Substep {
+            checkpoint: false,
             command: format!("elaborate {}", self.module),
             name: "elaborate".to_string(),
         }
@@ -177,6 +180,7 @@ impl GenusStep {
 
     pub fn init_design(&self) -> Substep {
         Substep {
+            checkpoint: false,
             command: format!("init_design -top {}", self.module),
             name: "init_design".to_string(),
         }
@@ -218,6 +222,7 @@ impl GenusStep {
         .expect("Failed to write");
         let power_spec_file_string = power_spec_file_path.display();
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
             read_power_intent -cpf {power_spec_file_string}
@@ -231,6 +236,7 @@ impl GenusStep {
 
     pub fn syn_generic() -> Substep {
         Substep {
+            checkpoint: true,
             command: "syn_generic".to_string(),
             name: "syn_generic".to_string(),
         }
@@ -238,6 +244,7 @@ impl GenusStep {
 
     pub fn syn_map() -> Substep {
         Substep {
+            checkpoint: true,
             command: "syn_map".to_string(),
             name: "syn_map".to_string(),
         }
@@ -245,6 +252,7 @@ impl GenusStep {
 
     pub fn add_tieoffs() -> Substep {
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"set_db message:WSDF-201 .max_print 20
             set_db use_tiehilo_for_const duplicate
@@ -261,6 +269,7 @@ impl GenusStep {
     pub fn write_design(&self) -> Substep {
         let module = self.module.clone();
         Substep {
+            checkpoint: true,
             command: formatdoc!(
                 r#"
             set write_cells_ir "./find_regs_cells.json"
@@ -359,6 +368,7 @@ impl Step for GenusStep {
 
 pub fn set_default_options() -> Substep {
     Substep {
+        checkpoint: false,
         name: "set_default_options".into(),
         command: r#"
             set_db hdl_error_on_blackbox true
@@ -378,6 +388,7 @@ pub fn set_default_options() -> Substep {
 
 pub fn dont_avoid_lib_cells(base_name: &str) -> Substep {
     Substep {
+        checkpoint: false,
         name: format!("dont_avoid_lib_cells_{base_name}"),
         command: formatdoc!(
             r#"set_db [get_db lib_cells -if {{.base_name == {base_name}}}] .avoid false"#

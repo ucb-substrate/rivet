@@ -18,6 +18,7 @@ use rust_decimal_macros::dec;
 
 pub fn sky130_connect_nets() -> Substep {
     Substep {
+        checkpoint: true,
         command: formatdoc!(
             r#"
             connect_global_net VDD -type pg_pin -pin_base_name VPWR -all -auto_tie -netlist_override

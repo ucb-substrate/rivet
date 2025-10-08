@@ -16,7 +16,7 @@ use rivet::Step;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-fn sky130_connect_nets() -> Substep {
+pub fn sky130_connect_nets() -> Substep {
     Substep {
         command: formatdoc!(
             r#"

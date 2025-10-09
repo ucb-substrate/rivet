@@ -1,7 +1,6 @@
 use clap::Parser;
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_reference_flow};
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use toml;
@@ -19,8 +18,6 @@ struct CliArgs {
 }
 
 fn main() {
-    //fix hardcoding the pathbuf of the reference flow
-
     let flow = sky130_reference_flow(
         PathBuf::from("/home/ff/eecs251b/"),
         PathBuf::from("/scratch/cs199-cbc/rivet/examples/decoder/src"),
@@ -35,6 +32,5 @@ fn main() {
             directed_edges: vec![],
         },
     );
-
     execute(flow.node.par);
 }

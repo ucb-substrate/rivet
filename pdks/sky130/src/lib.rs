@@ -1,20 +1,12 @@
-use std::fmt::Write as FmtWrite;
 use std::{
-    collections::HashMap,
     fs,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
-use cadence::cadence::{mmmc, sdc, MmmcConfig, MmmcCorner, Substep};
-use cadence::genus::{dont_avoid_lib_cells, set_default_options, GenusStep};
-use cadence::innovus::{set_default_process, InnovusStep, Layer, PinAssignment};
+use cadence::Substep;
 use indoc::formatdoc;
-use rivet::Step;
-use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 
 pub fn sky130_connect_nets() -> Substep {
     Substep {
@@ -39,7 +31,7 @@ pub fn sky130_connect_nets() -> Substep {
     }
 }
 
-pub fn setup_techlef(working_directory: &PathBuf, lef_file: &PathBuf) -> PathBuf {
+pub fn setup_techlef(working_directory: &Path, lef_file: &PathBuf) -> PathBuf {
     let cache_dir = working_directory.join("tech-sky130-cache");
     fs::create_dir(&cache_dir).expect("failed to create directory");
 

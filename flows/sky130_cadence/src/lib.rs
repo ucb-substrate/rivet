@@ -1,25 +1,21 @@
-use std::fmt::Debug;
-use std::fmt::Write as FmtWrite;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::{fs, io};
-
-use crate::fs::File;
-use cadence::cadence::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
-use cadence::genus::{GenusStep, dont_avoid_lib_cells, set_default_options};
-use cadence::innovus::{InnovusStep, Layer, PinAssignment, set_default_process};
-use indoc::formatdoc;
-use rivet::{Dag, Step, hierarchical};
-use sky130::{setup_techlef, sky130_connect_nets};
-
-use std::{
-    collections::HashMap,
-    io::{BufRead, BufReader, BufWriter},
-    sync::Arc,
+use cadence::genus::{
+    GenusStep, add_tieoffs, dont_avoid_lib_cells, elaborate, power_intent, set_default_options,
+    syn_generic, syn_init_design, syn_map, syn_read_design_files, syn_write_design,
 };
+use cadence::innovus::{
+    InnovusStep, Layer, PinAssignment, add_fillers, floorplan_design, innovus_settings, opt_design,
+    par_init_design, par_read_design_files, par_write_design, place_opt_design, place_pins,
+    place_tap_cells, power_straps, route_design, set_default_process, write_regs,
+};
+use cadence::{MmmcConfig, MmmcCorner, Substep};
+use indoc::formatdoc;
+use rivet::{Dag, hierarchical};
+use sky130::{setup_techlef, sky130_connect_nets};
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use rust_decimal::Decimal;
+use std::sync::Arc;
+
 use rust_decimal_macros::dec;
 
 pub struct ModuleInfo {
@@ -41,10 +37,10 @@ pub struct Sky130FlatFlow {
 }
 
 pub fn sky130_syn(
-    pdk_root: &PathBuf,
+    pdk_root: &Path,
     work_dir: &PathBuf,
     module: &String,
-    verilog_path: &PathBuf,
+    verilog_path: &Path,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     pin_info: &FlatPinInfo,
 ) -> GenusStep {
@@ -90,7 +86,7 @@ pub fn sky130_syn(
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
 
     let tlef = setup_techlef(
-        &work_dir,
+        work_dir,
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
 
@@ -100,20 +96,20 @@ pub fn sky130_syn(
         vec![
             set_default_options(),
             dont_avoid_lib_cells("ICGX1"),
-            GenusStep::read_design_files(
+            syn_read_design_files(
                 work_dir,
                 verilog_path,
                 syn_con.clone(),
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
             ),
-            GenusStep::elaborate(module),
-            GenusStep::init_design(module),
-            GenusStep::power_intent(work_dir),
-            GenusStep::syn_generic(),
-            GenusStep::syn_map(),
-            GenusStep::add_tieoffs(),
-            GenusStep::write_design(module),
+            elaborate(module),
+            syn_init_design(module),
+            power_intent(work_dir),
+            syn_generic(),
+            syn_map(),
+            add_tieoffs(),
+            syn_write_design(module),
         ],
         false,
         None,
@@ -122,10 +118,10 @@ pub fn sky130_syn(
 }
 
 pub fn sky130_par(
-    pdk_root: &PathBuf,
+    pdk_root: &Path,
     work_dir: &PathBuf,
     module: &String,
-    netlist: &PathBuf,
+    netlist: &Path,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     pin_info: &FlatPinInfo,
     syn_step: Arc<GenusStep>,
@@ -226,7 +222,7 @@ pub fn sky130_par(
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
 
     let tlef = setup_techlef(
-        &work_dir,
+        work_dir,
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
 
@@ -235,28 +231,28 @@ pub fn sky130_par(
         module,
         vec![
             set_default_process(130),
-            InnovusStep::read_design_files(
+            par_read_design_files(
                 work_dir,
                 module,
-                &netlist,
+                netlist,
                 par_con.clone(),
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
             ),
-            InnovusStep::init_design(),
-            InnovusStep::innovus_settings(),
+            par_init_design(),
+            innovus_settings(),
             sky130_innovus_settings(),
-            InnovusStep::floorplan_design(work_dir),
+            floorplan_design(work_dir),
             sky130_connect_nets(),
-            InnovusStep::power_straps(layers),
-            InnovusStep::place_pins("5", "1", vec![assignment]),
-            InnovusStep::place_opt_design(),
-            InnovusStep::add_fillers(filler_cells),
-            InnovusStep::route_design(),
-            InnovusStep::opt_design(),
-            InnovusStep::write_regs(),
+            power_straps(layers),
+            place_pins("5", "1", vec![assignment]),
+            place_opt_design(),
+            add_fillers(filler_cells),
+            route_design(),
+            opt_design(),
+            write_regs(),
             sky130_connect_nets(),
-            InnovusStep::write_design(work_dir, module),
+            par_write_design(work_dir, module),
         ],
         false,
         None,
@@ -338,8 +334,8 @@ pub fn sky130_innovus_settings() -> Substep {
 }
 
 fn sky130_flat_flow(
-    pdk_root: &PathBuf,
-    work_dir: &PathBuf,
+    pdk_root: &Path,
+    work_dir: &Path,
     module: &ModuleInfo,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
 ) -> Sky130FlatFlow {

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::cadence::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
+use crate::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -43,10 +43,6 @@ impl GenusStep {
         }
     }
 
-    // fn add_hook() -> Self {
-    //     //TODO: insert hook into substeps
-    // }
-
     /// Generates the tcl file for synthesis
     fn make_tcl_file(
         &self,
@@ -54,7 +50,7 @@ impl GenusStep {
         steps: Vec<Substep>,
         checkpoint_dir: Option<PathBuf>,
     ) -> io::Result<()> {
-        let mut tcl_file = File::create(&path).expect("failed to create syn.tcl file");
+        let mut tcl_file = File::create(path).expect("failed to create syn.tcl file");
 
         writeln!(
             tcl_file,
@@ -62,8 +58,7 @@ impl GenusStep {
         )?;
 
         if let Some(actual_checkpt_dir) = checkpoint_dir {
-            use colored::Colorize;
-            println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
+            println!("\nCheckpoint specified, reading from it...\n");
             let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
             writeln!(
                 tcl_file,
@@ -80,8 +75,7 @@ impl GenusStep {
         }
 
         for step in steps.into_iter() {
-            use colored::Colorize;
-            println!("\n--> Parsing step: {}\n", step.name.green());
+            println!("\n--> Parsing step: {}\n", step.name);
             //generate tcl for checkpointing
             let mut checkpoint_command = String::new();
 
@@ -99,238 +93,10 @@ impl GenusStep {
             writeln!(tcl_file, "{}", step.command)?;
         }
         writeln!(tcl_file, "quit")?;
-        use colored::Colorize;
 
-        let temp_str = format!("{}", "\nFinished creating tcl file\n".green());
+        let temp_str = "\nFinished creating tcl file\n".to_string();
         println!("{}", temp_str);
         Ok(())
-    }
-
-    /// Reads the module verilog, mmmc.tcl, pdk lefs, ilms paths, and sdc constraints
-    pub fn read_design_files(
-        work_dir: &PathBuf,
-        module_path: &PathBuf,
-        mmmc_conf: MmmcConfig,
-        tlef: &PathBuf,
-        pdk_lef: &PathBuf,
-    ) -> Substep {
-        let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
-        println!("{}", sdc_file_path.display());
-        let mut sdc_file = File::create(sdc_file_path).expect("failed to create file");
-        writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
-        let mmmc_tcl = mmmc(mmmc_conf);
-        let mmmc_tcl_path = work_dir.clone().join("mmmc.tcl");
-        fs::write(&mmmc_tcl_path, mmmc_tcl);
-        let module_file_path = module_path.clone();
-        let module_string = module_file_path.display();
-        let cache_tlef = tlef.display();
-        let pdk = pdk_lef.display();
-        Substep {
-            checkpoint: false,
-            command: formatdoc!(
-                r#"
-                read_mmmc {}
-                read_physical -lef {{ {} {} }}
-                read_hdl -sv {}
-                "#,
-                mmmc_tcl_path.display(),
-                cache_tlef,
-                pdk,
-                module_string
-            ),
-            name: "read_design_files".into(),
-        }
-    }
-
-    // fn predict_floorplan(innovus_path: &PathBuf) -> Step {
-    //     let mut command = String::new();
-    //     // In a real implementation, this would be based on a setting like
-    //     // `synthesis.genus.phys_flow_effort`. This example assumes "high" effort.
-    //
-    //     writeln!(&mut command, "set_db invs_temp_dir temp_invs").expect("Failed to write");
-    //     // The innovus binary path would be a configurable parameter.
-    //     writeln!(
-    //         &mut command,
-    //         "set_db innovus_executable {}",
-    //         innovus_path.display()
-    //     ).expect("Failed to write");
-    //     writeln!(
-    //         &mut command,
-    //         "set_db predict_floorplan_enable_during_generic true"
-    //     ).expect("Failed to write");
-    //     writeln!(&mut command, "set_db physical_force_predict_floorplan true").expect("Failed to write");
-    //     writeln!(&mut command, "set_db predict_floorplan_use_innovus true").expect("Failed to write");
-    //
-    //     writeln!(&mut command, "predict_floorplan").expect("Failed to write");
-    //
-    //     Step {
-    //         name: "predict_floorplan".to_string(),
-    //         command,
-    //         checkpoint: true,
-    //     }
-    // }
-
-    pub fn elaborate(module: &String) -> Substep {
-        Substep {
-            checkpoint: false,
-            command: format!("elaborate {}", module),
-            name: "elaborate".to_string(),
-        }
-    }
-
-    pub fn init_design(module: &String) -> Substep {
-        Substep {
-            checkpoint: false,
-            command: format!("init_design -top {}", module),
-            name: "init_design".to_string(),
-        }
-    }
-
-    /// Write power_spec.cpf and run power_intent TCL commands.
-    pub fn power_intent(work_dir: &PathBuf) -> Substep {
-        let power_spec_file_path = work_dir.join("power_spec.cpf");
-        let mut power_spec_file =
-            File::create(&power_spec_file_path).expect("failed to create file");
-        writeln!(
-            power_spec_file,
-            "{}",
-            formatdoc! {
-            r#"
-        set_cpf_version 1.0e
-        set_hierarchy_separator /
-        set_design decoder
-        create_power_nets -nets VDD -voltage 1.8
-        create_power_nets -nets VPWR -voltage 1.8
-        create_power_nets -nets VPB -voltage 1.8
-        create_power_nets -nets vdd -voltage 1.8
-        create_ground_nets -nets {{ VSS VGND VNB vss }}
-        create_power_domain -name AO -default
-        update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
-        create_global_connection -domain AO -net VDD -pins [list VDD]
-        create_global_connection -domain AO -net VPWR -pins [list VPWR]
-        create_global_connection -domain AO -net VPB -pins [list VPB]
-        create_global_connection -domain AO -net vdd -pins [list vdd]
-        create_global_connection -domain AO -net VSS -pins [list VSS]
-        create_global_connection -domain AO -net VGND -pins [list VGND]
-        create_global_connection -domain AO -net VNB -pins [list VNB]
-        create_nominal_condition -name nominal -voltage 1.8
-        create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
-        end_design
-        "#
-            }
-        )
-        .expect("Failed to write");
-        let power_spec_file_string = power_spec_file_path.display();
-        Substep {
-            checkpoint: true,
-            command: formatdoc!(
-                r#"
-            read_power_intent -cpf {power_spec_file_string}
-            apply_power_intent -summary
-            commit_power_intent
-            "#
-            ),
-            name: "power_intent".into(),
-        }
-    }
-
-    pub fn syn_generic() -> Substep {
-        Substep {
-            checkpoint: true,
-            command: "syn_generic".to_string(),
-            name: "syn_generic".to_string(),
-        }
-    }
-
-    pub fn syn_map() -> Substep {
-        Substep {
-            checkpoint: true,
-            command: "syn_map".to_string(),
-            name: "syn_map".to_string(),
-        }
-    }
-
-    pub fn add_tieoffs() -> Substep {
-        Substep {
-            checkpoint: true,
-            command: formatdoc!(
-                r#"set_db message:WSDF-201 .max_print 20
-            set_db use_tiehilo_for_const duplicate
-            set ACTIVE_SET [string map {{ .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set }} [get_db [get_analysis_views] .name]]
-            set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
-            set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
-            add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose
-    "#
-            ),
-            name: "add_tieoffs".into(),
-        }
-    }
-
-    pub fn write_design(module: &String) -> Substep {
-        let module = module.clone();
-        Substep {
-            checkpoint: true,
-            command: formatdoc!(
-                r#"
-            set write_cells_ir "./find_regs_cells.json"
-            set write_cells_ir [open $write_cells_ir "w"]
-            puts $write_cells_ir "\["
-
-            set refs [get_db [get_db lib_cells -if .is_sequential==true] .base_name]
-
-            set len [llength $refs]
-
-            for {{set i 0}} {{$i < [llength $refs]}} {{incr i}} {{
-                if {{$i == $len - 1}} {{
-                    puts $write_cells_ir "    \"[lindex $refs $i]\""
-                }} else {{
-                    puts $write_cells_ir "    \"[lindex $refs $i]\","
-                }}
-            }}
-
-            puts $write_cells_ir "\]"
-            close $write_cells_ir
-            set write_regs_ir "./find_regs_paths.json"
-            set write_regs_ir [open $write_regs_ir "w"]
-            puts $write_regs_ir "\["
-
-            set regs [get_db [get_db [all_registers -edge_triggered -output_pins] -if .direction==out] .name]
-
-            set len [llength $regs]
-
-            for {{set i 0}} {{$i < [llength $regs]}} {{incr i}} {{
-                #regsub -all {{/}} [lindex $regs $i] . myreg
-                set myreg [lindex $regs $i]
-                if {{$i == $len - 1}} {{
-                    puts $write_regs_ir "    \"$myreg\""
-                }} else {{
-                    puts $write_regs_ir "    \"$myreg\","
-                }}
-            }}
-
-            puts $write_regs_ir "\]"
-
-            close $write_regs_ir
-            puts "write_reports -directory reports -tag final"
-            write_reports -directory reports -tag final
-            puts "report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt"
-            report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
-
-            puts "write_hdl > {module}.mapped.v"
-            write_hdl > {module}.mapped.v
-            puts "write_template -full -outfile {module}.mapped.scr"
-            write_template -full -outfile {module}.mapped.scr
-            puts "write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc"
-            write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc
-            puts "write_sdf > {module}.mapped.sdf"
-            write_sdf > {module}.mapped.sdf
-            puts "write_design -gzip_files {module}"
-            write_design -gzip_files {module}
-                "#
-            ),
-            //the paths for write hdl, write sdc, and write sdf need to be fixed
-            name: "write_design".into(),
-        }
     }
 }
 
@@ -393,5 +159,203 @@ pub fn dont_avoid_lib_cells(base_name: &str) -> Substep {
         command: formatdoc!(
             r#"set_db [get_db lib_cells -if {{.base_name == {base_name}}}] .avoid false"#
         ),
+    }
+}
+
+/// Reads the module verilog, mmmc.tcl, pdk lefs, ilms paths, and sdc constraints
+pub fn syn_read_design_files(
+    work_dir: &Path,
+    module_path: &Path,
+    mmmc_conf: MmmcConfig,
+    tlef: &Path,
+    pdk_lef: &Path,
+) -> Substep {
+    let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
+    println!("{}", sdc_file_path.display());
+    let mut sdc_file = File::create(sdc_file_path).expect("failed to create file");
+    writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
+    let mmmc_tcl = mmmc(mmmc_conf);
+    let mmmc_tcl_path = work_dir.to_path_buf().join("mmmc.tcl");
+    let _ = fs::write(&mmmc_tcl_path, mmmc_tcl);
+    let module_file_path = module_path.to_path_buf();
+    let module_string = module_file_path.display();
+    let cache_tlef = tlef.display();
+    let pdk = pdk_lef.display();
+    Substep {
+        checkpoint: false,
+        command: formatdoc!(
+            r#"
+            read_mmmc {}
+            read_physical -lef {{ {} {} }}
+            read_hdl -sv {}
+            "#,
+            mmmc_tcl_path.display(),
+            cache_tlef,
+            pdk,
+            module_string
+        ),
+        name: "read_design_files".into(),
+    }
+}
+
+pub fn elaborate(module: &String) -> Substep {
+    Substep {
+        checkpoint: false,
+        command: format!("elaborate {}", module),
+        name: "elaborate".to_string(),
+    }
+}
+
+pub fn syn_init_design(module: &String) -> Substep {
+    Substep {
+        checkpoint: false,
+        command: format!("init_design -top {}", module),
+        name: "init_design".to_string(),
+    }
+}
+
+/// Write power_spec.cpf and run power_intent TCL commands.
+pub fn power_intent(work_dir: &Path) -> Substep {
+    let power_spec_file_path = work_dir.join("power_spec.cpf");
+    let mut power_spec_file = File::create(&power_spec_file_path).expect("failed to create file");
+    writeln!(
+        power_spec_file,
+        "{}",
+        formatdoc! {
+        r#"
+    set_cpf_version 1.0e
+    set_hierarchy_separator /
+    set_design decoder
+    create_power_nets -nets VDD -voltage 1.8
+    create_power_nets -nets VPWR -voltage 1.8
+    create_power_nets -nets VPB -voltage 1.8
+    create_power_nets -nets vdd -voltage 1.8
+    create_ground_nets -nets {{ VSS VGND VNB vss }}
+    create_power_domain -name AO -default
+    update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
+    create_global_connection -domain AO -net VDD -pins [list VDD]
+    create_global_connection -domain AO -net VPWR -pins [list VPWR]
+    create_global_connection -domain AO -net VPB -pins [list VPB]
+    create_global_connection -domain AO -net vdd -pins [list vdd]
+    create_global_connection -domain AO -net VSS -pins [list VSS]
+    create_global_connection -domain AO -net VGND -pins [list VGND]
+    create_global_connection -domain AO -net VNB -pins [list VNB]
+    create_nominal_condition -name nominal -voltage 1.8
+    create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
+    end_design
+    "#
+        }
+    )
+    .expect("Failed to write");
+    let power_spec_file_string = power_spec_file_path.display();
+    Substep {
+        checkpoint: true,
+        command: formatdoc!(
+            r#"
+        read_power_intent -cpf {power_spec_file_string}
+        apply_power_intent -summary
+        commit_power_intent
+        "#
+        ),
+        name: "power_intent".into(),
+    }
+}
+
+pub fn syn_generic() -> Substep {
+    Substep {
+        checkpoint: true,
+        command: "syn_generic".to_string(),
+        name: "syn_generic".to_string(),
+    }
+}
+
+pub fn syn_map() -> Substep {
+    Substep {
+        checkpoint: true,
+        command: "syn_map".to_string(),
+        name: "syn_map".to_string(),
+    }
+}
+
+pub fn add_tieoffs() -> Substep {
+    Substep {
+        checkpoint: true,
+        command: formatdoc!(
+            r#"set_db message:WSDF-201 .max_print 20
+        set_db use_tiehilo_for_const duplicate
+        set ACTIVE_SET [string map {{ .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set }} [get_db [get_analysis_views] .name]]
+        set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
+        set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
+        add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose
+"#
+        ),
+        name: "add_tieoffs".into(),
+    }
+}
+
+pub fn syn_write_design(module: &str) -> Substep {
+    let module = module.to_owned();
+    Substep {
+        checkpoint: true,
+        command: formatdoc!(
+            r#"
+        set write_cells_ir "./find_regs_cells.json"
+        set write_cells_ir [open $write_cells_ir "w"]
+        puts $write_cells_ir "\["
+
+        set refs [get_db [get_db lib_cells -if .is_sequential==true] .base_name]
+
+        set len [llength $refs]
+
+        for {{set i 0}} {{$i < [llength $refs]}} {{incr i}} {{
+            if {{$i == $len - 1}} {{
+                puts $write_cells_ir "    \"[lindex $refs $i]\""
+            }} else {{
+                puts $write_cells_ir "    \"[lindex $refs $i]\","
+            }}
+        }}
+
+        puts $write_cells_ir "\]"
+        close $write_cells_ir
+        set write_regs_ir "./find_regs_paths.json"
+        set write_regs_ir [open $write_regs_ir "w"]
+        puts $write_regs_ir "\["
+
+        set regs [get_db [get_db [all_registers -edge_triggered -output_pins] -if .direction==out] .name]
+
+        set len [llength $regs]
+
+        for {{set i 0}} {{$i < [llength $regs]}} {{incr i}} {{
+            #regsub -all {{/}} [lindex $regs $i] . myreg
+            set myreg [lindex $regs $i]
+            if {{$i == $len - 1}} {{
+                puts $write_regs_ir "    \"$myreg\""
+            }} else {{
+                puts $write_regs_ir "    \"$myreg\","
+            }}
+        }}
+
+        puts $write_regs_ir "\]"
+
+        close $write_regs_ir
+        puts "write_reports -directory reports -tag final"
+        write_reports -directory reports -tag final
+        puts "report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt"
+        report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
+
+        puts "write_hdl > {module}.mapped.v"
+        write_hdl > {module}.mapped.v
+        puts "write_template -full -outfile {module}.mapped.scr"
+        write_template -full -outfile {module}.mapped.scr
+        puts "write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc"
+        write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc
+        puts "write_sdf > {module}.mapped.sdf"
+        write_sdf > {module}.mapped.sdf
+        puts "write_design -gzip_files {module}"
+        write_design -gzip_files {module}
+            "#
+        ),
+        //the paths for write hdl, write sdc, and write sdf need to be fixed
+        name: "write_design".into(),
     }
 }

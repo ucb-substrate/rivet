@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::{fs, io};
 
-use crate::cadence::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
+use crate::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -31,9 +31,9 @@ impl PegasusStep {
         let dir = work_dir.into();
         PegasusStep {
             work_dir: dir,
-            func: func,
-            module: module,
-            pinned: pinned,
+            func,
+            module,
+            pinned,
             dependencies: deps,
         }
     }
@@ -45,15 +45,12 @@ impl PegasusStep {
         checkpoint_dir: Option<PathBuf>,
         work_dir: PathBuf,
     ) -> io::Result<()> {
-        let mut ctl_file =
-            File::create(&path).expect("failed to create pegasus{self.func}ctl file");
+        let mut ctl_file = File::create(path).expect("failed to create pegasus{self.func}ctl file");
 
         if let Some(actual_checkpt_dir) = checkpoint_dir {
-            //there is actually a checkpoint to read from
-            use colored::Colorize;
-            println!("{}", "\nCheckpoint specified, reading from it...\n".blue());
+            println!("\nCheckpoint specified, reading from it...\n");
             let complete_checkpoint_path = work_dir.join(actual_checkpt_dir);
-            writeln!(
+            let _ = writeln!(
                 ctl_file,
                 "{}",
                 format!(
@@ -67,13 +64,12 @@ impl PegasusStep {
         }
 
         for step in steps.into_iter() {
-            use colored::Colorize;
-            println!("\n--> Parsing step: {}\n", step.name.green());
+            println!("\n--> Parsing step: {}\n", step.name);
             //generate ctl for checkpointing
             let mut checkpoint_command = String::new();
 
             let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
-            writeln!(
+            let _ = writeln!(
                 checkpoint_command,
                 "write_db -to_file {cdir}.cpf",
                 cdir = checkpoint_file.display()
@@ -84,9 +80,8 @@ impl PegasusStep {
         }
         // writeln!(ctl_file, "puts \"{}\"", "quit")?;
         writeln!(ctl_file, "quit")?;
-        use colored::Colorize;
 
-        let temp_str = format!("{}", "\nFinished creating ctl file\n".green());
+        let temp_str = format!("{}", "\nFinished creating ctl file\n");
         println!("{}", temp_str);
         Ok(())
     }

@@ -333,7 +333,7 @@ pub fn sky130_innovus_settings() -> Substep {
     }
 }
 
-fn sky130_flat_flow(
+fn sky130_cadence_flat_flow(
     pdk_root: &Path,
     work_dir: &Path,
     module: &ModuleInfo,
@@ -367,7 +367,7 @@ fn sky130_flat_flow(
     }
 }
 
-pub fn sky130_reference_flow(
+pub fn sky130_cadence_reference_flow(
     pdk_root: PathBuf,
     work_dir: PathBuf,
     hierarchy: Dag<ModuleInfo>,
@@ -379,7 +379,7 @@ pub fn sky130_reference_flow(
         &Sky130FlatFlow,
     )>|
      -> Sky130FlatFlow {
-        sky130_flat_flow(
+        sky130_cadence_flat_flow(
             &pdk_root,
             &work_dir.join(format!("build-{}", &block.module_name)),
             block,

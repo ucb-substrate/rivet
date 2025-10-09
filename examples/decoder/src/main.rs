@@ -1,6 +1,6 @@
 use clap::Parser;
 use rivet::{Dag, execute};
-use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_reference_flow};
+use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
 use std::fs;
 use std::path::PathBuf;
 use toml;
@@ -18,7 +18,7 @@ struct CliArgs {
 }
 
 fn main() {
-    let flow = sky130_reference_flow(
+    let flow = sky130_cadence_reference_flow(
         PathBuf::from("/home/ff/eecs251b/"),
         PathBuf::from("/scratch/cs199-cbc/rivet/examples/decoder/src"),
         Dag {

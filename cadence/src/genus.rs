@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;

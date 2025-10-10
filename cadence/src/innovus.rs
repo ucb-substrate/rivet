@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
+use crate::{MmmcConfig, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -54,41 +54,28 @@ impl InnovusStep {
         if let Some(actual_checkpt_dir) = checkpoint_dir {
             println!("\nCheckpoint specified, reading from it...\n");
             let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
-            writeln!(
-                tcl_file,
-                "{}",
-                format!(
-                    "read_db {}",
-                    complete_checkpoint_path
-                        .into_os_string()
-                        .into_string()
-                        .expect("Failed to read from checkpoint path")
-                )
-            )
-            .expect("Failed to write");
+            writeln!(tcl_file, "read_db {}", complete_checkpoint_path.display())
+                .expect("Failed to write");
         }
 
         for step in steps.into_iter() {
             println!("\n--> Parsing step: {}\n", step.name);
-            //generate tcl for checkpointing
             let mut checkpoint_command = String::new();
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
-                writeln!(
-                    checkpoint_command,
-                    "write_db {cdir}.cpf",
-                    cdir = checkpoint_file.display()
-                )
-                .expect("Failed to write");
+                writeln!(checkpoint_command,).expect("Failed to write");
 
-                writeln!(tcl_file, "{}", checkpoint_command)?;
+                writeln!(
+                    tcl_file,
+                    "write_db -to_file {cdir}",
+                    cdir = checkpoint_file.display()
+                )?;
             }
             writeln!(tcl_file, "{}", step.command)?;
         }
         writeln!(tcl_file, "exit")?;
 
-        let temp_str = "\nFinished creating tcl file\n".to_string();
-        println!("{}", temp_str);
+        println!("\nFinished creating tcl file\n");
         Ok(())
     }
 }

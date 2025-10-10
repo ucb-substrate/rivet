@@ -5,9 +5,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::{fs, io};
 
-use crate::{MmmcConfig, MmmcCorner, Substep, mmmc, sdc};
+use crate::Substep;
 use fs::File;
-use indoc::formatdoc;
 use rivet::Step;
 use std::sync::Arc;
 
@@ -65,24 +64,22 @@ impl PegasusStep {
 
         for step in steps.into_iter() {
             println!("\n--> Parsing step: {}\n", step.name);
-            //generate ctl for checkpointing
-            let mut checkpoint_command = String::new();
 
-            let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
-            let _ = writeln!(
-                checkpoint_command,
-                "write_db -to_file {cdir}.cpf",
-                cdir = checkpoint_file.display()
-            );
+            if step.checkpoint {
+                let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
 
-            writeln!(ctl_file, "{}", checkpoint_command)?;
+                writeln!(
+                    ctl_file,
+                    "write_db -to_file {cdir}",
+                    cdir = checkpoint_file.display()
+                )?;
+            }
+
             writeln!(ctl_file, "{}", step.command)?;
         }
-        // writeln!(ctl_file, "puts \"{}\"", "quit")?;
         writeln!(ctl_file, "quit")?;
 
-        let temp_str = format!("{}", "\nFinished creating ctl file\n");
-        println!("{}", temp_str);
+        println!("\nFinished creating ctl file\n");
         Ok(())
     }
 }

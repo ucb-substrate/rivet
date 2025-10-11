@@ -63,11 +63,7 @@ impl InnovusStep {
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
 
-                writeln!(
-                    tcl_file,
-                    "write_db -to_file {cdir}",
-                    cdir = checkpoint_file.display()
-                )?;
+                writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
             }
             writeln!(tcl_file, "{}", step.command)?;
         }

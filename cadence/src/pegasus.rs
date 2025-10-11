@@ -64,11 +64,7 @@ impl PegasusStep {
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
 
-                writeln!(
-                    ctl_file,
-                    "write_db -to_file {cdir}",
-                    cdir = checkpoint_file.display()
-                )?;
+                writeln!(ctl_file, "write_db -to_file {}", checkpoint_file.display())?;
             }
 
             writeln!(ctl_file, "{}", step.command)?;

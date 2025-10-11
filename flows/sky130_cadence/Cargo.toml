@@ -1,11 +1,12 @@
 [package]
-name = "sky130"
+name = "sky130_cadence"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-rivet = { version = "0.1.0", path = "../../rivet" }
+rivet = { path = "../../rivet" } 
 cadence = { version = "0.1.0", path = "../../cadence" }
 indoc = "2"
 rust_decimal = "1"
 rust_decimal_macros = "1"
+sky130 = { path = "../../pdks/sky130"}

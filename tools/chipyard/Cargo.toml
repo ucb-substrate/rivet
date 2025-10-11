@@ -1,7 +1,0 @@
-[package]
-name = "chipyard"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rivet = { version = "0.1.0", path = "../../rivet" }

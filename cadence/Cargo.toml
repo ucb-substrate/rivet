@@ -1,11 +1,13 @@
 [package]
-name = "genus"
+name = "cadence"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
 
 [dependencies]
-rivet = { version = "0.1.0", path = "../../rivet" }
-colored = "2"
 indoc = "2"
 rust_decimal = "1"
 rust_decimal_macros = "1"
+rivet = { path = "../rivet" } 

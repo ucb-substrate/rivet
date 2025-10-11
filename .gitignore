@@ -117,3 +117,4 @@ par-rundir/
 syn-rundir/
 build/
 target/
+/target

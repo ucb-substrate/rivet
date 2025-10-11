@@ -1,9 +1,0 @@
-[syn]
-start = "syn_generic"
-checkpoint = "rivet/examples/decoder/src/syn-rundir/checkpoints/syn_generic.cpf"
-
-[par]
-stop = "floorplan_design"
-
-
-

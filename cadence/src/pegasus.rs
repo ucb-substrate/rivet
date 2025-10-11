@@ -50,14 +50,11 @@ impl PegasusStep {
             let complete_checkpoint_path = work_dir.join(actual_checkpt_dir);
             let _ = writeln!(
                 ctl_file,
-                "{}",
-                format!(
-                    "read_db {}",
-                    complete_checkpoint_path
-                        .into_os_string()
-                        .into_string()
-                        .expect("Failed to read from checkpoint path")
-                )
+                "read_db {}",
+                complete_checkpoint_path
+                    .into_os_string()
+                    .into_string()
+                    .expect("Failed to read from checkpoint path")
             );
         }
 

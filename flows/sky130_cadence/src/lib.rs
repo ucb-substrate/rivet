@@ -105,7 +105,7 @@ pub fn sky130_syn(
             ),
             elaborate(module),
             syn_init_design(module),
-            power_intent(work_dir),
+            power_intent(work_dir, module),
             syn_generic(),
             syn_map(),
             add_tieoffs(),
@@ -138,7 +138,7 @@ pub fn sky130_par(
 
     let assignment = PinAssignment {
         pins: "*".into(),
-        module: "decoder".into(),
+        module: module.into(),
         patterns: "-spread_type range".into(),
         layer: "-layer {met4}".into(),
         side: "-side bottom".into(),
@@ -242,7 +242,7 @@ pub fn sky130_par(
             par_init_design(),
             innovus_settings(),
             sky130_innovus_settings(),
-            floorplan_design(work_dir),
+            floorplan_design(work_dir, module),
             sky130_connect_nets(),
             power_straps(layers),
             place_pins("5", "1", vec![assignment]),

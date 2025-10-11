@@ -199,7 +199,7 @@ pub fn syn_init_design(module: &String) -> Substep {
 }
 
 /// Write power_spec.cpf and run power_intent TCL commands.
-pub fn power_intent(work_dir: &Path) -> Substep {
+pub fn power_intent(work_dir: &Path, module: &str) -> Substep {
     let power_spec_file_path = work_dir.join("power_spec.cpf");
     let mut power_spec_file = File::create(&power_spec_file_path).expect("failed to create file");
     writeln!(
@@ -207,27 +207,27 @@ pub fn power_intent(work_dir: &Path) -> Substep {
         "{}",
         formatdoc! {
         r#"
-    set_cpf_version 1.0e
-    set_hierarchy_separator /
-    set_design decoder
-    create_power_nets -nets VDD -voltage 1.8
-    create_power_nets -nets VPWR -voltage 1.8
-    create_power_nets -nets VPB -voltage 1.8
-    create_power_nets -nets vdd -voltage 1.8
-    create_ground_nets -nets {{ VSS VGND VNB vss }}
-    create_power_domain -name AO -default
-    update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
-    create_global_connection -domain AO -net VDD -pins [list VDD]
-    create_global_connection -domain AO -net VPWR -pins [list VPWR]
-    create_global_connection -domain AO -net VPB -pins [list VPB]
-    create_global_connection -domain AO -net vdd -pins [list vdd]
-    create_global_connection -domain AO -net VSS -pins [list VSS]
-    create_global_connection -domain AO -net VGND -pins [list VGND]
-    create_global_connection -domain AO -net VNB -pins [list VNB]
-    create_nominal_condition -name nominal -voltage 1.8
-    create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
-    end_design
-    "#
+            set_cpf_version 1.0e
+            set_hierarchy_separator /
+            set_design {}
+            create_power_nets -nets VDD -voltage 1.8
+            create_power_nets -nets VPWR -voltage 1.8
+            create_power_nets -nets VPB -voltage 1.8
+            create_power_nets -nets vdd -voltage 1.8
+            create_ground_nets -nets {{ VSS VGND VNB vss }}
+            create_power_domain -name AO -default
+            update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
+            create_global_connection -domain AO -net VDD -pins [list VDD]
+            create_global_connection -domain AO -net VPWR -pins [list VPWR]
+            create_global_connection -domain AO -net VPB -pins [list VPB]
+            create_global_connection -domain AO -net vdd -pins [list vdd]
+            create_global_connection -domain AO -net VSS -pins [list VSS]
+            create_global_connection -domain AO -net VGND -pins [list VGND]
+            create_global_connection -domain AO -net VNB -pins [list VNB]
+            create_nominal_condition -name nominal -voltage 1.8
+            create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
+            end_design
+        "#, module.to_string()
         }
     )
     .expect("Failed to write");
@@ -322,20 +322,13 @@ pub fn syn_write_design(module: &str) -> Substep {
         puts $write_regs_ir "\]"
 
         close $write_regs_ir
-        puts "write_reports -directory reports -tag final"
         write_reports -directory reports -tag final
-        puts "report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt"
         report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
 
-        puts "write_hdl > {module}.mapped.v"
         write_hdl > {module}.mapped.v
-        puts "write_template -full -outfile {module}.mapped.scr"
         write_template -full -outfile {module}.mapped.scr
-        puts "write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc"
         write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc
-        puts "write_sdf > {module}.mapped.sdf"
         write_sdf > {module}.mapped.sdf
-        puts "write_design -gzip_files {module}"
         write_design -gzip_files {module}
             "#
         ),

@@ -60,10 +60,8 @@ impl InnovusStep {
 
         for step in steps.into_iter() {
             println!("\n--> Parsing step: {}\n", step.name);
-            let mut checkpoint_command = String::new();
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
-                writeln!(checkpoint_command,).expect("Failed to write");
 
                 writeln!(
                     tcl_file,
@@ -205,7 +203,7 @@ pub fn innovus_settings() -> Substep {
     }
 }
 
-pub fn floorplan_design(work_dir: &Path) -> Substep {
+pub fn floorplan_design(work_dir: &Path, module: &str) -> Substep {
     let floorplan_tcl_path = work_dir.join("floorplan.tcl");
     let mut floorplan_tcl_file = File::create(&floorplan_tcl_path).expect("failed to create file");
     writeln!(floorplan_tcl_file, "{}", "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }").expect("Failed to write");
@@ -220,7 +218,7 @@ pub fn floorplan_design(work_dir: &Path) -> Substep {
         r#"
         set_cpf_version 1.0e
         set_hierarchy_separator /
-        set_design decoder
+        set_design {}
         create_power_nets -nets VDD -voltage 1.8
         create_power_nets -nets VPWR -voltage 1.8
         create_power_nets -nets VPB -voltage 1.8
@@ -238,7 +236,7 @@ pub fn floorplan_design(work_dir: &Path) -> Substep {
         create_nominal_condition -name nominal -voltage 1.8
         create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
         end_design
-        "#
+        "#, module.to_string()
         }
     )
     .expect("Failed to write");
@@ -397,9 +395,7 @@ pub fn route_design() -> Substep {
         checkpoint: true,
         command: formatdoc!(
             r#"
-        puts "set_db design_express_route true" 
         set_db design_express_route true
-        puts "route_design" 
         route_design
         "#
         ),

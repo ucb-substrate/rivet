@@ -6,3 +6,7 @@ Rivet core contains a minimal feature set for constructing and executing flows w
 - Parametric flows
 - TCL templating
 - Tool-specific checkpointing
+
+For the sake of simplicity, Rivet does **not** include features that other flow managers may provide, such as:
+- Intermediate representations for portability between tools and technologies
+- Automatic caching

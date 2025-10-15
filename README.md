@@ -1,15 +1,12 @@
 # Rivet
 
-Rivet core contains a minimal feature set for managing flows involving command-based tools:
-- Flow Tree Construction
-- Checkpointing and Restarts
-- Freezing Dependencies
-- Tool Invocation
-- CLI Driver
+Rivet is a tool for flow management with a focus on simplicity and fine-grained checkpointing. Rivet also aims to provide clear APIs via Rust's type system.
 
-Additional features are implemented in PDK/tool plugins. Such features include:
-- Parametric Flows
-- TCL Templating
-- Design Sanity Checks
-- Input File Bundling
+Rivet core contains a minimal feature set for constructing and executing flows with dependency pinning. Additional features are implemented in PDK/tool plugins. Such features include:
+- Parametric flows
+- TCL templating
+- Tool-specific checkpointing
 
+For the sake of simplicity, Rivet does **not** include features that other flow managers may provide, such as:
+- Intermediate representations for portability between tools and technologies
+- Automatic caching

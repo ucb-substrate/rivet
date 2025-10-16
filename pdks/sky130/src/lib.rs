@@ -35,7 +35,6 @@ pub fn setup_techlef(working_directory: &Path, lef_file: &PathBuf) -> PathBuf {
     let cache_dir = working_directory.join("tech-sky130-cache");
     fs::create_dir(&cache_dir).expect("failed to create directory");
 
-    // Dynamically get the file stem from the input LEF file
     let file_stem = lef_file
         .file_stem()
         .and_then(|s| s.to_str())
@@ -43,7 +42,6 @@ pub fn setup_techlef(working_directory: &Path, lef_file: &PathBuf) -> PathBuf {
 
     let tlef_path = cache_dir.join(format!("{}.tlef", file_stem));
 
-    // Set up buffered reader and writer for efficiency
     let reader = BufReader::new(File::open(lef_file).expect("failed to read file"));
     let mut techlef = BufWriter::new(File::create(&tlef_path).expect("failed to write to file"));
 
@@ -64,19 +62,16 @@ LAYER li1
 END li1
 "#;
 
-    // Iterate over each line, handling potential I/O errors
     for line_result in reader.lines() {
         let line = line_result.expect("failed to read line from file");
         writeln!(techlef, "{}", line).expect("failed to fetch line");
 
-        // Check the content of the line to insert new blocks
         if line.trim() == "END pwell" {
             techlef
                 .write_all(licon.as_bytes())
                 .expect("failed to write");
         }
         if line.trim() == "END poly" {
-            // Write each byte slice separately instead of trying to add them
             techlef
                 .write_all(nwell.as_bytes())
                 .expect("failed to write");

@@ -496,12 +496,12 @@ pub fn par_write_design(
         name: "write_design".into(),
     }
 }
-
+/// w: width, h: height, left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
 pub struct DieConstraints {
-    pub x1: i64,
-    pub y1: i64,
-    pub x2: i64,
-    pub y2: i64,
-    pub x3: i64,
-    pub y3: i64,
+    pub w: i64,
+    pub h: i64,
+    pub left: i64,
+    pub bottom: i64,
+    pub right: i64,
+    pub top: i64,
 }

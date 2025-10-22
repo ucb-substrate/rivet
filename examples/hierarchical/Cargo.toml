@@ -1,0 +1,9 @@
+[package]
+name = "hierarchical"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rivet = { version = "0.1.0", path = "../../rivet" }
+sky130_cadence = { version = "0.1.0", path = "../../flows/sky130_cadence/" }
+sky130= { version = "0.1.0", path = "../../pdks/sky130/" }

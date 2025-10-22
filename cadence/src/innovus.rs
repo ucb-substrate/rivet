@@ -321,7 +321,6 @@ pub fn place_pins(top_layer: &str, bot_layer: &str, assignments: Vec<PinAssignme
 
     writeln!(place_pins_commands, "set all_ppins \"\" ").expect("Failed to write");
 
-    //for pin in pin assignments
     for assignment in assignments.into_iter() {
         writeln!(
             place_pins_commands,

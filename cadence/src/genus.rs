@@ -79,12 +79,12 @@ impl GenusStep {
         Ok(())
     }
 
-    pub fn add_hook(&self, name: &String, tcl: &String, index: i64, checkpointed: bool) -> Self {
+    pub fn add_hook(&mut self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
         self.substeps.insert(
             index,
             Substep {
-                name,
-                command: tcl,
+                name: name.to_string(),
+                command: tcl.to_string(),
                 checkpoint: checkpointed,
             },
         );

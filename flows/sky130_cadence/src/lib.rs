@@ -9,7 +9,7 @@ use cadence::innovus::{
 };
 use cadence::{MmmcConfig, MmmcCorner, Substep};
 use indoc::formatdoc;
-use rivet::{Dag, hierarchical};
+use rivet::{Dag, NamedNode, hierarchical};
 use sky130::{setup_techlef, sky130_connect_nets};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,6 +34,12 @@ pub struct Sky130FlatFlow {
     pub module: String,
     pub syn: Arc<GenusStep>,
     pub par: Arc<InnovusStep>,
+}
+
+impl NamedNode for Sky130FlatFlow {
+    fn name(&self) -> String {
+        self.module.clone()
+    }
 }
 
 pub fn sky130_syn(

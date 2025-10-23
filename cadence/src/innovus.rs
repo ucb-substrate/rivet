@@ -73,12 +73,12 @@ impl InnovusStep {
         Ok(())
     }
 
-    pub fn add_hook(&self, name: &String, tcl: &String, index: i64, checkpointed: bool) -> Self {
+    pub fn add_hook(&mut self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
         self.substeps.insert(
             index,
             Substep {
-                name,
-                command: tcl,
+                name: name.to_string(),
+                command: tcl.to_string(),
                 checkpoint: checkpointed,
             },
         );
@@ -89,8 +89,12 @@ impl Step for InnovusStep {
     fn execute(&self) {
         let tcl_path = self.work_dir.clone().join("par.tcl");
 
-        self.make_tcl_file(&tcl_path, self.steps.clone(), self.start_checkpoint.clone())
-            .expect("Failed to create par.tcl");
+        self.make_tcl_file(
+            &tcl_path,
+            self.substeps.clone(),
+            self.start_checkpoint.clone(),
+        )
+        .expect("Failed to create par.tcl");
 
         let status = Command::new("innovus")
             .args(["-file", tcl_path.to_str().unwrap(), "-stylus"])

@@ -8,15 +8,21 @@ pub struct Dag<F> {
     pub node: F,
     pub directed_edges: Vec<Dag<F>>,
 }
+pub trait NamedNode {
+    fn name(&self) -> String;
+}
 
-impl Dag<F> {
-    pub fn get_mut(&self, target: &String) -> Arc<dyn F> {
-        if (self.node.module == target) {
-            self.node
+impl<F: NamedNode> Dag<F> {
+    pub fn get_mut(&mut self, target: &String) -> Option<&mut F> {
+        if &self.node.name() == target {
+            Some(&mut self.node)
         } else {
-            for edge in self.directed_edges {
-                edge.get_mut(target);
+            for edge in &mut self.directed_edges {
+                if let Some(found) = edge.get_mut(target) {
+                    return Some(found);
+                }
             }
+            None
         }
     }
 }

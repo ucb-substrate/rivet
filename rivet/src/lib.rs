@@ -9,6 +9,18 @@ pub struct Dag<F> {
     pub directed_edges: Vec<Dag<F>>,
 }
 
+impl Dag<F> {
+    pub fn get_mut(&self, target: &String) -> Arc<dyn F> {
+        if (self.node.module == target) {
+            self.node
+        } else {
+            for edge in self.directed_edges {
+                edge.get_mut(target);
+            }
+        }
+    }
+}
+
 pub trait Step: Debug {
     fn deps(&self) -> Vec<Arc<dyn Step>>;
     fn pinned(&self) -> bool;

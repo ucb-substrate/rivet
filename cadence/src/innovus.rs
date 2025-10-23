@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub struct InnovusStep {
     pub work_dir: PathBuf,
     pub module: String,
-    pub steps: Vec<Substep>,
+    pub substeps: Vec<Substep>,
     pub pinned: bool,
     pub start_checkpoint: Option<PathBuf>,
     pub dependencies: Vec<Arc<dyn Step>>,
@@ -26,7 +26,7 @@ impl InnovusStep {
     pub fn new(
         work_dir: impl Into<PathBuf>,
         module: impl Into<String>,
-        steps: Vec<Substep>,
+        substeps: Vec<Substep>,
         pinned: bool,
         checkpoint: Option<PathBuf>,
         deps: Vec<Arc<dyn Step>>,
@@ -36,7 +36,7 @@ impl InnovusStep {
         InnovusStep {
             work_dir: dir,
             module: modul,
-            steps,
+            substeps,
             pinned,
             start_checkpoint: checkpoint,
             dependencies: deps,
@@ -71,6 +71,17 @@ impl InnovusStep {
 
         println!("\nFinished creating tcl file\n");
         Ok(())
+    }
+
+    pub fn add_hook(&self, name: &String, tcl: &String, index: i64, checkpointed: bool) -> Self {
+        self.substeps.insert(
+            index,
+            Substep {
+                name,
+                command: tcl,
+                checkpoint: checkpointed,
+            },
+        );
     }
 }
 
@@ -139,6 +150,7 @@ pub fn set_default_process(node_size: i64) -> Substep {
     }
 }
 
+// option vector of ilm lef paths and option vector of ilm paths need to be a parameter
 pub fn par_read_design_files(
     work_dir: &Path,
     module: &str,

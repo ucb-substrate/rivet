@@ -35,5 +35,15 @@ fn main() {
             }],
         },
     );
+    // want some function to add hooks to each flat flow or do you want to insert tcl to sky130_syn
+    // and sky130_par templated tcl
+    // I think u want for a given Dag of sky130 flat flows you want to be able to add custom tcl to
+    // each flat flow or all the flat flows in general for synthesis and par
+    //
+    // prob want some api like this in the sky130
+    // flow.add_hook(location: par/syn, custom tcl)
+    // or flow.node.syn.add_hook(custom tcl)
+    // or flow.node.par.add_hook(custom tcl)
+    // or add hook(par/syn, custom tcl) and applies this to all parsteps or synstep
     execute(flow.node.par);
 }

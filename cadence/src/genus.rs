@@ -78,6 +78,17 @@ impl GenusStep {
         println!("\nFinished creating tcl file\n");
         Ok(())
     }
+
+    pub fn add_hook(&self, name: &String, tcl: &String, index: i64, checkpointed: bool) -> Self {
+        self.substeps.insert(
+            index,
+            Substep {
+                name,
+                command: tcl,
+                checkpoint: checkpointed,
+            },
+        );
+    }
 }
 
 impl Step for GenusStep {

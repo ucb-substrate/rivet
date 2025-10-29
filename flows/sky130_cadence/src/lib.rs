@@ -7,7 +7,7 @@ use cadence::innovus::{
     par_init_design, par_read_design_files, par_write_design, place_opt_design, place_pins,
     place_tap_cells, power_straps, route_design, set_default_process, write_regs,
 };
-use cadence::{MmmcConfig, MmmcCorner, Substep};
+use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep};
 use indoc::formatdoc;
 use rivet::{Dag, NamedNode, hierarchical};
 use sky130::{setup_techlef, sky130_connect_nets};
@@ -232,6 +232,16 @@ pub fn sky130_par(
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
 
+    let submodules: Option<Vec<SubmoduleInfo>> =
+        dep_info
+            .iter()
+            .copied()
+            .map(|(module, flow)| SubmoduleInfo {
+                name: module.name,
+                ilm: flow.par.get_ilm(),
+                lef: flow.par.get_lef(),
+            });
+
     InnovusStep::new(
         work_dir,
         module,
@@ -244,6 +254,7 @@ pub fn sky130_par(
                 par_con.clone(),
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
+                submodules,
             ),
             par_init_design(),
             innovus_settings(),

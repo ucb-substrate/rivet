@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::{Checkpoint, MmmcConfig, Substep, mmmc, sdc};
+use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -49,8 +49,8 @@ impl InnovusStep {
     fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Substep>) -> io::Result<()> {
         let mut tcl_file = File::create(path).expect("failed to create par.tcl file");
 
-        if let Some(checkpoint_path) = Some(self.start_checkpoint.unwrap().path) {
-            writeln!(tcl_file, "read_db {}", checkpoint_path.display()).expect("Failed to write");
+        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
+            writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
         }
 
         for step in steps.into_iter() {
@@ -80,11 +80,11 @@ impl InnovusStep {
     }
 
     pub fn ilm_path(&mut self) -> PathBuf {
-        self.ilm_path.unwrap()
+        self.ilm_path.as_ref().unwrap().clone()
     }
 
     pub fn lef_path(&mut self) -> PathBuf {
-        self.lef_path.unwrap()
+        self.lef_path.as_ref().unwrap().clone()
     }
 
     pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
@@ -99,13 +99,14 @@ impl Step for InnovusStep {
     fn execute(&self) {
         let tcl_path = self.work_dir.clone().join("par.tcl");
 
-        let substeps = self.substeps.clone();
+        let mut substeps = self.substeps.clone();
 
-        if self.start_checkpoint.is_some() {
+        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
             let slice_index = substeps
                 .iter()
-                .position(|s| s.name == self.start_checkpoint.unwrap().name);
-            substeps = &substeps[slice_index..]
+                .position(|s| s.name == checkpoint.name)
+                .expect("Failed to find checkpoint name");
+            substeps = substeps[slice_index..].to_vec();
         }
 
         self.make_tcl_file(&tcl_path, substeps)
@@ -176,37 +177,53 @@ pub fn par_read_design_files(
     mmmc_conf: MmmcConfig,
     tlef: &Path,
     pdk_lef: &Path,
-    submodule_ilms: Option<Vec<PathBuf>>,
-    submodule_lefs: Option<Vec<PathBuf>>,
+    submodules: Option<Vec<SubmoduleInfo>>,
 ) -> Substep {
-    let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
-    let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
+    let mut sdc_file =
+        File::create(&work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
     writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
     let mmmc_tcl = mmmc(mmmc_conf);
     let mmmc_tcl_path = work_dir.to_path_buf().join("mmmc.tcl");
     let _ = fs::write(&mmmc_tcl_path, mmmc_tcl);
-    let netlist_file_path = netlist_path.to_path_buf();
-    let netlist_string = netlist_file_path.display();
-    let cache_tlef = tlef.display();
-    let pdk = pdk_lef.display();
+    let netlist = netlist_path.to_path_buf();
+    let mut lefs_vec = vec![tlef.display().to_string(), pdk_lef.display().to_string()];
 
-    // have read_physicsal -lef command just take in a list of strings of the lef paths
-    // The command should be a separate string so you can add the read_ilm commands by looping over the submodule_ilms vec after the read_netlist command
+    if let Some(submodule_lefs) = &submodules {
+        lefs_vec.extend(
+            submodule_lefs
+                .iter()
+                .map(|p| p.lef.to_string_lossy().to_string()),
+        );
+    }
+
+    let lefs: String = lefs_vec.join(" ");
+    let mut command = formatdoc!(
+        r#"
+            read_physical -lef {{ {} }}
+            read_mmmc {}
+            read_netlist {} -top {}
+            "#,
+        lefs,
+        mmmc_tcl_path.display(),
+        netlist.display(),
+        module.to_owned(),
+    );
+
+    if let Some(submodule_vec) = submodules {
+        for submodule in submodule_vec {
+            writeln!(
+                command,
+                "read_ilm -cell {} -directory {}",
+                submodule.name,
+                submodule.ilm.display(),
+            )
+            .unwrap();
+        }
+    }
 
     Substep {
         checkpoint: false,
-        command: formatdoc!(
-            r#"
-                read_physical -lef {{ {} {} }}
-                read_mmmc {}
-                read_netlist {} -top {}
-                "#,
-            cache_tlef,
-            pdk,
-            mmmc_tcl_path.display(),
-            netlist_string,
-            module.to_owned(),
-        ),
+        command: command,
         name: "read_design_files".into(),
     }
 }

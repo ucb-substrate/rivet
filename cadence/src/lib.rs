@@ -20,6 +20,13 @@ pub struct Checkpoint {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct SubmoduleInfo {
+    pub name: String,
+    pub ilm: PathBuf,
+    pub lef: PathBuf,
+}
+
 /// Returns the TCL for clock_constraints and pin_constraints
 pub fn sdc() -> String {
     formatdoc!(

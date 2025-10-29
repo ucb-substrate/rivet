@@ -352,7 +352,7 @@ fn sky130_cadence_flat_flow(
         &module.module_name,
         &module.verilog_path,
         dep_info,
-        &module.pin_info,
+        &module.pin_info, //TODO: need to check if pin_info is a PinSyn
     );
     let syn_pointer = Arc::new(syn);
     let par_work_dir = work_dir.join("par-rundir");

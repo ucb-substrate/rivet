@@ -14,6 +14,12 @@ pub struct Substep {
     pub checkpoint: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct Checkpoint {
+    pub name: String,
+    pub path: PathBuf,
+}
+
 /// Returns the TCL for clock_constraints and pin_constraints
 pub fn sdc() -> String {
     formatdoc!(

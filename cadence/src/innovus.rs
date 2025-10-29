@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::{MmmcConfig, Substep, mmmc, sdc};
+use crate::{Checkpoint, MmmcConfig, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -18,8 +18,10 @@ pub struct InnovusStep {
     pub module: String,
     pub substeps: Vec<Substep>,
     pub pinned: bool,
-    pub start_checkpoint: Option<PathBuf>,
+    pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
+    pub ilm_path: Option<PathBuf>,
+    pub lef_path: Option<PathBuf>,
 }
 
 impl InnovusStep {
@@ -28,7 +30,6 @@ impl InnovusStep {
         module: impl Into<String>,
         substeps: Vec<Substep>,
         pinned: bool,
-        checkpoint: Option<PathBuf>,
         deps: Vec<Arc<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
@@ -38,24 +39,18 @@ impl InnovusStep {
             module: modul,
             substeps,
             pinned,
-            start_checkpoint: checkpoint,
+            start_checkpoint: None,
             dependencies: deps,
+            ilm_path: None,
+            lef_path: None,
         }
     }
 
-    fn make_tcl_file(
-        &self,
-        path: &PathBuf,
-        steps: Vec<Substep>,
-        checkpoint_dir: Option<PathBuf>,
-    ) -> io::Result<()> {
+    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Substep>) -> io::Result<()> {
         let mut tcl_file = File::create(path).expect("failed to create par.tcl file");
 
-        if let Some(actual_checkpt_dir) = checkpoint_dir {
-            println!("\nCheckpoint specified, reading from it...\n");
-            let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
-            writeln!(tcl_file, "read_db {}", complete_checkpoint_path.display())
-                .expect("Failed to write");
+        if let Some(checkpoint_path) = Some(self.start_checkpoint.unwrap().path) {
+            writeln!(tcl_file, "read_db {}", checkpoint_path.display()).expect("Failed to write");
         }
 
         for step in steps.into_iter() {
@@ -83,18 +78,38 @@ impl InnovusStep {
             },
         );
     }
+
+    pub fn ilm_path(&mut self) -> PathBuf {
+        self.ilm_path.unwrap()
+    }
+
+    pub fn lef_path(&mut self) -> PathBuf {
+        self.lef_path.unwrap()
+    }
+
+    pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
+        self.start_checkpoint = Some(Checkpoint {
+            name: name,
+            path: checkpoint_path,
+        });
+    }
 }
 
 impl Step for InnovusStep {
     fn execute(&self) {
         let tcl_path = self.work_dir.clone().join("par.tcl");
 
-        self.make_tcl_file(
-            &tcl_path,
-            self.substeps.clone(),
-            self.start_checkpoint.clone(),
-        )
-        .expect("Failed to create par.tcl");
+        let substeps = self.substeps.clone();
+
+        if self.start_checkpoint.is_some() {
+            let slice_index = substeps
+                .iter()
+                .position(|s| s.name == self.start_checkpoint.unwrap().name);
+            substeps = &substeps[slice_index..]
+        }
+
+        self.make_tcl_file(&tcl_path, substeps)
+            .expect("Failed to create par.tcl");
 
         let status = Command::new("innovus")
             .args(["-file", tcl_path.to_str().unwrap(), "-stylus"])
@@ -154,7 +169,6 @@ pub fn set_default_process(node_size: i64) -> Substep {
     }
 }
 
-// option vector of ilm lef paths and option vector of ilm paths need to be a parameter
 pub fn par_read_design_files(
     work_dir: &Path,
     module: &str,
@@ -162,6 +176,8 @@ pub fn par_read_design_files(
     mmmc_conf: MmmcConfig,
     tlef: &Path,
     pdk_lef: &Path,
+    submodule_ilms: Option<Vec<PathBuf>>,
+    submodule_lefs: Option<Vec<PathBuf>>,
 ) -> Substep {
     let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
     let mut sdc_file = File::create(&sdc_file_path).expect("failed to create file");
@@ -173,6 +189,9 @@ pub fn par_read_design_files(
     let netlist_string = netlist_file_path.display();
     let cache_tlef = tlef.display();
     let pdk = pdk_lef.display();
+
+    // have read_physicsal -lef command just take in a list of strings of the lef paths
+    // The command should be a separate string so you can add the read_ilm commands by looping over the submodule_ilms vec after the read_netlist command
 
     Substep {
         checkpoint: false,

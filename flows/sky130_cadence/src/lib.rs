@@ -232,15 +232,14 @@ pub fn sky130_par(
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
 
-    let submodules: Option<Vec<SubmoduleInfo>> =
-        dep_info
-            .iter()
-            .copied()
-            .map(|(module, flow)| SubmoduleInfo {
-                name: module.name,
-                ilm: flow.par.get_ilm(),
-                lef: flow.par.get_lef(),
-            });
+    let submodules: Vec<SubmoduleInfo> = dep_info
+        .iter()
+        .map(|(module, flow)| SubmoduleInfo {
+            name: module.module_name.clone(),
+            ilm: flow.par.ilm_path().to_path_buf(),
+            lef: flow.par.lef_path().to_path_buf(),
+        })
+        .collect();
 
     InnovusStep::new(
         work_dir,
@@ -254,7 +253,7 @@ pub fn sky130_par(
                 par_con.clone(),
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
-                submodules,
+                Some(submodules),
             ),
             par_init_design(),
             innovus_settings(),
@@ -272,7 +271,6 @@ pub fn sky130_par(
             par_write_design(work_dir, module),
         ],
         false,
-        None,
         vec![syn_step],
     )
 }

@@ -43,6 +43,7 @@ pub fn sdc() -> String {
 #[derive(Clone)]
 pub struct MmmcCorner {
     pub name: String,
+    pub corner_type: String,
     pub libs: Vec<PathBuf>,
     pub temperature: Decimal,
 }

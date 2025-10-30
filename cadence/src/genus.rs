@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc, sdc};
+use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -59,7 +59,6 @@ impl GenusStep {
 
         for step in steps.into_iter() {
             println!("\n--> Parsing step: {}\n", step.name);
-            //generate tcl for checkpointing
 
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
@@ -320,8 +319,10 @@ pub fn add_tieoffs() -> Substep {
     }
 }
 
-pub fn syn_write_design(module: &str) -> Substep {
+pub fn syn_write_design(module: &str, sdc_corner: MmmcCorner) -> Substep {
     let module = module.to_owned();
+    let corner = sdc_corner.name.clone();
+    let corner_type = sdc_corner.corner_type.clone();
     Substep {
         checkpoint: true,
         command: formatdoc!(
@@ -370,12 +371,11 @@ pub fn syn_write_design(module: &str) -> Substep {
 
         write_hdl > {module}.mapped.v
         write_template -full -outfile {module}.mapped.scr
-        write_sdc -view ss_100C_1v60.setup_view > {module}.mapped.sdc
+        write_sdc -view {corner}.{corner_type}_view > {module}.mapped.sdc
         write_sdf > {module}.mapped.sdf
         write_design -gzip_files {module}
             "#
         ),
-        //the paths for write hdl, write sdc, and write sdf need to be fixed
         name: "write_design".into(),
     }
 }

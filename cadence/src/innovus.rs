@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
+use crate::MmmcCorner;
 use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
@@ -517,9 +518,28 @@ pub fn write_regs() -> Substep {
     }
 }
 
-pub fn par_write_design(work_dir: &Path, module: &str) -> Substep {
+pub fn par_write_design(work_dir: &Path, module: &str, corners: Vec<MmmcCorner>) -> Substep {
     let par_rundir = work_dir.display();
     let module = module.to_owned();
+    let setup = corners
+        .iter()
+        .find(|p| p.corner_type == "setup")
+        .unwrap()
+        .name
+        .clone();
+    let hold = corners
+        .iter()
+        .find(|p| p.corner_type == "hold")
+        .unwrap()
+        .name
+        .clone();
+    let typical = corners
+        .iter()
+        .find(|p| p.corner_type == "extra")
+        .unwrap()
+        .name
+        .clone();
+
     Substep {
         checkpoint: true,
         command: formatdoc!(
@@ -536,12 +556,12 @@ pub fn par_write_design(work_dir: &Path, module: &str) -> Substep {
             write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{}}
             write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{}}
             write_stream -mode ALL -format stream -map_file /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/hammer/hammer/technology/sky130/sky130_lefpin.map -uniquify_cell_names -merge {{ /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds }}  {par_rundir}/{module}.gds
-            write_sdf -max_view ss_100C_1v60.setup_view -min_view ff_n40C_1v95.hold_view -typical_view tt_025C_1v80.extra_view {par_rundir}/{module}.par.sdf
+            write_sdf -max_view {setup}.setup_view -min_view {hold}.hold_view -typical_view {typical}.extra_view {par_rundir}/{module}.par.sdf
             set_db extract_rc_coupled true
             extract_rc
-            write_parasitics -spef_file {par_rundir}/{module}.ss_100C_1v60.par.spef -rc_corner ss_100C_1v60.setup_rc
-            write_parasitics -spef_file {par_rundir}/{module}.ff_n40C_1v95.par.spef -rc_corner ff_n40C_1v95.hold_rc
-            write_parasitics -spef_file {par_rundir}/{module}.tt_025C_1v80.par.spef -rc_corner tt_025C_1v80.extra_rc
+            write_parasitics -spef_file {par_rundir}/{module}.{setup}.par.spef -rc_corner {setup}.setup_rc
+            write_parasitics -spef_file {par_rundir}/{module}.{hold}.par.spef -rc_corner {hold}.hold_rc
+            write_parasitics -spef_file {par_rundir}/{module}.{typical}.par.spef -rc_corner {typical}.extra_rc
             write_db post_write_design
             ln -sfn post_write_design latest
             "#

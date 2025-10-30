@@ -7,7 +7,7 @@ use cadence::innovus::{
     par_init_design, par_read_design_files, par_write_design, place_opt_design, place_pins,
     place_tap_cells, power_straps, route_design, set_default_process, write_regs,
 };
-use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep};
+use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, sdc};
 use indoc::formatdoc;
 use rivet::{Dag, NamedNode, hierarchical};
 use sky130::{setup_techlef, sky130_connect_nets};
@@ -56,21 +56,24 @@ pub fn sky130_syn(
 
             corners: vec![
                 MmmcCorner {
-                    name: "ss_100C_1v60.setup".to_string(),
+                    name: "ss_100C_1v60".to_string(),
+                    corner_type: "setup".to_string(),
                     libs: vec![pdk_root.join(
                         "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib",
                     )],
                     temperature: dec!(100.0),
                 },
                 MmmcCorner {
-                    name: "ff_n40C_1v95.hold".to_string(),
+                    name: "ff_n40C_1v95".to_string(),
+                    corner_type: "hold".to_string(),
                     libs: vec![pdk_root.join(
                         "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib",
                     )],
                     temperature: dec!(-40.0),
                 },
                 MmmcCorner {
-                    name: "tt_025C_1v80.extra".to_string(),
+                    name: "tt_025C_1v80".to_string(),
+                    corner_type: "extra".to_string(),
                     libs: vec![pdk_root.join(
                         "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib",
                     )],
@@ -104,6 +107,14 @@ pub fn sky130_syn(
             lef: flow.par.lef_path().to_path_buf(),
         })
         .collect();
+    let sdc_corner = MmmcCorner {
+        name: "ss_100C_1v60".to_string(),
+        corner_type: "setup".to_string(),
+        libs: vec![
+            pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib"),
+        ],
+        temperature: dec!(100.0),
+    };
 
     GenusStep::new(
         work_dir,
@@ -125,7 +136,7 @@ pub fn sky130_syn(
             syn_generic(),
             syn_map(),
             add_tieoffs(),
-            syn_write_design(module),
+            syn_write_design(module, sdc_corner),
         ],
         matches!(pin_info, FlatPinInfo::PinSyn(_)),
         vec![],
@@ -189,50 +200,57 @@ pub fn sky130_par(
         }
     ];
 
-    let par_con =
-        MmmcConfig {
-            sdc_files: vec![
-                work_dir.clone().join("clock_pin_constraints.sdc"),
-                work_dir
-                    .parent()
-                    .unwrap()
-                    .join(format!("syn-rundir/{}.mapped.sdc", module)),
+    let corners = vec![
+        MmmcCorner {
+            name: "ss_100C_1v60".to_string(),
+            corner_type: "setup".to_string(),
+            libs: vec![
+                pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib"),
             ],
-            corners: vec![
-                MmmcCorner {
-                    name: "ss_100C_1v60.setup".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib",
-                    )],
-                    temperature: dec!(100.0),
-                },
-                MmmcCorner {
-                    name: "ff_n40C_1v95.hold".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib",
-                    )],
-                    temperature: dec!(-40.0),
-                },
-                MmmcCorner {
-                    name: "tt_025C_1v80.extra".to_string(),
-                    libs: vec![pdk_root.join(
-                        "sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib",
-                    )],
-                    temperature: dec!(25.0),
-                },
+            temperature: dec!(100.0),
+        },
+        MmmcCorner {
+            name: "ff_n40C_1v95".to_string(),
+            corner_type: "hold".to_string(),
+            libs: vec![
+                pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib"),
             ],
-
-            setup: vec!["ss_100C_1v60.setup".to_string()],
-
-            hold: vec![
-                "ff_n40C_1v95.hold".to_string(),
-                "tt_025C_1v80.extra".to_string(),
+            temperature: dec!(-40.0),
+        },
+        MmmcCorner {
+            name: "tt_025C_1v80".to_string(),
+            corner_type: "extra".to_string(),
+            libs: vec![
+                pdk_root
+                    .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib"),
             ],
+            temperature: dec!(25.0),
+        },
+    ];
 
-            dynamic: "tt_025C_1v80.extra".to_string(),
+    let par_con = MmmcConfig {
+        sdc_files: vec![
+            work_dir.clone().join("clock_pin_constraints.sdc"),
+            work_dir
+                .parent()
+                .unwrap()
+                .join(format!("syn-rundir/{}.mapped.sdc", module)),
+        ],
+        corners: corners.clone(),
 
-            leakage: "tt_025C_1v80.extra".to_string(),
-        };
+        setup: vec!["ss_100C_1v60.setup".to_string()],
+
+        hold: vec![
+            "ff_n40C_1v95.hold".to_string(),
+            "tt_025C_1v80.extra".to_string(),
+        ],
+
+        dynamic: "tt_025C_1v80.extra".to_string(),
+
+        leakage: "tt_025C_1v80.extra".to_string(),
+    };
 
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
 
@@ -277,7 +295,7 @@ pub fn sky130_par(
             opt_design(),
             write_regs(),
             sky130_connect_nets(),
-            par_write_design(work_dir, module),
+            par_write_design(work_dir, module, corners.clone()),
         ],
         matches!(pin_info, FlatPinInfo::PinPar(_)),
         vec![syn_step],

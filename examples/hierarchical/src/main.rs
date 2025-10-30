@@ -35,9 +35,9 @@ fn main() {
             }],
         },
     );
-    flow.get_mut(&"nbitadder".to_string())
-        .unwrap()
-        .par
-        .add_hook();
+    // flow.get_mut(&"nbitadder".to_string())
+    //     .unwrap()
+    //     .par
+    //     .add_hook();
     execute(flow.node.par);
 }

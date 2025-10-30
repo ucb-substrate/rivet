@@ -79,11 +79,11 @@ impl InnovusStep {
         );
     }
 
-    pub fn ilm_path(&mut self) -> PathBuf {
+    pub fn ilm_path(&self) -> PathBuf {
         self.ilm_path.as_ref().unwrap().clone()
     }
 
-    pub fn lef_path(&mut self) -> PathBuf {
+    pub fn lef_path(&self) -> PathBuf {
         self.lef_path.as_ref().unwrap().clone()
     }
 

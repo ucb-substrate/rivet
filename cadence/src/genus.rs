@@ -1,10 +1,11 @@
 use std::fmt::Debug;
+use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::{MmmcConfig, Substep, mmmc, sdc};
+use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -17,8 +18,9 @@ pub struct GenusStep {
     pub module: String,
     pub substeps: Vec<Substep>,
     pub pinned: bool,
-    pub start_checkpoint: Option<PathBuf>,
+    pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
+    pub netlist: Option<PathBuf>,
 }
 
 impl GenusStep {
@@ -27,7 +29,6 @@ impl GenusStep {
         module: impl Into<String>,
         steps: Vec<Substep>,
         pinned: bool,
-        checkpoint: Option<PathBuf>,
         deps: Vec<Arc<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
@@ -37,18 +38,14 @@ impl GenusStep {
             module: modul,
             substeps: steps,
             pinned,
-            start_checkpoint: checkpoint,
+            start_checkpoint: None,
             dependencies: deps,
+            netlist: None,
         }
     }
 
     /// Generates the tcl file for synthesis
-    fn make_tcl_file(
-        &self,
-        path: &PathBuf,
-        steps: Vec<Substep>,
-        checkpoint_dir: Option<PathBuf>,
-    ) -> io::Result<()> {
+    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Substep>) -> io::Result<()> {
         let mut tcl_file = File::create(path).expect("failed to create syn.tcl file");
 
         writeln!(
@@ -56,10 +53,8 @@ impl GenusStep {
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
-        if let Some(actual_checkpt_dir) = checkpoint_dir {
-            println!("\nCheckpoint specified, reading from it...\n");
-            let complete_checkpoint_path = self.work_dir.join(actual_checkpt_dir);
-            writeln!(tcl_file, "read_db {}", complete_checkpoint_path.display())?;
+        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
+            writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
         }
 
         for step in steps.into_iter() {
@@ -89,18 +84,35 @@ impl GenusStep {
             },
         );
     }
+
+    pub fn netlist(&self) -> PathBuf {
+        self.netlist.as_ref().unwrap().clone()
+    }
+
+    pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
+        self.start_checkpoint = Some(Checkpoint {
+            name: name,
+            path: checkpoint_path,
+        });
+    }
 }
 
 impl Step for GenusStep {
     fn execute(&self) {
         let tcl_path = self.work_dir.clone().join("syn.tcl");
 
-        self.make_tcl_file(
-            &tcl_path,
-            self.substeps.clone(),
-            self.start_checkpoint.clone(),
-        )
-        .expect("Failed to create syn.tcl");
+        let mut substeps = self.substeps.clone();
+
+        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
+            let slice_index = substeps
+                .iter()
+                .position(|s| s.name == checkpoint.name)
+                .expect("Failed to find checkpoint name");
+            substeps = substeps[slice_index..].to_vec();
+        }
+
+        self.make_tcl_file(&tcl_path, substeps)
+            .expect("Failed to create syn.tcl");
 
         let status = Command::new("genus")
             .args(["-f", tcl_path.to_str().unwrap()])
@@ -160,31 +172,55 @@ pub fn syn_read_design_files(
     mmmc_conf: MmmcConfig,
     tlef: &Path,
     pdk_lef: &Path,
+    submodules: Option<Vec<SubmoduleInfo>>,
 ) -> Substep {
-    let sdc_file_path = work_dir.join("clock_pin_constraints.sdc");
-    println!("{}", sdc_file_path.display());
-    let mut sdc_file = File::create(sdc_file_path).expect("failed to create file");
+    let mut sdc_file =
+        File::create(work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
     writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
     let mmmc_tcl = mmmc(mmmc_conf);
     let mmmc_tcl_path = work_dir.to_path_buf().join("mmmc.tcl");
     let _ = fs::write(&mmmc_tcl_path, mmmc_tcl);
     let module_file_path = module_path.to_path_buf();
     let module_string = module_file_path.display();
-    let cache_tlef = tlef.display();
-    let pdk = pdk_lef.display();
-    Substep {
-        checkpoint: false,
-        command: formatdoc!(
-            r#"
+
+    let mut lefs_vec = vec![tlef.display().to_string(), pdk_lef.display().to_string()];
+
+    if let Some(submodule_lefs) = &submodules {
+        lefs_vec.extend(
+            submodule_lefs
+                .iter()
+                .map(|p| p.lef.to_string_lossy().to_string()),
+        );
+    }
+
+    let lefs: String = lefs_vec.join(" ");
+
+    let mut command = formatdoc!(
+        r#"
             read_mmmc {}
-            read_physical -lef {{ {} {} }}
+            read_physical -lef {{ {} }}
             read_hdl -sv {}
             "#,
-            mmmc_tcl_path.display(),
-            cache_tlef,
-            pdk,
-            module_string
-        ),
+        mmmc_tcl_path.display(),
+        lefs,
+        module_string
+    );
+
+    if let Some(submodule_vec) = submodules {
+        for submodule in submodule_vec {
+            writeln!(
+                command,
+                "read_ilm -cell {} -directory {}",
+                submodule.name,
+                submodule.ilm.display(),
+            )
+            .unwrap();
+        }
+    }
+
+    Substep {
+        checkpoint: false,
+        command: command,
         name: "read_design_files".into(),
     }
 }

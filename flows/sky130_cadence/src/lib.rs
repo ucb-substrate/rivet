@@ -96,6 +96,15 @@ pub fn sky130_syn(
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
 
+    let submodules: Vec<SubmoduleInfo> = dep_info
+        .iter()
+        .map(|(module, flow)| SubmoduleInfo {
+            name: module.module_name.clone(),
+            ilm: flow.par.ilm_path().to_path_buf(),
+            lef: flow.par.lef_path().to_path_buf(),
+        })
+        .collect();
+
     GenusStep::new(
         work_dir,
         module,
@@ -108,6 +117,7 @@ pub fn sky130_syn(
                 syn_con.clone(),
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
+                Some(submodules),
             ),
             elaborate(module),
             syn_init_design(module),
@@ -117,8 +127,7 @@ pub fn sky130_syn(
             add_tieoffs(),
             syn_write_design(module),
         ],
-        false,
-        None,
+        matches!(pin_info, FlatPinInfo::PinSyn(_)),
         vec![],
     )
 }
@@ -270,7 +279,7 @@ pub fn sky130_par(
             sky130_connect_nets(),
             par_write_design(work_dir, module),
         ],
-        false,
+        matches!(pin_info, FlatPinInfo::PinPar(_)),
         vec![syn_step],
     )
 }
@@ -361,7 +370,7 @@ fn sky130_cadence_flat_flow(
         &module.module_name,
         &module.verilog_path,
         dep_info,
-        &module.pin_info, //TODO: need to check if pin_info is a PinSyn
+        &module.pin_info,
     );
     let syn_pointer = Arc::new(syn);
     let par_work_dir = work_dir.join("par-rundir");

@@ -81,16 +81,13 @@ pub fn sky130_syn(
                 },
             ],
 
-            setup: vec!["ss_100C_1v60.setup".to_string()],
+            setup: vec!["ss_100C_1v60".to_string()],
 
-            hold: vec![
-                "ff_n40C_1v95.hold".to_string(),
-                "tt_025C_1v80.extra".to_string(),
-            ],
+            hold: vec!["ff_n40C_1v95".to_string(), "tt_025C_1v80".to_string()],
 
-            dynamic: "tt_025C_1v80.extra".to_string(),
+            dynamic: "tt_025C_1v80".to_string(),
 
-            leakage: "tt_025C_1v80.extra".to_string(),
+            leakage: "tt_025C_1v80".to_string(),
         };
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
 
@@ -240,16 +237,13 @@ pub fn sky130_par(
         ],
         corners: corners.clone(),
 
-        setup: vec!["ss_100C_1v60.setup".to_string()],
+        setup: vec!["ss_100C_1v60".to_string()],
 
-        hold: vec![
-            "ff_n40C_1v95.hold".to_string(),
-            "tt_025C_1v80.extra".to_string(),
-        ],
+        hold: vec!["ff_n40C_1v95".to_string(), "tt_025C_1v80".to_string()],
 
-        dynamic: "tt_025C_1v80.extra".to_string(),
+        dynamic: "tt_025C_1v80".to_string(),
 
-        leakage: "tt_025C_1v80.extra".to_string(),
+        leakage: "tt_025C_1v80".to_string(),
     };
 
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");

@@ -21,8 +21,6 @@ pub struct InnovusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
-    pub ilm_path: Option<PathBuf>,
-    pub lef_path: Option<PathBuf>,
 }
 
 impl InnovusStep {
@@ -42,8 +40,6 @@ impl InnovusStep {
             pinned,
             start_checkpoint: None,
             dependencies: deps,
-            ilm_path: None,
-            lef_path: None,
         }
     }
 
@@ -81,11 +77,11 @@ impl InnovusStep {
     }
 
     pub fn ilm_path(&self) -> PathBuf {
-        self.ilm_path.as_ref().unwrap().clone()
+        self.work_dir.join(format!("{}ILMDir", self.module))
     }
 
     pub fn lef_path(&self) -> PathBuf {
-        self.lef_path.as_ref().unwrap().clone()
+        self.work_dir.join(format!("{}.lef", self.module))
     }
 
     pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {

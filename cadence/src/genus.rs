@@ -20,7 +20,6 @@ pub struct GenusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
-    pub netlist: Option<PathBuf>,
 }
 
 impl GenusStep {
@@ -40,7 +39,6 @@ impl GenusStep {
             pinned,
             start_checkpoint: None,
             dependencies: deps,
-            netlist: None,
         }
     }
 
@@ -85,7 +83,7 @@ impl GenusStep {
     }
 
     pub fn netlist(&self) -> PathBuf {
-        self.netlist.as_ref().unwrap().clone()
+        self.work_dir.join(format!("{}.mapped.v", self.module))
     }
 
     pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {

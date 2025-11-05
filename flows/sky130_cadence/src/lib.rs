@@ -9,7 +9,7 @@ use cadence::innovus::{
 };
 use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, sdc};
 use indoc::formatdoc;
-use rivet::{Dag, NamedNode, hierarchical};
+use rivet::{Dag, NamedNode, Step, hierarchical};
 use sky130::{setup_techlef, sky130_connect_nets};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -112,6 +112,10 @@ pub fn sky130_syn(
         ],
         temperature: dec!(100.0),
     };
+    let deps: Vec<Arc<dyn Step>> = dep_info
+        .iter()
+        .map(|(_module, flow)| Arc::clone(&flow.par) as Arc<dyn Step>)
+        .collect();
 
     GenusStep::new(
         work_dir,
@@ -136,7 +140,7 @@ pub fn sky130_syn(
             syn_write_design(module, sdc_corner),
         ],
         matches!(pin_info, FlatPinInfo::PinSyn(_)),
-        vec![],
+        deps,
     )
 }
 

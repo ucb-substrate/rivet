@@ -81,7 +81,7 @@ impl InnovusStep {
     }
 
     pub fn lef_path(&self) -> PathBuf {
-        self.work_dir.join(format!("{}.lef", self.module))
+        self.work_dir.join(format!("{}ILM.lef", self.module))
     }
 
     pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
@@ -286,16 +286,18 @@ pub fn floorplan_design(work_dir: &Path, module: &str) -> Substep {
     )
     .expect("Failed to write");
     let power_spec_file_string = power_spec_file_path.display();
-    Substep {
-        checkpoint: true,
-        command: formatdoc!(
-            r#"
+    let command = formatdoc!(
+        r#"
             source -echo -verbose {floorplan_path_string} 
+            // if hierarhical write flatten_ilm 
             read_power_intent -cpf {power_spec_file_string}
             commit_power_intent
-
+            //if hierarchical write unflatten_ilm
             "#
-        ),
+    );
+    Substep {
+        checkpoint: true,
+        command: command,
         name: "floorplan_design".into(),
     }
 }
@@ -403,6 +405,12 @@ pub fn place_pins(top_layer: &str, bot_layer: &str, assignments: Vec<PinAssignme
 }
 
 pub fn place_opt_design() -> Substep {
+    // if self.hierarchical_mode.is_nonleaf_hierarchical():
+    //       self.verbose_append('''
+    //       flatten_ilm
+    //       update_constraint_mode -name {name} -ilm_sdc_files {sdc}
+    //       '''.format(name=self.constraint_mode, sdc=self.post_synth_sdc), clean=True)
+
     Substep {
         checkpoint: true,
         command: formatdoc!(
@@ -435,6 +443,8 @@ pub fn add_fillers(filler_cells: Vec<String>) -> Substep {
 }
 
 pub fn route_design() -> Substep {
+    // if self.hierarchical_mode.is_nonleaf_hierarchical():
+    // self.verbose_append("flatten_ilm")
     Substep {
         checkpoint: true,
         command: formatdoc!(
@@ -462,6 +472,8 @@ pub fn opt_design() -> Substep {
         ),
         name: "opt_design".into(),
     }
+    // if self.hierarchical_mode.is_nonleaf_hierarchical():
+    //             self.verbose_append("unflatten_ilm")
 }
 
 pub fn write_regs() -> Substep {
@@ -563,5 +575,33 @@ pub fn par_write_design(work_dir: &Path, module: &str, corners: Vec<MmmcCorner>)
             "#
         ),
         name: "write_design".into(),
+    }
+}
+
+pub fn write_ilm(work_dir: &Path, module: &str, top_layer: &Layer) -> Substep {
+    // def output_ilm_sdcs(self) -> List[str]:
+    // corners = self.get_mmmc_corners()
+    // if corners:
+    //     filtered = list(filter(lambda c: c.type in [MMMCCornerType.Setup, MMMCCornerType.Hold], corners))
+    //     ctype_map = {MMMCCornerType.Setup: "setup", MMMCCornerType.Hold: "hold"}
+    //     return list(map(lambda c: os.path.join(self.run_dir, "{top}_postRoute_{corner_name}.{corner_type}_view.core.sdc".format(
+    //         top=self.top_module, corner_name=c.name, corner_type=ctype_map[c.type])), filtered))
+    // else:
+    //     return [os.path.join(self.run_dir, "{top}_postRoute.core.sdc".format(top=self.top_module))]
+    // for sdc_out in self.output_ilm_sdcs:
+    //     self.append('gzip -d -c {ilm_dir_name}/mmmc/ilm_data/{top}/{sdc_in}.gz | sed "s/get_pins/get_pins -hierarchical/g" > {sdc_out}'.format(
+    //         ilm_dir_name=self.ilm_dir_name, top=self.top_module, sdc_in=os.path.basename(sdc_out), sdc_out=sdc_out))
+    Substep {
+        checkpoint: false,
+        command: formatdoc!(
+            r#"
+            time_design -post_route
+            time_design -post_route -hold
+            check_process_antenna
+            write_lef_abstract -5.8 -top_layer {top_layer} -stripe_pins -pg_pin_layers {{{top_layer}}} {top}ILM.lef
+            write_ilm -model_type all -to_dir {ilm_dir_name} -type_flex_ilm ilm
+            "#
+        ),
+        name: "write_ilm".into(),
     }
 }

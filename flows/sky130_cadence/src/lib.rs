@@ -3,9 +3,10 @@ use cadence::genus::{
     syn_generic, syn_init_design, syn_map, syn_read_design_files, syn_write_design,
 };
 use cadence::innovus::{
-    InnovusStep, Layer, PinAssignment, add_fillers, floorplan_design, innovus_settings, opt_design,
-    par_init_design, par_read_design_files, par_write_design, place_opt_design, place_pins,
-    place_tap_cells, power_straps, route_design, set_default_process, write_ilm, write_regs,
+    DieConstraints, InnovusStep, Layer, PinAssignment, add_fillers, floorplan_design,
+    innovus_settings, opt_design, par_init_design, par_read_design_files, par_write_design,
+    place_opt_design, place_pins, place_tap_cells, power_straps, route_design, set_default_process,
+    write_ilm, write_regs,
 };
 use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, sdc};
 use indoc::formatdoc;
@@ -130,7 +131,7 @@ pub fn sky130_syn(
             ),
             elaborate(module),
             syn_init_design(module),
-            power_intent(work_dir, module),
+            power_intent(work_dir, &sky130_cadence_power_spec(module, dec!(1.8))),
             syn_generic(),
             syn_map(),
             add_tieoffs(),
@@ -273,9 +274,20 @@ pub fn sky130_par(
                 Some(submodules),
             ),
             par_init_design(),
-            innovus_settings(),
+            innovus_settings(2, 6),
             sky130_innovus_settings(),
-            floorplan_design(work_dir, module),
+            floorplan_design(
+                work_dir,
+                &sky130_cadence_power_spec(module, dec!(1.8)),
+                DieConstraints {
+                    w: 30,
+                    h: 30,
+                    left: 0,
+                    bottom: 0,
+                    right: 0,
+                    top: 0,
+                },
+            ),
             sky130_connect_nets(),
             power_straps(layers),
             place_pins("5", "1", vec![assignment]),
@@ -374,6 +386,33 @@ pub fn sky130_innovus_settings() -> Substep {
     }
 }
 
+pub fn sky130_cadence_power_spec(module: &str, voltage: Decimal) -> String {
+    formatdoc! {
+    r#"
+    set_cpf_version 1.0e
+    set_hierarchy_separator /
+    set_design {}
+    create_power_nets -nets VDD -voltage {voltage}
+    create_power_nets -nets VPWR -voltage {voltage} 
+    create_power_nets -nets VPB -voltage {voltage}
+    create_power_nets -nets vdd -voltage {voltage}
+    create_ground_nets -nets {{ VSS VGND VNB vss }}
+    create_power_domain -name AO -default
+    update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
+    create_global_connection -domain AO -net VDD -pins [list VDD]
+    create_global_connection -domain AO -net VPWR -pins [list VPWR]
+    create_global_connection -domain AO -net VPB -pins [list VPB]
+    create_global_connection -domain AO -net vdd -pins [list vdd]
+    create_global_connection -domain AO -net VSS -pins [list VSS]
+    create_global_connection -domain AO -net VGND -pins [list VGND]
+    create_global_connection -domain AO -net VNB -pins [list VNB]
+    create_nominal_condition -name nominal -voltage {voltage}
+    create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
+    end_design
+    "#, module.to_string()
+    }
+}
+
 fn sky130_cadence_flat_flow(
     pdk_root: &Path,
     work_dir: &Path,
@@ -413,7 +452,6 @@ pub fn sky130_cadence_reference_flow(
     work_dir: PathBuf,
     hierarchy: Dag<ModuleInfo>,
 ) -> Dag<Sky130FlatFlow> {
-    // `hierarchical` is a helper function defined in rivet.
     hierarchical(&hierarchy, &|block: &ModuleInfo,
                                sub_blocks: Vec<(
         &ModuleInfo,

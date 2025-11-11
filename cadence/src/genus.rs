@@ -239,38 +239,11 @@ pub fn syn_init_design(module: &String) -> Substep {
 }
 
 /// Write power_spec.cpf and run power_intent TCL commands.
-pub fn power_intent(work_dir: &Path, module: &str) -> Substep {
+pub fn power_intent(work_dir: &Path, power_spec: &String) -> Substep {
     let power_spec_file_path = work_dir.join("power_spec.cpf");
+
     let mut power_spec_file = File::create(&power_spec_file_path).expect("failed to create file");
-    writeln!(
-        power_spec_file,
-        "{}",
-        formatdoc! {
-        r#"
-            set_cpf_version 1.0e
-            set_hierarchy_separator /
-            set_design {}
-            create_power_nets -nets VDD -voltage 1.8
-            create_power_nets -nets VPWR -voltage 1.8
-            create_power_nets -nets VPB -voltage 1.8
-            create_power_nets -nets vdd -voltage 1.8
-            create_ground_nets -nets {{ VSS VGND VNB vss }}
-            create_power_domain -name AO -default
-            update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
-            create_global_connection -domain AO -net VDD -pins [list VDD]
-            create_global_connection -domain AO -net VPWR -pins [list VPWR]
-            create_global_connection -domain AO -net VPB -pins [list VPB]
-            create_global_connection -domain AO -net vdd -pins [list vdd]
-            create_global_connection -domain AO -net VSS -pins [list VSS]
-            create_global_connection -domain AO -net VGND -pins [list VGND]
-            create_global_connection -domain AO -net VNB -pins [list VNB]
-            create_nominal_condition -name nominal -voltage 1.8
-            create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
-            end_design
-        "#, module.to_string()
-        }
-    )
-    .expect("Failed to write");
+    writeln!(power_spec_file, "{}", power_spec).expect("Failed to write");
     let power_spec_file_string = power_spec_file_path.display();
     Substep {
         checkpoint: true,

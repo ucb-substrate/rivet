@@ -84,6 +84,10 @@ impl InnovusStep {
         self.work_dir.join(format!("{}ILM.lef", self.module))
     }
 
+    pub fn sdc_path(&self) -> PathBuf {
+        self.work_dir.join(format!("{}.mapped.sdc", self.module))
+    }
+
     pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
             name: name,
@@ -233,66 +237,53 @@ pub fn par_init_design() -> Substep {
     }
 }
 
-pub fn innovus_settings() -> Substep {
+pub fn innovus_settings(bottom_routing: i64, top_routing: i64) -> Substep {
     Substep {
         checkpoint: false,
         command: formatdoc!(
             r#"
-            set_db design_bottom_routing_layer 2
-            set_db design_top_routing_layer 6
+            set_db design_bottom_routing_layer {}
+            set_db design_top_routing_layer {}
             set_db design_flow_effort standard
             set_db design_power_effort low
-            "#
+            "#,
+            bottom_routing,
+            top_routing
         ),
         name: "innovus_settings".into(),
     }
 }
 
-pub fn floorplan_design(work_dir: &Path, module: &str) -> Substep {
+pub fn floorplan_design(
+    work_dir: &Path,
+    power_spec: &String,
+    die_constraints: DieConstraints,
+) -> Substep {
     let floorplan_tcl_path = work_dir.join("floorplan.tcl");
+    let constraints = format!(
+        "{} {} {} {} {} {}",
+        die_constraints.w,
+        die_constraints.h,
+        die_constraints.left,
+        die_constraints.bottom,
+        die_constraints.right,
+        die_constraints.top
+    );
     let mut floorplan_tcl_file = File::create(&floorplan_tcl_path).expect("failed to create file");
-    writeln!(floorplan_tcl_file, "{}", "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size { 30 30 0 0 0 0 }").expect("Failed to write");
+    writeln!(floorplan_tcl_file,"create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size {{ {} }}", constraints ).expect("Failed to write");
     let floorplan_path_string = floorplan_tcl_path.display();
 
     let power_spec_file_path = work_dir.join("power_spec.cpf");
     let mut power_spec_file = File::create(&power_spec_file_path).expect("failed to create file");
-    writeln!(
-        power_spec_file,
-        "{}",
-        formatdoc! {
-        r#"
-        set_cpf_version 1.0e
-        set_hierarchy_separator /
-        set_design {}
-        create_power_nets -nets VDD -voltage 1.8
-        create_power_nets -nets VPWR -voltage 1.8
-        create_power_nets -nets VPB -voltage 1.8
-        create_power_nets -nets vdd -voltage 1.8
-        create_ground_nets -nets {{ VSS VGND VNB vss }}
-        create_power_domain -name AO -default
-        update_power_domain -name AO -primary_power_net VDD -primary_ground_net VSS
-        create_global_connection -domain AO -net VDD -pins [list VDD]
-        create_global_connection -domain AO -net VPWR -pins [list VPWR]
-        create_global_connection -domain AO -net VPB -pins [list VPB]
-        create_global_connection -domain AO -net vdd -pins [list vdd]
-        create_global_connection -domain AO -net VSS -pins [list VSS]
-        create_global_connection -domain AO -net VGND -pins [list VGND]
-        create_global_connection -domain AO -net VNB -pins [list VNB]
-        create_nominal_condition -name nominal -voltage 1.8
-        create_power_mode -name aon -default -domain_conditions {{AO@nominal}}
-        end_design
-        "#, module.to_string()
-        }
-    )
-    .expect("Failed to write");
+    writeln!(power_spec_file, "{}", power_spec).expect("Failed to write");
     let power_spec_file_string = power_spec_file_path.display();
     let command = formatdoc!(
         r#"
             source -echo -verbose {floorplan_path_string} 
-            // if hierarhical write flatten_ilm 
+            flatten_ilm 
             read_power_intent -cpf {power_spec_file_string}
             commit_power_intent
-            //if hierarchical write unflatten_ilm
+            unflatten_ilm
             "#
     );
     Substep {
@@ -404,26 +395,28 @@ pub fn place_pins(top_layer: &str, bot_layer: &str, assignments: Vec<PinAssignme
     }
 }
 
-pub fn place_opt_design() -> Substep {
-    // if self.hierarchical_mode.is_nonleaf_hierarchical():
-    //       self.verbose_append('''
-    //       flatten_ilm
-    //       update_constraint_mode -name {name} -ilm_sdc_files {sdc}
-    //       '''.format(name=self.constraint_mode, sdc=self.post_synth_sdc), clean=True)
+pub fn place_opt_design(sdc_files: Option<PathBuf>) -> Substep {
+    let sdc_command = if let Some(sdc_files) = sdc_files {
+        sdc_files.display().to_string();
+    } else {
+        "".to_string();
+    };
 
-    Substep {
-        checkpoint: true,
-        command: formatdoc!(
-            r#"
+    let command = formatdoc!(
+        r#"
             set unplaced_pins [get_db ports -if {{.place_status == unplaced}}]
             if {{$unplaced_pins ne ""}} {{
                 print_message -error "Some pins remain unplaced, which will cause invalid placement and routing. These are the unplaced pins: $unplaced_pins"
                 exit 2
             }}
+            {sdc_command}
             set_db opt_enable_podv2_clock_opt_flow true
             place_opt_design
         "#
-        ),
+    );
+    Substep {
+        checkpoint: true,
+        command: command,
         name: "place_opt_design".into(),
     }
 }
@@ -443,15 +436,14 @@ pub fn add_fillers(filler_cells: Vec<String>) -> Substep {
 }
 
 pub fn route_design() -> Substep {
-    // if self.hierarchical_mode.is_nonleaf_hierarchical():
-    // self.verbose_append("flatten_ilm")
     Substep {
         checkpoint: true,
         command: formatdoc!(
             r#"
-        set_db design_express_route true
-        route_design
-        "#
+                flatten_ilm
+                set_db design_express_route true
+                route_design
+            "#
         ),
         name: "route_design".into(),
     }
@@ -468,19 +460,22 @@ pub fn opt_design() -> Substep {
                 set_db opt_detail_drv_failure_reason true
                 set_db opt_sequential_genus_restructure_report_failure_reason true
                 opt_design -post_route -setup -hold -expanded_views -timing_debug_report
+                unflatten_ilm
             "#
         ),
         name: "opt_design".into(),
     }
-    // if self.hierarchical_mode.is_nonleaf_hierarchical():
-    //             self.verbose_append("unflatten_ilm")
 }
 
 pub fn write_regs() -> Substep {
+    // TODO: add childmodule.tcl
+    let childmodule_tcl = "";
     Substep {
         checkpoint: true,
         command: formatdoc!(
             r#"
+            flatten_ilm
+            {childmodule_tcl}
         set write_cells_ir "./find_regs_cells.json"
         set write_cells_ir [open $write_cells_ir "w"]
         puts $write_cells_ir "\["
@@ -520,6 +515,7 @@ pub fn write_regs() -> Substep {
         puts $write_regs_ir "\]"
 
         close $write_regs_ir
+        unflatten_ilm
         "#
         ),
         name: "write_regs".into(),
@@ -563,7 +559,7 @@ pub fn par_write_design(work_dir: &Path, module: &str, corners: Vec<MmmcCorner>)
             connect_global_net VSS -type net -net_base_name vss
             write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{}}
             write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{}}
-            write_stream -mode ALL -format stream -map_file /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/hammer/hammer/technology/sky130/sky130_lefpin.map -uniquify_cell_names -merge {{ /home/ff/eecs251b/sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds }}  {par_rundir}/{module}.gds
+            write_stream -mode ALL -format stream -map_file /rivet/pdks/sky130/src/sky130_lefpin.map -uniquify_cell_names -merge {{ {root}/sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds }}  {par_rundir}/{module}.gds
             write_sdf -max_view {setup}.setup_view -min_view {hold}.hold_view -typical_view {typical}.extra_view {par_rundir}/{module}.par.sdf
             set_db extract_rc_coupled true
             extract_rc
@@ -578,7 +574,7 @@ pub fn par_write_design(work_dir: &Path, module: &str, corners: Vec<MmmcCorner>)
     }
 }
 
-pub fn write_ilm(work_dir: &Path, module: &str, top_layer: &Layer) -> Substep {
+pub fn write_ilm(work_dir: &Path, module: &str, layer: &Layer) -> Substep {
     // def output_ilm_sdcs(self) -> List[str]:
     // corners = self.get_mmmc_corners()
     // if corners:
@@ -588,20 +584,35 @@ pub fn write_ilm(work_dir: &Path, module: &str, top_layer: &Layer) -> Substep {
     //         top=self.top_module, corner_name=c.name, corner_type=ctype_map[c.type])), filtered))
     // else:
     //     return [os.path.join(self.run_dir, "{top}_postRoute.core.sdc".format(top=self.top_module))]
-    // for sdc_out in self.output_ilm_sdcs:
-    //     self.append('gzip -d -c {ilm_dir_name}/mmmc/ilm_data/{top}/{sdc_in}.gz | sed "s/get_pins/get_pins -hierarchical/g" > {sdc_out}'.format(
-    //         ilm_dir_name=self.ilm_dir_name, top=self.top_module, sdc_in=os.path.basename(sdc_out), sdc_out=sdc_out))
-    Substep {
-        checkpoint: false,
-        command: formatdoc!(
-            r#"
+    let ilm_dir = work_dir.display().to_string();
+    let top_layer = layer.top.clone();
+
+    let command = formatdoc!(
+        r#"
             time_design -post_route
             time_design -post_route -hold
             check_process_antenna
-            write_lef_abstract -5.8 -top_layer {top_layer} -stripe_pins -pg_pin_layers {{{top_layer}}} {top}ILM.lef
-            write_ilm -model_type all -to_dir {ilm_dir_name} -type_flex_ilm ilm
+            write_lef_abstract -5.8 -top_layer {top_layer} -stripe_pins -pg_pin_layers {{{top_layer}}} {module}ILM.lef
+            write_ilm -model_type all -to_dir {ilm_dir} -type_flex_ilm ilm
             "#
-        ),
+    );
+
+    // for sdc_out in self.output_ilm_sdcs:
+    //     self.append('gzip -d -c {ilm_dir_name}/mmmc/ilm_data/{top}/{sdc_in}.gz | sed "s/get_pins/get_pins -hierarchical/g" > {sdc_out}'.format(
+    //         ilm_dir_name=self.ilm_dir_name, top=self.top_module, sdc_in=os.path.basename(sdc_out), sdc_out=sdc_out))
+
+    Substep {
+        checkpoint: false,
+        command: command,
         name: "write_ilm".into(),
     }
+}
+/// w: width, h: height, left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
+pub struct DieConstraints {
+    pub w: i64,
+    pub h: i64,
+    pub left: i64,
+    pub bottom: i64,
+    pub right: i64,
+    pub top: i64,
 }

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
 
+use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 pub struct ModuleInfo {
@@ -289,15 +290,16 @@ pub fn sky130_par(
                 },
             ),
             sky130_connect_nets(),
-            power_straps(layers),
+            power_straps(layers.clone()),
             place_pins("5", "1", vec![assignment]),
-            place_opt_design(),
+            place_opt_design(None),
             add_fillers(filler_cells),
             route_design(),
             opt_design(),
             write_regs(),
             sky130_connect_nets(),
             par_write_design(
+                pdk_root,
                 work_dir,
                 module,
                 vec![
@@ -306,7 +308,7 @@ pub fn sky130_par(
                     tt_025C_1v80.clone(),
                 ],
             ),
-            write_ilm(),
+            write_ilm(work_dir, module, &layers[0]),
         ],
         matches!(pin_info, FlatPinInfo::PinPar(_)),
         vec![syn_step],

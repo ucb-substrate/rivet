@@ -134,6 +134,7 @@ impl Step for InnovusStep {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Layer {
     pub top: String,
     pub bot: String,
@@ -142,6 +143,7 @@ pub struct Layer {
     pub add_stripes_command: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct PinAssignment {
     pub pins: String,
     pub module: String,
@@ -212,6 +214,7 @@ pub fn par_read_design_files(
 
     if let Some(submodule_vec) = submodules {
         for submodule in submodule_vec {
+            // other version of genus
             writeln!(
                 command,
                 "read_ilm -cell {} -directory {}",
@@ -219,6 +222,14 @@ pub fn par_read_design_files(
                 submodule.ilm.display(),
             )
             .unwrap();
+
+            // writeln!(
+            //     command,
+            //     "read_ilm -module_name {} -basename {}",
+            //     submodule.name,
+            //     submodule.ilm.display(),
+            // )
+            // .unwrap();
         }
     }
 
@@ -397,9 +408,9 @@ pub fn place_pins(top_layer: &str, bot_layer: &str, assignments: Vec<PinAssignme
 
 pub fn place_opt_design(sdc_files: Option<PathBuf>) -> Substep {
     let sdc_command = if let Some(sdc_files) = sdc_files {
-        sdc_files.display().to_string();
+        sdc_files.display().to_string()
     } else {
-        "".to_string();
+        "".to_string()
     };
 
     let command = formatdoc!(
@@ -522,7 +533,13 @@ pub fn write_regs() -> Substep {
     }
 }
 
-pub fn par_write_design(work_dir: &Path, module: &str, corners: Vec<MmmcCorner>) -> Substep {
+pub fn par_write_design(
+    pdk_root: &Path,
+    work_dir: &Path,
+    module: &str,
+    corners: Vec<MmmcCorner>,
+) -> Substep {
+    let root = pdk_root.display();
     let par_rundir = work_dir.display();
     let module = module.to_owned();
     let setup = corners
@@ -559,7 +576,7 @@ pub fn par_write_design(work_dir: &Path, module: &str, corners: Vec<MmmcCorner>)
             connect_global_net VSS -type net -net_base_name vss
             write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{}}
             write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{}}
-            write_stream -mode ALL -format stream -map_file /rivet/pdks/sky130/src/sky130_lefpin.map -uniquify_cell_names -merge {{ {root}/sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds }}  {par_rundir}/{module}.gds
+            write_stream -mode ALL -format stream -map_file /scratch/cs199-cbc/rivet/pdks/sky130/src/sky130_lefpin.map -uniquify_cell_names -merge {{ {root}/sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds }}  {par_rundir}/{module}.gds
             write_sdf -max_view {setup}.setup_view -min_view {hold}.hold_view -typical_view {typical}.extra_view {par_rundir}/{module}.par.sdf
             set_db extract_rc_coupled true
             extract_rc
@@ -584,11 +601,16 @@ pub fn write_ilm(work_dir: &Path, module: &str, layer: &Layer) -> Substep {
     //         top=self.top_module, corner_name=c.name, corner_type=ctype_map[c.type])), filtered))
     // else:
     //     return [os.path.join(self.run_dir, "{top}_postRoute.core.sdc".format(top=self.top_module))]
-    let ilm_dir = work_dir.display().to_string();
+    let ilm_dir = work_dir
+        .join(format!("{}ILMDir", module))
+        .display()
+        .to_string();
     let top_layer = layer.top.clone();
 
     let command = formatdoc!(
         r#"
+
+            set_db timing_enable_simultaneous_setup_hold_mode false
             time_design -post_route
             time_design -post_route -hold
             check_process_antenna
@@ -608,6 +630,7 @@ pub fn write_ilm(work_dir: &Path, module: &str, layer: &Layer) -> Substep {
     }
 }
 /// w: width, h: height, left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
+#[derive(Debug, Clone)]
 pub struct DieConstraints {
     pub w: i64,
     pub h: i64,

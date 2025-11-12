@@ -12,7 +12,7 @@ use rivet::Step;
 use std::sync::Arc;
 
 /// Defines the working directory of the tool and which module to synthesize
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenusStep {
     pub work_dir: PathBuf,
     pub module: String,
@@ -212,6 +212,13 @@ pub fn syn_read_design_files(
                 submodule.ilm.display(),
             )
             .unwrap();
+            // writeln!(
+            //     command,
+            //     "read_ilm -module_name {} -basename {}",
+            //     submodule.name,
+            //     submodule.ilm.display(),
+            // )
+            // .unwrap();
         }
     }
 

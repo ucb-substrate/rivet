@@ -199,8 +199,11 @@ pub fn syn_read_design_files(
         mmmc_tcl_path.display(),
     );
 
+    let mut verilog_files = vec![module_string.to_string()];
+
     if let Some(submodule_vec) = submodules {
         for submodule in submodule_vec {
+            verilog_files.push(submodule.verilog.display().to_string());
             writeln!(
                 command,
                 "read_ilm -basename {}/mmmc/ilm_data/{}/{}_postRoute -module_name {}",
@@ -213,14 +216,17 @@ pub fn syn_read_design_files(
         }
     }
 
+    let all_verilog = verilog_files.join(" ");
+
     writeln!(
         command,
         r#"
         read_physical -lef {{ {} }}
-        read_hdl -sv {}
+        read_hdl -sv {{ {} }}
         "#,
-        lefs, module_string
-    );
+        lefs, all_verilog
+    )
+    .unwrap();
 
     Substep {
         checkpoint: false,
@@ -245,10 +251,11 @@ pub fn syn_init_design(module: &String, submodules: Option<Vec<SubmoduleInfo>>) 
                 command,
                 "set_db module:{}/{} .preserve true",
                 module, ilm.name
-            );
+            )
+            .unwrap();
         }
     }
-    writeln!(format!("init_design -top {}", module));
+    writeln!(command, "init_design -top {}", module).unwrap();
     Substep {
         checkpoint: false,
         command: command,

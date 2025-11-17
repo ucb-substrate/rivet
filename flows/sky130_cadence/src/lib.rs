@@ -106,6 +106,7 @@ pub fn sky130_syn(
         .iter()
         .map(|(module, flow)| SubmoduleInfo {
             name: module.module_name.clone(),
+            verilog: module.verilog_path.clone(),
             ilm: flow.par.ilm_path().to_path_buf(),
             lef: flow.par.lef_path().to_path_buf(),
         })
@@ -255,6 +256,7 @@ pub fn sky130_par(
         .iter()
         .map(|(module, flow)| SubmoduleInfo {
             name: module.module_name.clone(),
+            verilog: module.verilog_path.clone(),
             ilm: flow.par.ilm_path().to_path_buf(),
             lef: flow.par.lef_path().to_path_buf(),
         })

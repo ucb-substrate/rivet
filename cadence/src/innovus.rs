@@ -616,7 +616,7 @@ pub fn write_ilm(
 
     for sdc_corner in sdc_corners {
         let sdc_in = format!(
-            "{}_postROUTE_{}.{}_view.core.sdc",
+            "{}_postRoute_{}.{}_view.core.sdc",
             module,
             sdc_corner.name.clone(),
             sdc_corner.corner_type.clone()
@@ -625,7 +625,7 @@ pub fn write_ilm(
         writeln!(
             command,
             "gzip -d -c {ilm_dir}/mmmc/ilm_data/{module}/{sdc_in}.gz | sed \"s/get_pins/get_pins -hierarchical/g\" > {sdc_out}"
-        );
+        ).unwrap();
     }
     Substep {
         checkpoint: false,

@@ -615,8 +615,13 @@ pub fn write_ilm(
     );
 
     for sdc_corner in sdc_corners {
-        let sdc_in = sdc_corner.name.clone();
-        let sdc_out = sdc_corner.name.clone();
+        let sdc_in = format!(
+            "{}_postROUTE_{}.{}_view.core.sdc",
+            module,
+            sdc_corner.name.clone(),
+            sdc_corner.corner_type.clone()
+        );
+        let sdc_out = format!("{ilm_dir}/mmmc/ilm_data/{module}/{sdc_in}");
         writeln!(
             command,
             "gzip -d -c {ilm_dir}/mmmc/ilm_data/{module}/{sdc_in}.gz | sed \"s/get_pins/get_pins -hierarchical/g\" > {sdc_out}"

@@ -214,7 +214,7 @@ pub fn par_read_design_files(
 
     if let Some(submodule_vec) = submodules {
         for submodule in submodule_vec {
-            // other version of genus
+            // genus 231
             writeln!(
                 command,
                 "read_ilm -cell {} -directory {}",
@@ -223,6 +223,7 @@ pub fn par_read_design_files(
             )
             .unwrap();
 
+            // genus 221 actually need to include the left in addition to the ilm when reading ilms
             // writeln!(
             //     command,
             //     "read_ilm -module_name {} -basename {}",

@@ -214,7 +214,6 @@ pub fn par_read_design_files(
 
     if let Some(submodule_vec) = submodules {
         for submodule in submodule_vec {
-            // genus 231
             writeln!(
                 command,
                 "read_ilm -cell {} -directory {}",
@@ -222,15 +221,6 @@ pub fn par_read_design_files(
                 submodule.ilm.display(),
             )
             .unwrap();
-
-            // genus 221 actually need to include the left in addition to the ilm when reading ilms
-            // writeln!(
-            //     command,
-            //     "read_ilm -module_name {} -basename {}",
-            //     submodule.name,
-            //     submodule.ilm.display(),
-            // )
-            // .unwrap();
         }
     }
 
@@ -592,38 +582,46 @@ pub fn par_write_design(
     }
 }
 
-pub fn write_ilm(work_dir: &Path, module: &str, layer: &Layer) -> Substep {
-    // def output_ilm_sdcs(self) -> List[str]:
-    // corners = self.get_mmmc_corners()
-    // if corners:
-    //     filtered = list(filter(lambda c: c.type in [MMMCCornerType.Setup, MMMCCornerType.Hold], corners))
-    //     ctype_map = {MMMCCornerType.Setup: "setup", MMMCCornerType.Hold: "hold"}
-    //     return list(map(lambda c: os.path.join(self.run_dir, "{top}_postRoute_{corner_name}.{corner_type}_view.core.sdc".format(
-    //         top=self.top_module, corner_name=c.name, corner_type=ctype_map[c.type])), filtered))
-    // else:
-    //     return [os.path.join(self.run_dir, "{top}_postRoute.core.sdc".format(top=self.top_module))]
+pub fn write_ilm(
+    work_dir: &Path,
+    module: &str,
+    layer: &Layer,
+    corners: Vec<MmmcCorner>,
+) -> Substep {
+    let sdc_corners: Vec<MmmcCorner> = corners
+        .into_iter()
+        .filter(|c| c.corner_type == "setup" || c.corner_type == "hold")
+        .collect();
+
     let ilm_dir = work_dir
         .join(format!("{}ILMDir", module))
         .display()
         .to_string();
     let top_layer = layer.top.clone();
 
-    let command = formatdoc!(
-        r#"
+    let genus_copy = format!("{ilm_dir}/mmmc/ilm_data/{module}/{module}_postRoute.ilm.v.gz");
+    let innovus_copy = format!("{ilm_dir}/mmmc/ilm_data/{module}/{module}_postRoute.v.gz");
 
+    let mut command = formatdoc!(
+        r#"
             set_db timing_enable_simultaneous_setup_hold_mode false
             time_design -post_route
             time_design -post_route -hold
             check_process_antenna
             write_lef_abstract -5.8 -top_layer {top_layer} -stripe_pins -pg_pin_layers {{{top_layer}}} {module}ILM.lef
             write_ilm -model_type all -to_dir {ilm_dir} -type_flex_ilm ilm
-            "#
+            cp {innovus_copy} {genus_copy}
+        "#
     );
 
-    // for sdc_out in self.output_ilm_sdcs:
-    //     self.append('gzip -d -c {ilm_dir_name}/mmmc/ilm_data/{top}/{sdc_in}.gz | sed "s/get_pins/get_pins -hierarchical/g" > {sdc_out}'.format(
-    //         ilm_dir_name=self.ilm_dir_name, top=self.top_module, sdc_in=os.path.basename(sdc_out), sdc_out=sdc_out))
-
+    for sdc_corner in sdc_corners {
+        let sdc_in = sdc_corner.name.clone();
+        let sdc_out = sdc_corner.name.clone();
+        writeln!(
+            command,
+            "gzip -d -c {ilm_dir}/mmmc/ilm_data/{module}/{sdc_in}.gz | sed \"s/get_pins/get_pins -hierarchical/g\" > {sdc_out}"
+        );
+    }
     Substep {
         checkpoint: false,
         command: command,

@@ -195,32 +195,32 @@ pub fn syn_read_design_files(
     let mut command = formatdoc!(
         r#"
             read_mmmc {}
-            read_physical -lef {{ {} }}
-            read_hdl -sv {}
             "#,
         mmmc_tcl_path.display(),
-        lefs,
-        module_string
     );
 
     if let Some(submodule_vec) = submodules {
         for submodule in submodule_vec {
             writeln!(
                 command,
-                "read_ilm -cell {} -directory {}",
-                submodule.name,
+                "read_ilm -basename {}/mmmc/ilm_data/{}/{}_postRoute -module_name {}",
                 submodule.ilm.display(),
+                submodule.name,
+                submodule.name,
+                submodule.name,
             )
             .unwrap();
-            // writeln!(
-            //     command,
-            //     "read_ilm -module_name {} -basename {}",
-            //     submodule.name,
-            //     submodule.ilm.display(),
-            // )
-            // .unwrap();
         }
     }
+
+    writeln!(
+        command,
+        r#"
+        read_physical -lef {{ {} }}
+        read_hdl -sv {}
+        "#,
+        lefs, module_string
+    );
 
     Substep {
         checkpoint: false,
@@ -237,10 +237,21 @@ pub fn elaborate(module: &String) -> Substep {
     }
 }
 
-pub fn syn_init_design(module: &String) -> Substep {
+pub fn syn_init_design(module: &String, submodules: Option<Vec<SubmoduleInfo>>) -> Substep {
+    let mut command = String::new();
+    if let Some(submodule_ilms) = &submodules {
+        for ilm in submodule_ilms {
+            writeln!(
+                command,
+                "set_db module:{}/{} .preserve true",
+                module, ilm.name
+            );
+        }
+    }
+    writeln!(format!("init_design -top {}", module));
     Substep {
         checkpoint: false,
-        command: format!("init_design -top {}", module),
+        command: command,
         name: "init_design".to_string(),
     }
 }

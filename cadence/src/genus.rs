@@ -224,7 +224,8 @@ pub fn syn_read_design_files(
         read_physical -lef {{ {} }}
         read_hdl -sv {{ {} }}
         "#,
-        lefs, all_verilog
+        lefs,
+        module_string.to_string()
     )
     .unwrap();
 

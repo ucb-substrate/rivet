@@ -6,7 +6,7 @@ use std::process::Command;
 use std::{fs, io};
 
 use crate::MmmcCorner;
-use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc, sdc};
+use crate::{mmmc, sdc, Checkpoint, MmmcConfig, SubmoduleInfo, Substep};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;

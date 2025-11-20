@@ -647,12 +647,9 @@ pub fn generate_floorplan_tcl(floorplan_constraints: Vec<PlacementConstraints>) 
         } else {
             "".to_string()
         };
-        // let cell = constraint.master.unwrap().to_string();
-        let cell = constraint
-            .master
-            .expect("'master' field is required for hierarchical constraints");
 
         if constraint.create_physical {
+            let cell = constraint.master.clone().unwrap().to_string();
             writeln!(
                 floorplan,
                 "create_inst -cell {cell} -inst {inst} -location {{{x1} {y1}}} -orient {orientation} -physical -status fixed"
@@ -771,10 +768,11 @@ pub fn generate_floorplan_tcl(floorplan_constraints: Vec<PlacementConstraints>) 
                 }
             }
             _ => {
-                writeln!(
-                    floorplan,
-                    "create_inst -cell {cell} -inst {inst} -location {{{x1} {y1}}} -orient {orientation} -physical -status fixed"
-                ).unwrap();
+                // let cell = constraint.master.clone().unwrap().to_string();
+                // writeln!(
+                //     floorplan,
+                //     "create_inst -cell {cell} -inst {inst} -location {{{x1} {y1}}} -orient {orientation} -physical -status fixed"
+                // ).unwrap();
             }
         }
     }

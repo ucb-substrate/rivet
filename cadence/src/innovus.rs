@@ -647,7 +647,10 @@ pub fn generate_floorplan_tcl(floorplan_constraints: Vec<PlacementConstraints>) 
         } else {
             "".to_string()
         };
-        let cell = constraint.master.unwrap().to_string();
+        // let cell = constraint.master.unwrap().to_string();
+        let cell = constraint
+            .master
+            .expect("'master' field is required for hierarchical constraints");
 
         if constraint.create_physical {
             writeln!(

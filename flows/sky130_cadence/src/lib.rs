@@ -3,7 +3,7 @@ use cadence::genus::{
     syn_generic, syn_init_design, syn_map, syn_read_design_files, syn_write_design,
 };
 use cadence::innovus::{
-    DieConstraints, InnovusStep, Layer, PinAssignment, add_fillers, floorplan_design,
+    InnovusStep, Layer, PinAssignment, PlacementConstraints, add_fillers, floorplan_design,
     innovus_settings, opt_design, par_init_design, par_read_design_files, par_write_design,
     place_opt_design, place_pins, place_tap_cells, power_straps, route_design, set_default_process,
     write_ilm, write_regs,
@@ -262,6 +262,28 @@ pub fn sky130_par(
         })
         .collect();
 
+    let par_constraints: Vec<PlacementConstraints> = vec![PlacementConstraints {
+        x: 0.0,
+        y: 0.0,
+        width: 30.0,
+        height: 30.0,
+        left: 0.0,
+        bottom: 0.0,
+        right: 0.0,
+        top: 0.0,
+        constraint_type: "TopLevel".into(),
+        orientation: "r0".into(),
+        top_layer: None,
+        stackup: None,
+        spacing: None,
+        par_blockage_ratio: None,
+        create_physical: false,
+        obs_types: None,
+        obs_layers: None,
+        name: "".into(),
+        master: None,
+    }];
+
     InnovusStep::new(
         work_dir,
         module,
@@ -282,14 +304,7 @@ pub fn sky130_par(
             floorplan_design(
                 work_dir,
                 &sky130_cadence_power_spec(module, dec!(1.8)),
-                DieConstraints {
-                    w: 30,
-                    h: 30,
-                    left: 0,
-                    bottom: 0,
-                    right: 0,
-                    top: 0,
-                },
+                par_constraints,
             ),
             sky130_connect_nets(),
             power_straps(layers.clone()),

@@ -6,7 +6,7 @@ use std::process::Command;
 use std::{fs, io};
 
 use crate::MmmcCorner;
-use crate::{mmmc, sdc, Checkpoint, MmmcConfig, SubmoduleInfo, Substep};
+use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc, sdc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -259,20 +259,12 @@ pub fn innovus_settings(bottom_routing: i64, top_routing: i64) -> Substep {
 pub fn floorplan_design(
     work_dir: &Path,
     power_spec: &String,
-    die_constraints: DieConstraints,
+    placement_constraints: Vec<PlacementConstraints>,
 ) -> Substep {
     let floorplan_tcl_path = work_dir.join("floorplan.tcl");
-    let constraints = format!(
-        "{} {} {} {} {} {}",
-        die_constraints.w,
-        die_constraints.h,
-        die_constraints.left,
-        die_constraints.bottom,
-        die_constraints.right,
-        die_constraints.top
-    );
     let mut floorplan_tcl_file = File::create(&floorplan_tcl_path).expect("failed to create file");
-    writeln!(floorplan_tcl_file,"create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size {{ {} }}", constraints ).expect("Failed to write");
+    let floorplan_tcl = generate_floorplan_tcl(placement_constraints);
+    writeln!(floorplan_tcl_file, "{floorplan_tcl}");
     let floorplan_path_string = floorplan_tcl_path.display();
 
     let power_spec_file_path = work_dir.join("power_spec.cpf");
@@ -633,13 +625,180 @@ pub fn write_ilm(
         name: "write_ilm".into(),
     }
 }
+
+pub fn generate_floorplan_tcl(floorplan_constraints: Vec<PlacementConstraints>) -> String {
+    let mut floorplan = String::new();
+
+    for constraint in floorplan_constraints.into_iter() {
+        let w = constraint.width.to_string();
+        let h = constraint.height.to_string();
+        let l = constraint.left.to_string();
+        let b = constraint.bottom.to_string();
+        let r = constraint.right.to_string();
+        let t = constraint.top.to_string();
+        let inst = constraint.name.clone();
+        let x1 = constraint.x.to_string();
+        let x2 = (constraint.x + constraint.width).to_string();
+        let y1 = constraint.y.to_string();
+        let y2 = (constraint.y + constraint.height).to_string();
+        let orientation = constraint.orientation.clone();
+        let fixed = if constraint.create_physical {
+            "-fixed".to_string()
+        } else {
+            "".to_string()
+        };
+        let cell = constraint.master.unwrap().to_string();
+
+        if constraint.create_physical {
+            writeln!(
+                floorplan,
+                "create_inst -cell {cell} -inst {inst} -location {{{x1} {y1}}} -orient {orientation} -physical -status fixed"
+            ).unwrap();
+        }
+        match &*constraint.constraint_type {
+            "TopLevel" => {
+                writeln!(
+                    floorplan,
+                    "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size {{ {w} {h} {l} {b} {r} {t}}}"
+                ).unwrap();
+            }
+            "SoftPlacement" => {
+                writeln!(
+                    floorplan,
+                    "create_boundary_constraint -type guide -hinst {inst} -rects {{ {x1} {y1} {x2} {y2} }}"
+                ).unwrap();
+            }
+            "HardPlacement" => {
+                writeln!(
+                    floorplan,
+                    "create_boundary_constraint -type region -hinst {inst} -rects {{ {x1} {y1} {x2} {y2} }}"
+                ).unwrap();
+            }
+            "Overlap" => {
+                writeln!(
+                    floorplan,
+                    "place_inst {inst} {x1} {y1} {orientation} {fixed}"
+                )
+                .unwrap();
+            }
+            "HardMacro" | "Hierarchical" => {
+                writeln!(
+                    floorplan,
+                    "place_inst {inst} {x1} {y1} {orientation} {fixed}"
+                )
+                .unwrap();
+                let mut layers = String::new();
+                if let Some(layer) = constraint.top_layer {
+                    let b = constraint.stackup.as_ref().unwrap()[1].clone();
+                    let s = constraint.spacing.unwrap();
+                    let r = constraint.par_blockage_ratio.unwrap();
+                    let p = (s * r).round();
+                    let i = constraint
+                        .stackup
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .position(|x| x == &layer);
+
+                    if let Some(index) = i {
+                        layers = constraint.stackup.clone().unwrap().clone()[..index]
+                            .to_vec()
+                            .join(" ");
+                    }
+                    writeln!(
+                        floorplan,
+                        "create_route_halo -bottom_layer {b} -space {s} -top_layer {t} -inst {inst}"
+                    )
+                    .unwrap();
+                    writeln!(
+                        floorplan,
+                        "create_place_halo -insts {inst} -halo_deltas {{{p} {p} {p} {p}}} -snap_to_site"
+                    ).unwrap();
+                    writeln!(
+                        floorplan,
+                        "set pg_blockage_shape [get_db [get_db hinsts {inst}][get_db insts {inst}] .place_halo_polygon]"
+                    ).unwrap();
+                    writeln!(
+                        floorplan,
+                        "create_route_blockage -pg_nets -layers {{{layers}}} -polygon $pg_blockage_shape"
+                    ).unwrap();
+                }
+            }
+            "Obstruction" => {
+                let layers: String = if let Some(constraints) = &constraint.obs_layers {
+                    let specific_layers = constraints.join(" ").to_string();
+                    format!("layers {{{}}}", specific_layers)
+                } else {
+                    "all {route}".to_string()
+                };
+
+                if constraint
+                    .obs_types
+                    .as_ref()
+                    .unwrap()
+                    .contains(&"Place".to_string())
+                {
+                    writeln!(
+                        floorplan,
+                        "create_place_blockage -name {inst}_place -area {{{x1} {y1} {x2} {y2}}}"
+                    )
+                    .unwrap();
+                }
+                if constraint
+                    .obs_types
+                    .as_ref()
+                    .unwrap()
+                    .contains(&"Route".to_string())
+                {
+                    writeln!(
+                        floorplan,
+                        "create_route_blockage -name {inst}_route -except_pg_nets -{layers} -spacing 0 -area {{{x1} {y1} {x2} {y2}}}"
+                    ).unwrap();
+                }
+                if constraint
+                    .obs_types
+                    .as_ref()
+                    .unwrap()
+                    .contains(&"Power".to_string())
+                {
+                    writeln!(
+                        floorplan,
+                        "create_route_blockage -name {inst}_power -pg_nets -{layers} -area {{{x1} {y1} {x2} {y2}}}"
+                    ).unwrap();
+                }
+            }
+            _ => {
+                writeln!(
+                    floorplan,
+                    "create_inst -cell {cell} -inst {inst} -location {{{x1} {y1}}} -orient {orientation} -physical -status fixed"
+                ).unwrap();
+            }
+        }
+    }
+
+    floorplan
+}
+
 /// w: width, h: height, left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
 #[derive(Debug, Clone)]
-pub struct DieConstraints {
-    pub w: i64,
-    pub h: i64,
-    pub left: i64,
-    pub bottom: i64,
-    pub right: i64,
-    pub top: i64,
+pub struct PlacementConstraints {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub left: f64,
+    pub bottom: f64,
+    pub right: f64,
+    pub top: f64,
+    pub constraint_type: String,
+    pub orientation: String,
+    pub top_layer: Option<String>,
+    pub stackup: Option<Vec<String>>,
+    pub spacing: Option<f64>,
+    pub par_blockage_ratio: Option<f64>,
+    pub create_physical: bool,
+    pub obs_layers: Option<Vec<String>>,
+    pub obs_types: Option<Vec<String>>,
+    pub name: String,
+    pub master: Option<String>,
 }

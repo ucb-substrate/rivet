@@ -445,14 +445,14 @@ fn sky130_cadence_flat_flow(
     //create the vec of vec of placement constraints with the current one being the top and the rest being
     //hierarchical
     let mut top_constraints = module.placement_constraints.clone();
-    top_constraints[0].constraint_type = "TopLevel".into();
-    let hierarchical_constraints: Vec<PlacementConstraints> = dep_info
-        .iter()
-        .flat_map(|(module, flow)| module.placement_constraints.clone())
-        .collect();
+    // top_constraints[0].constraint_type = "TopLevel".into();
+    // let hierarchical_constraints: Vec<PlacementConstraints> = dep_info
+    //     .iter()
+    //     .flat_map(|(module, flow)| module.placement_constraints.clone())
+    //     .collect();
 
     let mut final_constraints = top_constraints.clone();
-    final_constraints.extend(hierarchical_constraints);
+    // final_constraints.extend(hierarchical_constraints);
     let par = sky130_par(
         pdk_root,
         &par_work_dir,

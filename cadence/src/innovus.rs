@@ -656,6 +656,7 @@ pub fn generate_floorplan_tcl(floorplan_constraints: Vec<PlacementConstraints>) 
             ).unwrap();
         }
         match &*constraint.constraint_type {
+            // CoreSite is hardcoded
             "TopLevel" => {
                 writeln!(
                     floorplan,

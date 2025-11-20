@@ -24,6 +24,7 @@ pub struct ModuleInfo {
     pub module_name: String,
     pub pin_info: FlatPinInfo,
     pub verilog_path: PathBuf,
+    pub placement_constraints: Vec<PlacementConstraints>,
 }
 
 pub enum FlatPinInfo {
@@ -148,6 +149,7 @@ pub fn sky130_par(
     pdk_root: &Path,
     work_dir: &PathBuf,
     module: &String,
+    constraints: &Vec<PlacementConstraints>,
     netlist: &Path,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     pin_info: &FlatPinInfo,
@@ -262,27 +264,7 @@ pub fn sky130_par(
         })
         .collect();
 
-    let par_constraints: Vec<PlacementConstraints> = vec![PlacementConstraints {
-        x: 0.0,
-        y: 0.0,
-        width: 30.0,
-        height: 30.0,
-        left: 0.0,
-        bottom: 0.0,
-        right: 0.0,
-        top: 0.0,
-        constraint_type: "TopLevel".into(),
-        orientation: "r0".into(),
-        top_layer: None,
-        stackup: None,
-        spacing: None,
-        par_blockage_ratio: None,
-        create_physical: false,
-        obs_types: None,
-        obs_layers: None,
-        name: "".into(),
-        master: None,
-    }];
+    let par_constraints = constraints.clone();
 
     InnovusStep::new(
         work_dir,
@@ -459,10 +441,23 @@ fn sky130_cadence_flat_flow(
     let syn_pointer = Arc::new(syn);
     let par_work_dir = work_dir.join("par-rundir");
     let output_netlist_path = syn_work_dir.join(format!("{}.mapped.v", module.module_name));
+
+    //create the vec of vec of placement constraints with the current one being the top and the rest being
+    //hierarchical
+    let mut top_constraints = module.placement_constraints.clone();
+    top_constraints[0].constraint_type = "Top".into();
+    let hierarchical_constraints: Vec<PlacementConstraints> = dep_info
+        .iter()
+        .flat_map(|(module, flow)| module.placement_constraints.clone())
+        .collect();
+
+    let mut final_constraints = top_constraints.clone();
+    final_constraints.extend(hierarchical_constraints);
     let par = sky130_par(
         pdk_root,
         &par_work_dir,
         &module.module_name,
+        &final_constraints,
         &output_netlist_path,
         dep_info,
         &module.pin_info,

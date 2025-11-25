@@ -133,8 +133,8 @@ fn main() {
                         PlacementConstraints {
                             x: 0.0,
                             y: 0.0,
-                            width: 30.0,
-                            height: 30.0,
+                            width: 200.0,
+                            height: 200.0,
                             left: 0.0,
                             bottom: 0.0,
                             right: 0.0,
@@ -152,7 +152,7 @@ fn main() {
                             master: None,
                         },
                         PlacementConstraints {
-                            x: 0.0,
+                            x: 100.0,
                             y: 0.0,
                             width: 30.0,
                             height: 30.0,
@@ -173,8 +173,8 @@ fn main() {
                             master: Some("fulladder".into()),
                         },
                         PlacementConstraints {
-                            x: 0.0,
-                            y: 0.0,
+                            x: 100.0,
+                            y: 100.0,
                             width: 30.0,
                             height: 30.0,
                             left: 0.0,

@@ -786,21 +786,38 @@ pub fn generate_floorplan_tcl(floorplan_constraints: Vec<PlacementConstraints>) 
 pub struct PlacementConstraints {
     pub x: f64,
     pub y: f64,
+    pub constraint_type: String,
+    pub orientation: String,
+    pub create_physical: bool,
+    pub name: String,
+    pub master: Option<String>,
+}
+#[derive(Debug, Clone)]
+pub struct TopLevelConstraint {
     pub width: f64,
     pub height: f64,
     pub left: f64,
     pub bottom: f64,
     pub right: f64,
     pub top: f64,
-    pub constraint_type: String,
-    pub orientation: String,
-    pub top_layer: Option<String>,
-    pub stackup: Option<Vec<String>>,
-    pub spacing: Option<f64>,
-    pub par_blockage_ratio: Option<f64>,
-    pub create_physical: bool,
-    pub obs_layers: Option<Vec<String>>,
-    pub obs_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HardMacroConstraint {
+    pub x: f64,
+    pub y: f64,
+    pub stackup: Vec<String>,
+    pub spacing: f64,
+    pub par_blockage_ratio: f64,
+    pub top_layer: String,
     pub name: String,
-    pub master: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObstructionConstraint {
+    pub x: f64,
+    pub y: f64,
+    pub obs_layers: Vec<String>,
+    pub obs_types: Vec<String>,
+    pub name: String,
 }

@@ -9,14 +9,14 @@ use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc, sd
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Defines the working directory of the tool and which module to synthesize
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GenusStep {
     pub work_dir: PathBuf,
     pub module: String,
-    pub substeps: Vec<Substep>,
+    pub substeps: Mutex<Vec<Substep>>,
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
@@ -35,7 +35,7 @@ impl GenusStep {
         GenusStep {
             work_dir: dir,
             module: modul,
-            substeps: steps,
+            substeps: Mutex::new(steps),
             pinned,
             start_checkpoint: None,
             dependencies: deps,
@@ -71,8 +71,9 @@ impl GenusStep {
         Ok(())
     }
 
-    pub fn add_hook(&mut self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
-        self.substeps.insert(
+    pub fn add_hook(&self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
+        let mut substeps = self.substeps.lock().unwrap();
+        substeps.insert(
             index,
             Substep {
                 name: name.to_string(),
@@ -82,18 +83,18 @@ impl GenusStep {
         );
     }
     pub fn replace_hook(
-        &mut self,
+        &self,
         new_substep_name: &str,
         tcl: &str,
         replaced_substep_name: &str,
         checkpointed: bool,
     ) {
-        if let Some(index) = self
-            .substeps
+        let mut substeps = self.substeps.lock().unwrap();
+        if let Some(index) = substeps
             .iter()
             .position(|s| s.name == replaced_substep_name)
         {
-            self.substeps[index] = Substep {
+            substeps[index] = Substep {
                 name: new_substep_name.to_string(),
                 command: tcl.to_string(),
                 checkpoint: checkpointed,
@@ -117,7 +118,7 @@ impl Step for GenusStep {
     fn execute(&self) {
         let tcl_path = self.work_dir.clone().join("syn.tcl");
 
-        let mut substeps = self.substeps.clone();
+        let mut substeps = self.substeps.lock().unwrap().clone();
 
         if let Some(checkpoint) = self.start_checkpoint.as_ref() {
             let slice_index = substeps

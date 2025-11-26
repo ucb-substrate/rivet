@@ -6,7 +6,7 @@ use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
 use std::path::PathBuf;
 
 fn main() {
-    let flow = sky130_cadence_reference_flow(
+    let mut flow = sky130_cadence_reference_flow(
         PathBuf::from("/home/ff/eecs251b/"),
         PathBuf::from("/scratch/cs199-cbc/rivet/examples/hierarchical/src"),
         Dag {
@@ -18,8 +18,8 @@ fn main() {
                 ),
                 placement_constraints: PlacementConstraints {
                     top: TopLevelConstraint {
-                        width: 30.0,
-                        height: 30.0,
+                        width: 1000.0,
+                        height: 1000.0,
                         left: 0.0,
                         bottom: 0.0,
                         right: 0.0,
@@ -27,10 +27,10 @@ fn main() {
                     },
                     hard_macros: Some(vec![
                         HardMacroConstraint {
-                            x: 0.0,
-                            y: 0.0,
-                            width: 30.0,
-                            height: 30.0,
+                            x: 10.0,
+                            y: 10.0,
+                            width: 100.0,
+                            height: 100.0,
                             orientation: "r0".into(),
                             top_layer: "met3".into(),
                             stackup: vec![
@@ -48,10 +48,10 @@ fn main() {
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
-                            x: 0.0,
-                            y: 0.0,
-                            width: 30.0,
-                            height: 30.0,
+                            x: 100.0,
+                            y: 100.0,
+                            width: 100.0,
+                            height: 100.0,
                             orientation: "r0".into(),
                             top_layer: "met3".into(),
                             stackup: vec![
@@ -69,10 +69,10 @@ fn main() {
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
-                            x: 0.0,
-                            y: 0.0,
-                            width: 30.0,
-                            height: 30.0,
+                            x: 300.0,
+                            y: 100.0,
+                            width: 100.0,
+                            height: 100.0,
                             orientation: "r0".into(),
                             top_layer: "met3".into(),
                             stackup: vec![
@@ -90,10 +90,10 @@ fn main() {
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
-                            x: 0.0,
-                            y: 0.0,
-                            width: 30.0,
-                            height: 30.0,
+                            x: 500.0,
+                            y: 100.0,
+                            width: 100.0,
+                            height: 100.0,
                             orientation: "r0".into(),
                             top_layer: "met3".into(),
                             stackup: vec![
@@ -123,8 +123,8 @@ fn main() {
                     ),
                     placement_constraints: PlacementConstraints {
                         top: TopLevelConstraint {
-                            width: 30.0,
-                            height: 30.0,
+                            width: 100.0,
+                            height: 100.0,
                             left: 0.0,
                             bottom: 0.0,
                             right: 0.0,
@@ -132,8 +132,8 @@ fn main() {
                         },
                         hard_macros: Some(vec![
                             HardMacroConstraint {
-                                x: 0.0,
-                                y: 0.0,
+                                x: 10.0,
+                                y: 10.0,
                                 width: 30.0,
                                 height: 30.0,
                                 orientation: "r0".into(),
@@ -153,8 +153,8 @@ fn main() {
                                 master: "fulladder".into(),
                             },
                             HardMacroConstraint {
-                                x: 0.0,
-                                y: 0.0,
+                                x: 50.0,
+                                y: 10.0,
                                 width: 30.0,
                                 height: 30.0,
                                 orientation: "r0".into(),
@@ -203,9 +203,10 @@ fn main() {
             }],
         },
     );
-    // flow.get_mut(&"nbitadder".to_string())
-    //     .unwrap()
-    //     .par
-    //     .add_hook();
+
+    flow.get_mut(&"nbitadder".to_string())
+        .unwrap()
+        .syn
+        .replace_hook("syn_opt", "syn_opt", "syn_map", false);
     execute(flow.node.par);
 }

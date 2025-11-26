@@ -76,6 +76,26 @@ impl InnovusStep {
         );
     }
 
+    pub fn replace_hook(
+        &mut self,
+        new_substep_name: &str,
+        tcl: &str,
+        replaced_substep_name: &str,
+        checkpointed: bool,
+    ) {
+        if let Some(index) = self
+            .substeps
+            .iter()
+            .position(|s| s.name == replaced_substep_name)
+        {
+            self.substeps[index] = Substep {
+                name: new_substep_name.to_string(),
+                command: tcl.to_string(),
+                checkpoint: checkpointed,
+            };
+        }
+    }
+
     pub fn ilm_path(&self) -> PathBuf {
         self.work_dir.join(format!("{}ILMDir", self.module))
     }

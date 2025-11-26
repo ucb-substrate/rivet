@@ -3,10 +3,11 @@ use cadence::genus::{
     syn_generic, syn_init_design, syn_map, syn_read_design_files, syn_write_design,
 };
 use cadence::innovus::{
-    InnovusStep, Layer, PinAssignment, PlacementConstraints, add_fillers, floorplan_design,
-    innovus_settings, opt_design, par_init_design, par_read_design_files, par_write_design,
-    place_opt_design, place_pins, place_tap_cells, power_straps, route_design, set_default_process,
-    write_ilm, write_regs,
+    HardMacroConstraint, InnovusStep, Layer, ObstructionConstraint, PinAssignment,
+    PlacementConstraints, TopLevelConstraint, add_fillers, floorplan_design, innovus_settings,
+    opt_design, par_init_design, par_read_design_files, par_write_design, place_opt_design,
+    place_pins, place_tap_cells, power_straps, route_design, set_default_process, write_ilm,
+    write_regs,
 };
 use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, sdc};
 use indoc::formatdoc;
@@ -24,7 +25,7 @@ pub struct ModuleInfo {
     pub module_name: String,
     pub pin_info: FlatPinInfo,
     pub verilog_path: PathBuf,
-    pub placement_constraints: Vec<PlacementConstraints>,
+    pub placement_constraints: PlacementConstraints,
 }
 
 pub enum FlatPinInfo {
@@ -149,7 +150,7 @@ pub fn sky130_par(
     pdk_root: &Path,
     work_dir: &PathBuf,
     module: &String,
-    constraints: &Vec<PlacementConstraints>,
+    constraints: &PlacementConstraints,
     netlist: &Path,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     pin_info: &FlatPinInfo,

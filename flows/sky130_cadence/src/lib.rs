@@ -134,6 +134,7 @@ pub fn sky130_syn(
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
                 Some(submodules.clone()),
+                is_hierarchical,
             ),
             elaborate(module),
             syn_init_design(module, Some(submodules.clone())),

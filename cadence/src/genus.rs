@@ -223,7 +223,7 @@ pub fn syn_read_design_files(
 
     let mut verilog_files = vec![module_string.to_string()];
 
-    if let Some(submodule_vec) = submodules {
+    if let Some(submodule_vec) = &submodules {
         for submodule in submodule_vec {
             // verilog_files.push(submodule.verilog.display().to_string());
             writeln!(
@@ -237,14 +237,25 @@ pub fn syn_read_design_files(
             .unwrap();
         }
     }
+    let submodule_names: Vec<String> = submodules
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.name.clone()).collect())
+        .unwrap_or_default();
 
-    let all_verilog = verilog_files.join(" ");
+    let mut final_verilog_files = Vec::new();
 
     if is_hierarchical {
-        for verilog in verilog_files.into_iter() {
-            remove_hierarchical_submodules(PathBuf::from(verilog), work_dir, submodules);
+        for verilog in &verilog_files {
+            let new_path =
+                remove_hierarchical_submodules(Path::new(verilog), work_dir, &submodule_names)
+                    .expect("Failed to remove hierarchical submodules");
+            final_verilog_files.push(new_path.to_string_lossy().to_string());
         }
+    } else {
+        final_verilog_files = verilog_files;
     }
+
+    let all_verilog = final_verilog_files.join(" ");
 
     writeln!(
         command,

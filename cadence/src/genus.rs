@@ -336,10 +336,19 @@ pub fn add_tieoffs() -> Substep {
     }
 }
 
-pub fn syn_write_design(module: &str, sdc_corner: MmmcCorner) -> Substep {
+pub fn syn_write_design(module: &str, sdc_corner: MmmcCorner, is_hierarchical: bool) -> Substep {
     let module = module.to_owned();
     let corner = sdc_corner.name.clone();
     let corner_type = sdc_corner.corner_type.clone();
+
+    let write_hdl = if is_hierarchical {
+        format!("write_hdl -exclude_ilm > {module}_noilm.mapped.v")
+    } else {
+        format!("write_hdl > {module}.mapped.v")
+    };
+
+    // let write_hdl = format!("write_hdl > {module}.mapped.v");
+
     Substep {
         checkpoint: true,
         command: formatdoc!(
@@ -386,7 +395,7 @@ pub fn syn_write_design(module: &str, sdc_corner: MmmcCorner) -> Substep {
         write_reports -directory reports -tag final
         report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
 
-        write_hdl > {module}.mapped.v
+        {write_hdl}
         write_template -full -outfile {module}.mapped.scr
         write_sdc -view {corner}.{corner_type}_view > {module}.mapped.sdc
         write_sdf > {module}.mapped.sdf

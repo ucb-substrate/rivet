@@ -119,6 +119,8 @@ pub fn sky130_syn(
         .map(|(_module, flow)| Arc::clone(&flow.par) as Arc<dyn Step>)
         .collect();
 
+    let is_hierarchical = !dep_info.is_empty();
+
     GenusStep::new(
         work_dir,
         module,
@@ -139,7 +141,7 @@ pub fn sky130_syn(
             syn_generic(),
             syn_map(),
             add_tieoffs(),
-            syn_write_design(module, ss_100C_1v60.clone()),
+            syn_write_design(module, ss_100C_1v60.clone(), is_hierarchical),
         ],
         matches!(pin_info, FlatPinInfo::PinSyn(_)),
         deps,
@@ -441,7 +443,11 @@ fn sky130_cadence_flat_flow(
     );
     let syn_pointer = Arc::new(syn);
     let par_work_dir = work_dir.join("par-rundir");
-    let output_netlist_path = syn_work_dir.join(format!("{}.mapped.v", module.module_name));
+    let output_netlist_path = if (!dep_info.is_empty()) {
+        syn_work_dir.join(format!("{}_noilm.mapped.v", module.module_name))
+    } else {
+        syn_work_dir.join(format!("{}.mapped.v", module.module_name))
+    };
 
     let final_constraints = module.placement_constraints.clone();
     let par = sky130_par(

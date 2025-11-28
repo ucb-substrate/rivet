@@ -8,6 +8,7 @@ path = "src/lib.rs"
 
 [dependencies]
 indoc = "2"
+regex = "1"
 rust_decimal = "1"
 rust_decimal_macros = "1"
 rivet = { path = "../rivet" } 

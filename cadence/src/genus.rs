@@ -1,3 +1,4 @@
+use regex::Regex;
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
@@ -190,6 +191,7 @@ pub fn syn_read_design_files(
     tlef: &Path,
     pdk_lef: &Path,
     submodules: Option<Vec<SubmoduleInfo>>,
+    is_hierarchical: bool,
 ) -> Substep {
     let mut sdc_file =
         File::create(work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
@@ -223,7 +225,7 @@ pub fn syn_read_design_files(
 
     if let Some(submodule_vec) = submodules {
         for submodule in submodule_vec {
-            verilog_files.push(submodule.verilog.display().to_string());
+            // verilog_files.push(submodule.verilog.display().to_string());
             writeln!(
                 command,
                 "read_ilm -basename {}/mmmc/ilm_data/{}/{}_postRoute -module_name {}",
@@ -238,14 +240,19 @@ pub fn syn_read_design_files(
 
     let all_verilog = verilog_files.join(" ");
 
+    if is_hierarchical {
+        for verilog in verilog_files.into_iter() {
+            remove_hierarchical_submodules(PathBuf::from(verilog), work_dir, submodules);
+        }
+    }
+
     writeln!(
         command,
         r#"
         read_physical -lef {{ {} }}
         read_hdl -sv {{ {} }}
         "#,
-        lefs,
-        module_string.to_string()
+        lefs, all_verilog,
     )
     .unwrap();
 
@@ -347,8 +354,6 @@ pub fn syn_write_design(module: &str, sdc_corner: MmmcCorner, is_hierarchical: b
         format!("write_hdl > {module}.mapped.v")
     };
 
-    // let write_hdl = format!("write_hdl > {module}.mapped.v");
-
     Substep {
         checkpoint: true,
         command: formatdoc!(
@@ -404,4 +409,33 @@ pub fn syn_write_design(module: &str, sdc_corner: MmmcCorner, is_hierarchical: b
         ),
         name: "write_design".into(),
     }
+}
+
+pub fn remove_hierarchical_submodules(
+    source_path: &Path,
+    work_dir: &Path,
+    submodules: &[String],
+) -> io::Result<PathBuf> {
+    let content = fs::read_to_string(source_path)?;
+    let mut new_content = content.clone();
+
+    for submodule in submodules {
+        let re_str = format!(
+            r"(?s)\bmodule\s+{}\b.*?\bendmodule\b",
+            regex::escape(submodule)
+        );
+        let re = Regex::new(&re_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        new_content = re.replace_all(&new_content, "").to_string();
+    }
+
+    let file_stem = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("design");
+    let new_filename = format!("{}_no_submodules.v", file_stem);
+    let new_path = work_dir.join(new_filename);
+
+    fs::write(&new_path, new_content)?;
+
+    Ok(new_path)
 }

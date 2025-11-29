@@ -11,10 +11,10 @@ fn main() {
         PathBuf::from("/scratch/cs199-cbc/rivet/examples/hierarchical/src"),
         Dag {
             node: ModuleInfo {
-                module_name: "nbitadder".into(),
+                module_name: "fourbitadder".into(),
                 pin_info: FlatPinInfo::None,
                 verilog_path: PathBuf::from(
-                    "/scratch/cs199-cbc/rivet/examples/hierarchical/src/nbitadder.v",
+                    "/scratch/cs199-cbc/rivet/examples/hierarchical/src/fourbitadder.v",
                 ),
                 placement_constraints: PlacementConstraints {
                     top: TopLevelConstraint {
@@ -204,7 +204,7 @@ fn main() {
         },
     );
 
-    flow.get_mut(&"nbitadder".to_string())
+    flow.get_mut(&"fourbitadder".to_string())
         .unwrap()
         .syn
         .replace_hook("syn_opt", "syn_opt", "syn_map", false);

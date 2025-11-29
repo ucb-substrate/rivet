@@ -623,6 +623,7 @@ pub fn write_ilm(
             time_design -post_route -hold
             check_process_antenna
             write_lef_abstract -5.8 -top_layer {top_layer} -stripe_pins -pg_pin_layers {{{top_layer}}} {module}ILM.lef
+            flatten_ilm
             write_ilm -model_type all -to_dir {ilm_dir} -type_flex_ilm ilm
             cp {innovus_copy} {genus_copy}
         "#

@@ -106,15 +106,15 @@ pub fn sky130_syn(
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
 
-    // let submodules: Vec<SubmoduleInfo> = dep_info
-    //     .iter()
-    //     .map(|(module, flow)| SubmoduleInfo {
-    //         name: module.module_name.clone(),
-    //         verilog: module.verilog_path.clone(),
-    //         ilm: flow.par.ilm_path().to_path_buf(),
-    //         lef: flow.par.lef_path().to_path_buf(),
-    //     })
-    //     .collect();
+    let dir_submodules: Vec<SubmoduleInfo> = dep_info
+        .iter()
+        .map(|(module, flow)| SubmoduleInfo {
+            name: module.module_name.clone(),
+            verilog: module.verilog_path.clone(),
+            ilm: flow.par.ilm_path().to_path_buf(),
+            lef: flow.par.lef_path().to_path_buf(),
+        })
+        .collect();
 
     let deps: Vec<Arc<dyn Step>> = dep_info
         .iter()
@@ -140,7 +140,7 @@ pub fn sky130_syn(
                 is_hierarchical,
             ),
             elaborate(module),
-            syn_init_design(module, Some(submodules.clone())),
+            syn_init_design(module, Some(dir_submodules.clone())),
             power_intent(work_dir, &sky130_cadence_power_spec(module, dec!(1.8))),
             syn_generic(),
             syn_map(),

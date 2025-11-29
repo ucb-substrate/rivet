@@ -1,5 +1,0 @@
-#!/bin/bash
-        cd /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/par-rundir
-        source enter
-        $INNOVUS_BIN -common_ui -win -files /scratch/cs199-cbc/labs/sp25-chipyard/vlsi/build/lab4/par-rundir/generated-scripts/open_chip.tcl
-                

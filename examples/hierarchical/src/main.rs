@@ -44,7 +44,7 @@ fn main() {
                             spacing: 2.0,
                             par_blockage_ratio: 1.2,
                             create_physical: false,
-                            name: "adder_chain[0].fa".into(),
+                            name: "fa_1".into(),
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
@@ -65,7 +65,7 @@ fn main() {
                             spacing: 2.0,
                             par_blockage_ratio: 1.2,
                             create_physical: false,
-                            name: "adder_chain[1].fa".into(),
+                            name: "fa_2".into(),
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
@@ -86,7 +86,7 @@ fn main() {
                             spacing: 2.0,
                             par_blockage_ratio: 1.2,
                             create_physical: false,
-                            name: "adder_chain[2].fa".into(),
+                            name: "fa_3".into(),
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
@@ -107,7 +107,7 @@ fn main() {
                             spacing: 2.0,
                             par_blockage_ratio: 1.2,
                             create_physical: false,
-                            name: "adder_chain[3].fa".into(),
+                            name: "fa_4".into(),
                             master: "fulladder".into(),
                         },
                     ]),

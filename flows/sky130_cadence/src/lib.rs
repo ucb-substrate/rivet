@@ -110,7 +110,7 @@ pub fn sky130_syn(
         .iter()
         .map(|(module, flow)| SubmoduleInfo {
             name: module.module_name.clone(),
-            verilog: module.verilog_path.clone(),
+            verilog_paths: module.verilog_paths.clone(),
             ilm: flow.par.ilm_path().to_path_buf(),
             lef: flow.par.lef_path().to_path_buf(),
         })
@@ -121,7 +121,6 @@ pub fn sky130_syn(
         .map(|(_module, flow)| Arc::clone(&flow.par) as Arc<dyn Step>)
         .collect();
 
-    // let is_hierarchical = !dep_info.is_empty();
     let is_hierarchical = !submodules.is_empty();
 
     GenusStep::new(
@@ -431,7 +430,7 @@ fn sky130_cadence_flat_flow(
     for (child_module, child_flow) in dep_info {
         all_submodules.push(SubmoduleInfo {
             name: child_module.module_name.clone(),
-            verilog: child_module.verilog_path.clone(),
+            verilog_paths: child_module.verilog_paths.clone(),
             ilm: child_flow.par.ilm_path().to_path_buf(),
             lef: child_flow.par.lef_path().to_path_buf(),
         });
@@ -443,7 +442,7 @@ fn sky130_cadence_flat_flow(
         pdk_root,
         &syn_work_dir,
         &module.module_name,
-        &module.verilog_path,
+        &module.verilog_paths,
         dep_info,
         all_submodules.clone(),
         &module.pin_info,

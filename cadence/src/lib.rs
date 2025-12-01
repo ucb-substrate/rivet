@@ -23,7 +23,7 @@ pub struct Checkpoint {
 #[derive(Debug, Clone)]
 pub struct SubmoduleInfo {
     pub name: String,
-    pub verilog: PathBuf,
+    pub verilog_paths: Vec<PathBuf>,
     pub ilm: PathBuf,
     pub lef: PathBuf,
 }

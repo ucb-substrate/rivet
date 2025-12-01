@@ -13,9 +13,9 @@ fn main() {
             node: ModuleInfo {
                 module_name: "fourbitadder".into(),
                 pin_info: FlatPinInfo::None,
-                verilog_path: PathBuf::from(
+                verilog_paths: vec![PathBuf::from(
                     "/scratch/cs199-cbc/rivet/examples/hierarchical/src/fourbitadder.v",
-                ),
+                )],
                 placement_constraints: PlacementConstraints {
                     top: TopLevelConstraint {
                         width: 1000.0,
@@ -118,9 +118,9 @@ fn main() {
                 node: ModuleInfo {
                     module_name: "fulladder".into(),
                     pin_info: FlatPinInfo::None,
-                    verilog_path: PathBuf::from(
+                    verilog_paths: vec![PathBuf::from(
                         "/scratch/cs199-cbc/rivet/examples/hierarchical/src/fulladder.v",
-                    ),
+                    )],
                     placement_constraints: PlacementConstraints {
                         top: TopLevelConstraint {
                             width: 100.0,
@@ -182,9 +182,9 @@ fn main() {
                     node: ModuleInfo {
                         module_name: "halfadder".into(),
                         pin_info: FlatPinInfo::None,
-                        verilog_path: PathBuf::from(
+                        verilog_paths: vec![PathBuf::from(
                             "/scratch/cs199-cbc/rivet/examples/hierarchical/src/halfadder.v",
-                        ),
+                        )],
                         placement_constraints: PlacementConstraints {
                             top: TopLevelConstraint {
                                 width: 30.0,

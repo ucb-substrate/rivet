@@ -219,10 +219,10 @@ pub fn syn_read_design_files(
         mmmc_tcl_path.display(),
     );
 
-    let mut verilog_files = verilog_paths
-        .clone()
+    let verilog_files: Vec<String> = verilog_paths
         .iter()
-        .map(|p| p.display().to_string());
+        .map(|p| p.display().to_string())
+        .collect();
 
     if let Some(submodule_vec) = &submodules {
         for submodule in submodule_vec {

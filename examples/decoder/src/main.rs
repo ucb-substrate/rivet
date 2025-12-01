@@ -26,9 +26,9 @@ fn main() {
             node: ModuleInfo {
                 module_name: "decoder".into(),
                 pin_info: FlatPinInfo::None,
-                verilog_path: PathBuf::from(
+                verilog_paths: vec![PathBuf::from(
                     "/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v",
-                ),
+                )],
                 placement_constraints: PlacementConstraints {
                     top: TopLevelConstraint {
                         width: 30.0,

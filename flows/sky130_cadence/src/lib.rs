@@ -24,7 +24,7 @@ use rust_decimal_macros::dec;
 pub struct ModuleInfo {
     pub module_name: String,
     pub pin_info: FlatPinInfo,
-    pub verilog_path: PathBuf,
+    pub verilog_paths: Vec<PathBuf>,
     pub placement_constraints: PlacementConstraints,
 }
 
@@ -51,7 +51,7 @@ pub fn sky130_syn(
     pdk_root: &Path,
     work_dir: &PathBuf,
     module: &String,
-    verilog_path: &Path,
+    verilog_paths: &Vec<PathBuf>,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     submodules: Vec<SubmoduleInfo>,
     pin_info: &FlatPinInfo,
@@ -132,7 +132,7 @@ pub fn sky130_syn(
             dont_avoid_lib_cells("ICGX1"),
             syn_read_design_files(
                 work_dir,
-                verilog_path,
+                verilog_paths,
                 syn_con.clone(),
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
@@ -261,16 +261,6 @@ pub fn sky130_par(
         work_dir,
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
-
-    // let submodules: Vec<SubmoduleInfo> = dep_info
-    //     .iter()
-    //     .map(|(module, flow)| SubmoduleInfo {
-    //         name: module.module_name.clone(),
-    //         verilog: module.verilog_path.clone(),
-    //         ilm: flow.par.ilm_path().to_path_buf(),
-    //         lef: flow.par.lef_path().to_path_buf(),
-    //     })
-    //     .collect();
 
     let par_constraints = constraints.clone();
 

@@ -186,7 +186,7 @@ pub fn dont_avoid_lib_cells(base_name: &str) -> Substep {
 /// Reads the module verilog, mmmc.tcl, pdk lefs, ilms paths, and sdc constraints
 pub fn syn_read_design_files(
     work_dir: &Path,
-    module_path: &Path,
+    verilog_paths: &Vec<PathBuf>,
     mmmc_conf: MmmcConfig,
     tlef: &Path,
     pdk_lef: &Path,
@@ -199,8 +199,6 @@ pub fn syn_read_design_files(
     let mmmc_tcl = mmmc(mmmc_conf);
     let mmmc_tcl_path = work_dir.to_path_buf().join("mmmc.tcl");
     let _ = fs::write(&mmmc_tcl_path, mmmc_tcl);
-    let module_file_path = module_path.to_path_buf();
-    let module_string = module_file_path.display();
 
     let mut lefs_vec = vec![tlef.display().to_string(), pdk_lef.display().to_string()];
 
@@ -221,11 +219,13 @@ pub fn syn_read_design_files(
         mmmc_tcl_path.display(),
     );
 
-    let mut verilog_files = vec![module_string.to_string()];
+    let mut verilog_files = verilog_paths
+        .clone()
+        .iter()
+        .map(|p| p.display().to_string());
 
     if let Some(submodule_vec) = &submodules {
         for submodule in submodule_vec {
-            // verilog_files.push(submodule.verilog.display().to_string());
             writeln!(
                 command,
                 "read_ilm -basename {}/mmmc/ilm_data/{}/{}_postRoute -module_name {}",

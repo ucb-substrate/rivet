@@ -13,6 +13,7 @@ use rivet::Step;
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
+/// Defines the Innovus place and route step subflow
 #[derive(Debug)]
 pub struct InnovusStep {
     pub work_dir: PathBuf,
@@ -43,6 +44,7 @@ impl InnovusStep {
         }
     }
 
+    /// Generates the tcl file for place and route
     fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Substep>) -> io::Result<()> {
         let mut tcl_file = File::create(path).expect("failed to create par.tcl file");
 
@@ -65,6 +67,7 @@ impl InnovusStep {
         Ok(())
     }
 
+    /// Inserts a custom command as a substep in the par flow
     pub fn add_hook(&self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
         let mut substeps = self.substeps.lock().unwrap();
 
@@ -78,6 +81,7 @@ impl InnovusStep {
         );
     }
 
+    /// Replaces a specfic substep in the par flow with a new command
     pub fn replace_hook(
         &self,
         new_substep_name: &str,
@@ -110,9 +114,10 @@ impl InnovusStep {
         self.work_dir.join(format!("{}.mapped.sdc", self.module))
     }
 
+    /// Assigns the starting checkpoint of the par flow
     pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
-            name: name,
+            name,
             path: checkpoint_path,
         });
     }
@@ -205,7 +210,7 @@ pub fn par_read_design_files(
     submodules: Option<Vec<SubmoduleInfo>>,
 ) -> Substep {
     let mut sdc_file =
-        File::create(&work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
+        File::create(work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
     writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
     let mmmc_tcl = mmmc(mmmc_conf);
     let mmmc_tcl_path = work_dir.to_path_buf().join("mmmc.tcl");
@@ -224,10 +229,10 @@ pub fn par_read_design_files(
     let lefs: String = lefs_vec.join(" ");
     let mut command = formatdoc!(
         r#"
-            read_physical -lef {{ {} }}
-            read_mmmc {}
-            read_netlist {} -top {}
-            "#,
+        read_physical -lef {{ {} }}
+        read_mmmc {}
+        read_netlist {} -top {}
+        "#,
         lefs,
         mmmc_tcl_path.display(),
         netlist.display(),
@@ -248,7 +253,7 @@ pub fn par_read_design_files(
 
     Substep {
         checkpoint: false,
-        command: command,
+        command,
         name: "read_design_files".into(),
     }
 }
@@ -295,16 +300,16 @@ pub fn floorplan_design(
     let power_spec_file_string = power_spec_file_path.display();
     let command = formatdoc!(
         r#"
-            source -echo -verbose {floorplan_path_string} 
-            flatten_ilm 
-            read_power_intent -cpf {power_spec_file_string}
-            commit_power_intent
-            unflatten_ilm
-            "#
+        source -echo -verbose {floorplan_path_string} 
+        flatten_ilm 
+        read_power_intent -cpf {power_spec_file_string}
+        commit_power_intent
+        unflatten_ilm
+        "#
     );
     Substep {
         checkpoint: true,
-        command: command,
+        command,
         name: "floorplan_design".into(),
     }
 }
@@ -420,19 +425,19 @@ pub fn place_opt_design(sdc_files: Option<PathBuf>) -> Substep {
 
     let command = formatdoc!(
         r#"
-            set unplaced_pins [get_db ports -if {{.place_status == unplaced}}]
-            if {{$unplaced_pins ne ""}} {{
-                print_message -error "Some pins remain unplaced, which will cause invalid placement and routing. These are the unplaced pins: $unplaced_pins"
-                exit 2
-            }}
-            {sdc_command}
-            set_db opt_enable_podv2_clock_opt_flow true
-            place_opt_design
+        set unplaced_pins [get_db ports -if {{.place_status == unplaced}}]
+        if {{$unplaced_pins ne ""}} {{
+            print_message -error "Some pins remain unplaced, which will cause invalid placement and routing. These are the unplaced pins: $unplaced_pins"
+            exit 2
+        }}
+        {sdc_command}
+        set_db opt_enable_podv2_clock_opt_flow true
+        place_opt_design
         "#
     );
     Substep {
         checkpoint: true,
-        command: command,
+        command,
         name: "place_opt_design".into(),
     }
 }
@@ -456,9 +461,9 @@ pub fn route_design() -> Substep {
         checkpoint: true,
         command: formatdoc!(
             r#"
-                flatten_ilm
-                set_db design_express_route true
-                route_design
+            flatten_ilm
+            set_db design_express_route true
+            route_design
             "#
         ),
         name: "route_design".into(),
@@ -470,13 +475,13 @@ pub fn opt_design() -> Substep {
         checkpoint: true,
         command: formatdoc!(
             r#"
-                set_db opt_post_route_hold_recovery auto
-                set_db opt_post_route_fix_si_transitions true
-                set_db opt_verbose true
-                set_db opt_detail_drv_failure_reason true
-                set_db opt_sequential_genus_restructure_report_failure_reason true
-                opt_design -post_route -setup -hold -expanded_views -timing_debug_report
-                unflatten_ilm
+            set_db opt_post_route_hold_recovery auto
+            set_db opt_post_route_fix_si_transitions true
+            set_db opt_verbose true
+            set_db opt_detail_drv_failure_reason true
+            set_db opt_sequential_genus_restructure_report_failure_reason true
+            opt_design -post_route -setup -hold -expanded_views -timing_debug_report
+            unflatten_ilm
             "#
         ),
         name: "opt_design".into(),
@@ -644,7 +649,7 @@ pub fn write_ilm(
     }
     Substep {
         checkpoint: false,
-        command: command,
+        command,
         name: "write_ilm".into(),
     }
 }
@@ -759,7 +764,7 @@ pub fn generate_floorplan_tcl(placement_constraints: PlacementConstraints) -> St
     floorplan
 }
 
-/// w: width, h: height, left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
+/// left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
 #[derive(Debug, Clone)]
 pub struct TopLevelConstraint {
     pub width: f64,

@@ -3,13 +3,12 @@ use cadence::genus::{
     syn_generic, syn_init_design, syn_map, syn_read_design_files, syn_write_design,
 };
 use cadence::innovus::{
-    HardMacroConstraint, InnovusStep, Layer, ObstructionConstraint, PinAssignment,
-    PlacementConstraints, TopLevelConstraint, add_fillers, floorplan_design, innovus_settings,
-    opt_design, par_init_design, par_read_design_files, par_write_design, place_opt_design,
-    place_pins, place_tap_cells, power_straps, route_design, set_default_process, write_ilm,
+    InnovusStep, Layer, PinAssignment, PlacementConstraints, add_fillers, floorplan_design,
+    innovus_settings, opt_design, par_init_design, par_read_design_files, par_write_design,
+    place_opt_design, place_pins, power_straps, route_design, set_default_process, write_ilm,
     write_regs,
 };
-use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, sdc};
+use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep};
 use indoc::formatdoc;
 use rivet::{Dag, NamedNode, Step, hierarchical};
 use sky130::{setup_techlef, sky130_connect_nets};
@@ -51,21 +50,21 @@ pub fn sky130_syn(
     pdk_root: &Path,
     work_dir: &PathBuf,
     module: &String,
-    verilog_paths: &Vec<PathBuf>,
+    verilog_paths: &[PathBuf],
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     submodules: Vec<SubmoduleInfo>,
     pin_info: &FlatPinInfo,
 ) -> GenusStep {
-    let ss_100C_1v60 = MmmcCorner {
-        name: "ss_100C_1v60".to_string(),
+    let ss_100c_1v60 = MmmcCorner {
+        name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
         libs: vec![
             pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib"),
         ],
         temperature: dec!(100.0),
     };
-    let ff_n40C_1v95 = MmmcCorner {
-        name: "ff_n40C_1v95".to_string(),
+    let ff_n40c_1v95 = MmmcCorner {
+        name: "ff_n40c_1v95".to_string(),
         corner_type: "hold".to_string(),
         libs: vec![
             pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib"),
@@ -73,8 +72,8 @@ pub fn sky130_syn(
         temperature: dec!(-40.0),
     };
 
-    let tt_025C_1v80 = MmmcCorner {
-        name: "tt_025C_1v80".to_string(),
+    let tt_025c_1v80 = MmmcCorner {
+        name: "tt_025c_1v80".to_string(),
         corner_type: "extra".to_string(),
         libs: vec![
             pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib"),
@@ -86,18 +85,18 @@ pub fn sky130_syn(
         sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
 
         corners: vec![
-            ss_100C_1v60.clone(),
-            ff_n40C_1v95.clone(),
-            tt_025C_1v80.clone(),
+            ss_100c_1v60.clone(),
+            ff_n40c_1v95.clone(),
+            tt_025c_1v80.clone(),
         ],
 
-        setup: vec![ss_100C_1v60.clone()],
+        setup: vec![ss_100c_1v60.clone()],
 
-        hold: vec![ff_n40C_1v95.clone(), tt_025C_1v80.clone()],
+        hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
 
-        dynamic: tt_025C_1v80.clone(),
+        dynamic: tt_025c_1v80.clone(),
 
-        leakage: tt_025C_1v80.clone(),
+        leakage: tt_025c_1v80.clone(),
     };
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
 
@@ -144,7 +143,7 @@ pub fn sky130_syn(
             syn_generic(),
             syn_map(),
             add_tieoffs(),
-            syn_write_design(module, ss_100C_1v60.clone(), is_hierarchical),
+            syn_write_design(module, ss_100c_1v60.clone(), is_hierarchical),
         ],
         matches!(pin_info, FlatPinInfo::PinSyn(_)),
         deps,
@@ -157,7 +156,6 @@ pub fn sky130_par(
     module: &String,
     constraints: &PlacementConstraints,
     netlist: &Path,
-    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     submodules: Vec<SubmoduleInfo>,
     pin_info: &FlatPinInfo,
     syn_step: Arc<GenusStep>,
@@ -210,16 +208,16 @@ pub fn sky130_par(
         }
     ];
 
-    let ss_100C_1v60 = MmmcCorner {
-        name: "ss_100C_1v60".to_string(),
+    let ss_100c_1v60 = MmmcCorner {
+        name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
         libs: vec![
             pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib"),
         ],
         temperature: dec!(100.0),
     };
-    let ff_n40C_1v95 = MmmcCorner {
-        name: "ff_n40C_1v95".to_string(),
+    let ff_n40c_1v95 = MmmcCorner {
+        name: "ff_n40c_1v95".to_string(),
         corner_type: "hold".to_string(),
         libs: vec![
             pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib"),
@@ -227,8 +225,8 @@ pub fn sky130_par(
         temperature: dec!(-40.0),
     };
 
-    let tt_025C_1v80 = MmmcCorner {
-        name: "tt_025C_1v80".to_string(),
+    let tt_025c_1v80 = MmmcCorner {
+        name: "tt_025c_1v80".to_string(),
         corner_type: "extra".to_string(),
         libs: vec![
             pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib"),
@@ -240,18 +238,18 @@ pub fn sky130_par(
         sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
 
         corners: vec![
-            ss_100C_1v60.clone(),
-            ff_n40C_1v95.clone(),
-            tt_025C_1v80.clone(),
+            ss_100c_1v60.clone(),
+            ff_n40c_1v95.clone(),
+            tt_025c_1v80.clone(),
         ],
 
-        setup: vec![ss_100C_1v60.clone()],
+        setup: vec![ss_100c_1v60.clone()],
 
-        hold: vec![ff_n40C_1v95.clone(), tt_025C_1v80.clone()],
+        hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
 
-        dynamic: tt_025C_1v80.clone(),
+        dynamic: tt_025c_1v80.clone(),
 
-        leakage: tt_025C_1v80.clone(),
+        leakage: tt_025c_1v80.clone(),
     };
 
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
@@ -299,9 +297,9 @@ pub fn sky130_par(
                 work_dir,
                 module,
                 vec![
-                    ss_100C_1v60.clone(),
-                    ff_n40C_1v95.clone(),
-                    tt_025C_1v80.clone(),
+                    ss_100c_1v60.clone(),
+                    ff_n40c_1v95.clone(),
+                    tt_025c_1v80.clone(),
                 ],
             ),
             write_ilm(
@@ -309,9 +307,9 @@ pub fn sky130_par(
                 module,
                 &layers[0],
                 vec![
-                    ss_100C_1v60.clone(),
-                    ff_n40C_1v95.clone(),
-                    tt_025C_1v80.clone(),
+                    ss_100c_1v60.clone(),
+                    ff_n40c_1v95.clone(),
+                    tt_025c_1v80.clone(),
                 ],
             ),
         ],
@@ -449,7 +447,7 @@ fn sky130_cadence_flat_flow(
     );
     let syn_pointer = Arc::new(syn);
     let par_work_dir = work_dir.join("par-rundir");
-    let output_netlist_path = if (!dep_info.is_empty()) {
+    let output_netlist_path = if !dep_info.is_empty() {
         syn_work_dir.join(format!("{}_noilm.mapped.v", module.module_name))
     } else {
         syn_work_dir.join(format!("{}.mapped.v", module.module_name))
@@ -462,7 +460,6 @@ fn sky130_cadence_flat_flow(
         &module.module_name,
         &final_constraints,
         &output_netlist_path,
-        dep_info,
         all_submodules.clone(),
         &module.pin_info,
         Arc::clone(&syn_pointer),

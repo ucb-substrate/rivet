@@ -12,7 +12,7 @@ use indoc::formatdoc;
 use rivet::Step;
 use std::sync::{Arc, Mutex};
 
-/// Defines the working directory of the tool and which module to synthesize
+/// Defines the Genus synthesis step subflow
 #[derive(Debug)]
 pub struct GenusStep {
     pub work_dir: PathBuf,
@@ -72,6 +72,7 @@ impl GenusStep {
         Ok(())
     }
 
+    /// Inserts a custom command as a substep in the synthesis flow
     pub fn add_hook(&self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
         let mut substeps = self.substeps.lock().unwrap();
         substeps.insert(
@@ -83,6 +84,8 @@ impl GenusStep {
             },
         );
     }
+
+    /// Replaces a specfic substep in the synthesis flow with a new command
     pub fn replace_hook(
         &self,
         new_substep_name: &str,
@@ -107,9 +110,10 @@ impl GenusStep {
         self.work_dir.join(format!("{}.mapped.v", self.module))
     }
 
+    /// Assigns the starting checkpoint of the synthesis flow
     pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
-            name: name,
+            name,
             path: checkpoint_path,
         });
     }
@@ -168,7 +172,7 @@ pub fn set_default_options() -> Substep {
             set_db lp_insert_clock_gating  true
             set_db lp_clock_gating_register_aware true
             set_db root: .auto_ungroup none
-"#
+        "#
         .into(),
     }
 }
@@ -186,7 +190,7 @@ pub fn dont_avoid_lib_cells(base_name: &str) -> Substep {
 /// Reads the module verilog, mmmc.tcl, pdk lefs, ilms paths, and sdc constraints
 pub fn syn_read_design_files(
     work_dir: &Path,
-    verilog_paths: &Vec<PathBuf>,
+    verilog_paths: &[PathBuf],
     mmmc_conf: MmmcConfig,
     tlef: &Path,
     pdk_lef: &Path,
@@ -269,7 +273,7 @@ pub fn syn_read_design_files(
 
     Substep {
         checkpoint: false,
-        command: command,
+        command,
         name: "read_design_files".into(),
     }
 }
@@ -297,7 +301,7 @@ pub fn syn_init_design(module: &String, submodules: Option<Vec<SubmoduleInfo>>) 
     writeln!(command, "init_design -top {}", module).unwrap();
     Substep {
         checkpoint: false,
-        command: command,
+        command,
         name: "init_design".to_string(),
     }
 }
@@ -348,7 +352,7 @@ pub fn add_tieoffs() -> Substep {
         set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
         set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
         add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose
-"#
+        "#
         ),
         name: "add_tieoffs".into(),
     }
@@ -369,54 +373,54 @@ pub fn syn_write_design(module: &str, sdc_corner: MmmcCorner, is_hierarchical: b
         checkpoint: true,
         command: formatdoc!(
             r#"
-        set write_cells_ir "./find_regs_cells.json"
-        set write_cells_ir [open $write_cells_ir "w"]
-        puts $write_cells_ir "\["
+            set write_cells_ir "./find_regs_cells.json"
+            set write_cells_ir [open $write_cells_ir "w"]
+            puts $write_cells_ir "\["
 
-        set refs [get_db [get_db lib_cells -if .is_sequential==true] .base_name]
+            set refs [get_db [get_db lib_cells -if .is_sequential==true] .base_name]
 
-        set len [llength $refs]
+            set len [llength $refs]
 
-        for {{set i 0}} {{$i < [llength $refs]}} {{incr i}} {{
-            if {{$i == $len - 1}} {{
-                puts $write_cells_ir "    \"[lindex $refs $i]\""
-            }} else {{
-                puts $write_cells_ir "    \"[lindex $refs $i]\","
+            for {{set i 0}} {{$i < [llength $refs]}} {{incr i}} {{
+                if {{$i == $len - 1}} {{
+                    puts $write_cells_ir "    \"[lindex $refs $i]\""
+                }} else {{
+                    puts $write_cells_ir "    \"[lindex $refs $i]\","
+                }}
             }}
-        }}
 
-        puts $write_cells_ir "\]"
-        close $write_cells_ir
-        set write_regs_ir "./find_regs_paths.json"
-        set write_regs_ir [open $write_regs_ir "w"]
-        puts $write_regs_ir "\["
+            puts $write_cells_ir "\]"
+            close $write_cells_ir
+            set write_regs_ir "./find_regs_paths.json"
+            set write_regs_ir [open $write_regs_ir "w"]
+            puts $write_regs_ir "\["
 
-        set regs [get_db [get_db [all_registers -edge_triggered -output_pins] -if .direction==out] .name]
+            set regs [get_db [get_db [all_registers -edge_triggered -output_pins] -if .direction==out] .name]
 
-        set len [llength $regs]
+            set len [llength $regs]
 
-        for {{set i 0}} {{$i < [llength $regs]}} {{incr i}} {{
-            #regsub -all {{/}} [lindex $regs $i] . myreg
-            set myreg [lindex $regs $i]
-            if {{$i == $len - 1}} {{
-                puts $write_regs_ir "    \"$myreg\""
-            }} else {{
-                puts $write_regs_ir "    \"$myreg\","
+            for {{set i 0}} {{$i < [llength $regs]}} {{incr i}} {{
+                #regsub -all {{/}} [lindex $regs $i] . myreg
+                set myreg [lindex $regs $i]
+                if {{$i == $len - 1}} {{
+                    puts $write_regs_ir "    \"$myreg\""
+                }} else {{
+                    puts $write_regs_ir "    \"$myreg\","
+                }}
             }}
-        }}
 
-        puts $write_regs_ir "\]"
+            puts $write_regs_ir "\]"
 
-        close $write_regs_ir
-        write_reports -directory reports -tag final
-        report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
+            close $write_regs_ir
+            write_reports -directory reports -tag final
+            report_timing -unconstrained -max_paths 50 > reports/final_unconstrained.rpt
 
-        {write_hdl}
-        write_template -full -outfile {module}.mapped.scr
-        write_sdc -view {corner}.{corner_type}_view > {module}.mapped.sdc
-        write_sdf > {module}.mapped.sdf
-        write_design -gzip_files {module}
-            "#
+            {write_hdl}
+            write_template -full -outfile {module}.mapped.scr
+            write_sdc -view {corner}.{corner_type}_view > {module}.mapped.sdc
+            write_sdf > {module}.mapped.sdf
+            write_design -gzip_files {module}
+        "#
         ),
         name: "write_design".into(),
     }

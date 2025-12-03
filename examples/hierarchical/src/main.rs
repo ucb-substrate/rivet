@@ -1,6 +1,4 @@
-use cadence::innovus::{
-    HardMacroConstraint, ObstructionConstraint, PlacementConstraints, TopLevelConstraint,
-};
+use cadence::innovus::{HardMacroConstraint, PlacementConstraints, TopLevelConstraint};
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
 use std::path::PathBuf;

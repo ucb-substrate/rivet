@@ -1,6 +1,4 @@
-use cadence::innovus::{
-    HardMacroConstraint, ObstructionConstraint, PlacementConstraints, TopLevelConstraint,
-};
+use cadence::innovus::{PlacementConstraints, TopLevelConstraint};
 use clap::Parser;
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};

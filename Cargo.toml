@@ -6,5 +6,5 @@ members = [
     "rivet",
     "pdks/sky130",
     "cadence", 
-    "flows/sky130_cadence",
+    "flows/sky130_cadence", "examples/hierarchical",
 ]

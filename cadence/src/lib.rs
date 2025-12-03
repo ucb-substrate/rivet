@@ -14,15 +14,31 @@ pub struct Substep {
     pub checkpoint: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct Checkpoint {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubmoduleInfo {
+    pub name: String,
+    pub verilog_paths: Vec<PathBuf>,
+    pub ilm: PathBuf,
+    pub lef: PathBuf,
+}
+
 /// Returns the TCL for clock_constraints and pin_constraints
 pub fn sdc() -> String {
     formatdoc!(
-        r#"create_clock clk -name clk -period 2.0
-            set_clock_uncertainty 0.01 [get_clocks clk]
-            set_clock_groups -asynchronous  -group {{ clk }}
-            set_load 1.0 [all_outputs]
-            set_input_delay -clock clk 0 [all_inputs]
-            set_output_delay -clock clk 0 [all_outputs]"#
+        r#"
+        create_clock clk -name clk -period 2.0
+        set_clock_uncertainty 0.01 [get_clocks clk]
+        set_clock_groups -asynchronous  -group {{ clk }}
+        set_load 1.0 [all_outputs]
+        set_input_delay -clock clk 0 [all_inputs]
+        set_output_delay -clock clk 0 [all_outputs]
+        "#
     )
 }
 
@@ -30,6 +46,7 @@ pub fn sdc() -> String {
 #[derive(Clone)]
 pub struct MmmcCorner {
     pub name: String,
+    pub corner_type: String,
     pub libs: Vec<PathBuf>,
     pub temperature: Decimal,
 }
@@ -39,10 +56,10 @@ pub struct MmmcCorner {
 pub struct MmmcConfig {
     pub sdc_files: Vec<PathBuf>,
     pub corners: Vec<MmmcCorner>,
-    pub setup: Vec<String>,
-    pub hold: Vec<String>,
-    pub dynamic: String,
-    pub leakage: String,
+    pub setup: Vec<MmmcCorner>,
+    pub hold: Vec<MmmcCorner>,
+    pub dynamic: MmmcCorner,
+    pub leakage: MmmcCorner,
 }
 
 /// Generates the tcl for the MMMC views
@@ -54,7 +71,7 @@ pub fn mmmc(config: MmmcConfig) -> String {
         .chain([&config.dynamic, &config.leakage])
     {
         assert!(
-            config.corners.iter().any(|c| c.name == *corner),
+            config.corners.iter().any(|c| c.name == *corner.name),
             "corner referenced but not defined in the list of MMMC corners"
         );
     }
@@ -74,11 +91,11 @@ pub fn mmmc(config: MmmcConfig) -> String {
     .unwrap();
 
     for corner in config.corners.iter() {
-        let library_set_name = format!("{}_set", corner.name);
-        let timing_cond_name = format!("{}_cond", corner.name);
-        let rc_corner_name = format!("{}_rc", corner.name);
-        let delay_corner_name = format!("{}_delay", corner.name);
-        let analysis_view_name = format!("{}_view", corner.name);
+        let library_set_name = format!("{}.{}_set", corner.name, corner.corner_type);
+        let timing_cond_name = format!("{}.{}_cond", corner.name, corner.corner_type);
+        let rc_corner_name = format!("{}.{}_rc", corner.name, corner.corner_type);
+        let delay_corner_name = format!("{}.{}_delay", corner.name, corner.corner_type);
+        let analysis_view_name = format!("{}.{}_view", corner.name, corner.corner_type);
         write!(
             &mut mmmc,
             "create_library_set -name {library_set_name} -timing [list"
@@ -112,18 +129,21 @@ pub fn mmmc(config: MmmcConfig) -> String {
 
     write!(&mut mmmc, "set_analysis_view -setup {{").unwrap();
     for corner in config.setup.iter() {
-        write!(&mut mmmc, " {corner}_view").unwrap();
+        write!(&mut mmmc, " {}.{}_view", corner.name, corner.corner_type).unwrap();
     }
     write!(&mut mmmc, " }}").unwrap();
     write!(&mut mmmc, " -hold {{").unwrap();
     for corner in config.hold.iter() {
-        write!(&mut mmmc, " {corner}_view").unwrap();
+        write!(&mut mmmc, " {}.{}_view", corner.name, corner.corner_type).unwrap();
     }
     write!(&mut mmmc, " }}").unwrap();
     writeln!(
         &mut mmmc,
-        " -dynamic {}_view -leakage {}_view",
-        config.dynamic, config.leakage,
+        " -dynamic {}.{}_view -leakage {}.{}_view",
+        config.dynamic.name,
+        config.dynamic.corner_type,
+        config.leakage.name,
+        config.leakage.corner_type,
     )
     .unwrap();
 

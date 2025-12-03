@@ -1,3 +1,4 @@
+use cadence::innovus::{PlacementConstraints, TopLevelConstraint};
 use clap::Parser;
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
@@ -23,9 +24,21 @@ fn main() {
             node: ModuleInfo {
                 module_name: "decoder".into(),
                 pin_info: FlatPinInfo::None,
-                verilog_path: PathBuf::from(
+                verilog_paths: vec![PathBuf::from(
                     "/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v",
-                ),
+                )],
+                placement_constraints: PlacementConstraints {
+                    top: TopLevelConstraint {
+                        width: 30.0,
+                        height: 30.0,
+                        left: 0.0,
+                        bottom: 0.0,
+                        right: 0.0,
+                        top: 0.0,
+                    },
+                    hard_macros: None,
+                    obstructs: None,
+                },
             },
             directed_edges: vec![],
         },

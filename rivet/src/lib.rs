@@ -8,6 +8,24 @@ pub struct Dag<F> {
     pub node: F,
     pub directed_edges: Vec<Dag<F>>,
 }
+pub trait NamedNode {
+    fn name(&self) -> String;
+}
+
+impl<F: NamedNode> Dag<F> {
+    pub fn get_mut(&mut self, target: &String) -> Option<&mut F> {
+        if &self.node.name() == target {
+            Some(&mut self.node)
+        } else {
+            for edge in &mut self.directed_edges {
+                if let Some(found) = edge.get_mut(target) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
+}
 
 pub trait Step: Debug {
     fn deps(&self) -> Vec<Arc<dyn Step>>;

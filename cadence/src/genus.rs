@@ -45,6 +45,10 @@ impl GenusStep {
 
     /// Generates the tcl file for synthesis
     fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Substep>) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("failed to create syn.tcl parent directory");
+        }
+
         let mut tcl_file = File::create(path).expect("failed to create syn.tcl file");
 
         writeln!(

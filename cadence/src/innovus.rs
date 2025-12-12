@@ -141,7 +141,13 @@ impl Step for InnovusStep {
             .expect("Failed to create par.tcl");
 
         let status = Command::new("innovus")
-            .args(["-file", tcl_path.to_str().unwrap(), "-stylus"])
+            .args([
+                "-file",
+                tcl_path.to_str().unwrap(),
+                "-stylus",
+                "-no_gui",
+                "-batch",
+            ])
             .current_dir(self.work_dir.clone())
             .status()
             .expect("Failed to execute par.tcl");

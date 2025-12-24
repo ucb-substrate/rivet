@@ -141,7 +141,7 @@ impl Step for GenusStep {
             .expect("Failed to create syn.tcl");
 
         let status = Command::new("genus")
-            .args(["-f", tcl_path.to_str().unwrap()])
+            .args(["-f", tcl_path.to_str().unwrap(), "-no_gui", "-batch"])
             .current_dir(self.work_dir.clone())
             .status()
             .expect("Failed to execute syn.tcl");

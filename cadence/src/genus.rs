@@ -63,12 +63,12 @@ impl GenusStep {
         for step in steps.into_iter() {
             println!("\n--> Parsing step: {}\n", step.name);
 
+            writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
-                let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
+                let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
 
                 writeln!(tcl_file, "write_db -to_file {}", checkpoint_file.display())?;
             }
-            writeln!(tcl_file, "{}", step.command)?;
         }
         writeln!(tcl_file, "quit")?;
 

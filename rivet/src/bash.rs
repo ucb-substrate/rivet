@@ -1,14 +1,10 @@
 use crate::Step;
-use fs::File;
-use indoc::formatdoc;
 use std::fmt::Debug;
-use std::fmt::Write as FmtWrite;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
-use std::{fs, io};
+use std::sync::Arc;
 
+#[derive(Debug)]
 pub struct BashStep {
     pub work_dir: PathBuf,
     pub command: String,
@@ -29,11 +25,11 @@ impl Step for BashStep {
         }
     }
 
-    fn deps(&self) {
-        self.dependencies.clone();
+    fn deps(&self) -> Vec<Arc<dyn Step>> {
+        self.dependencies.clone()
     }
 
-    fn pinned(&self) {
-        self.pinned;
+    fn pinned(&self) -> bool {
+        self.pinned
     }
 }

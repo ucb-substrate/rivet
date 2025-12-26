@@ -2,6 +2,7 @@ use by_address::ByAddress;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+pub mod bash;
 
 #[derive(Debug)]
 pub struct Dag<F> {

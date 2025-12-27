@@ -19,7 +19,7 @@ pub struct GenusStep {
     pub module: String,
     pub substeps: Mutex<Vec<Substep>>,
     pub pinned: bool,
-    pub start_checkpoint: Option<Checkpoint>,
+    pub start_checkpoint: Mutex<Option<Checkpoint>>,
     pub dependencies: Vec<Arc<dyn Step>>,
 }
 
@@ -38,13 +38,18 @@ impl GenusStep {
             module: modul,
             substeps: Mutex::new(steps),
             pinned,
-            start_checkpoint: None,
+            start_checkpoint: Mutex::new(None),
             dependencies: deps,
         }
     }
 
     /// Generates the tcl file for synthesis
-    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Substep>) -> io::Result<()> {
+    fn make_tcl_file(
+        &self,
+        path: &PathBuf,
+        steps: Vec<Substep>,
+        start_checkpoint: Option<Checkpoint>,
+    ) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("failed to create syn.tcl parent directory");
         }
@@ -56,7 +61,7 @@ impl GenusStep {
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
-        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
+        if let Some(checkpoint) = start_checkpoint {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
         }
 
@@ -115,8 +120,8 @@ impl GenusStep {
     }
 
     /// Assigns the starting checkpoint of the synthesis flow
-    pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
-        self.start_checkpoint = Some(Checkpoint {
+    pub fn add_checkpoint(&self, name: String, checkpoint_path: PathBuf) {
+        *self.start_checkpoint.lock().unwrap() = Some(Checkpoint {
             name,
             path: checkpoint_path,
         });
@@ -128,8 +133,8 @@ impl Step for GenusStep {
         let tcl_path = self.work_dir.clone().join("syn.tcl");
 
         let mut substeps = self.substeps.lock().unwrap().clone();
-
-        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
+        let start_checkpoint = self.start_checkpoint.lock().unwrap().clone();
+        if let Some(checkpoint) = &start_checkpoint {
             let slice_index = substeps
                 .iter()
                 .position(|s| s.name == checkpoint.name)
@@ -137,7 +142,7 @@ impl Step for GenusStep {
             substeps = substeps[slice_index..].to_vec();
         }
 
-        self.make_tcl_file(&tcl_path, substeps)
+        self.make_tcl_file(&tcl_path, substeps, start_checkpoint)
             .expect("Failed to create syn.tcl");
 
         let status = Command::new("genus")

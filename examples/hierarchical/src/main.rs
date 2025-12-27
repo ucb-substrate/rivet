@@ -16,8 +16,8 @@ fn main() {
                 )],
                 placement_constraints: PlacementConstraints {
                     top: TopLevelConstraint {
-                        width: 1000.0,
-                        height: 1000.0,
+                        width: 400.0,
+                        height: 400.0,
                         left: 0.0,
                         bottom: 0.0,
                         right: 0.0,
@@ -46,8 +46,8 @@ fn main() {
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
-                            x: 100.0,
-                            y: 100.0,
+                            x: 10.0,
+                            y: 150.0,
                             width: 100.0,
                             height: 100.0,
                             orientation: "r0".into(),
@@ -67,8 +67,8 @@ fn main() {
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
-                            x: 300.0,
-                            y: 100.0,
+                            x: 150.0,
+                            y: 10.0,
                             width: 100.0,
                             height: 100.0,
                             orientation: "r0".into(),
@@ -88,8 +88,8 @@ fn main() {
                             master: "fulladder".into(),
                         },
                         HardMacroConstraint {
-                            x: 500.0,
-                            y: 100.0,
+                            x: 150.0,
+                            y: 150.0,
                             width: 100.0,
                             height: 100.0,
                             orientation: "r0".into(),
@@ -206,5 +206,11 @@ fn main() {
         .unwrap()
         .syn
         .replace_hook("syn_opt", "syn_opt", "syn_map", false);
+
+    flow.get_mut(&"fourbitadder".to_string()).unwrap().par.add_checkpoint(
+            "sky130_innovus_settings".to_string(),
+            PathBuf::from("/scratch/cs199-cbc/rivet/examples/hierarchical/src/build-fourbitadder/par-rundir/post_sky130_innovus_settings"),
+        );
+
     execute(flow.node.par);
 }

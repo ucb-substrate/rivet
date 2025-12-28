@@ -13,6 +13,7 @@ fn main() {
                 pin_info: FlatPinInfo::PinSyn(PathBuf::from(
                     "/scratch/cs199-cbc/rivet/examples/hierarchical/src/build-fourbitadder/syn-rundir",
                 )),
+                // pin_info: FlatPinInfo::None,
                 verilog_paths: vec![PathBuf::from(
                     "/scratch/cs199-cbc/rivet/examples/hierarchical/src/fourbitadder.v",
                 )],

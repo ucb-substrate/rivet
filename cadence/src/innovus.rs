@@ -139,7 +139,7 @@ impl Step for InnovusStep {
                 .iter()
                 .position(|s| s.name == checkpoint.name)
                 .expect("Failed to find checkpoint name");
-            substeps = substeps[slice_index..].to_vec();
+            substeps = substeps[(slice_index + 1)..].to_vec();
         }
 
         self.make_tcl_file(&tcl_path, substeps, start_checkpoint)

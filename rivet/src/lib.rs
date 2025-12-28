@@ -46,13 +46,14 @@ fn execute_inner(
     if executed.contains_key(&ByAddress(step.clone())) {
         return;
     }
-    for dependency in step.deps() {
-        execute_inner(dependency, executed);
-    }
 
     if step.pinned() {
         executed.insert(ByAddress(step.clone()), Arc::clone(&step));
         return;
+    }
+
+    for dependency in step.deps() {
+        execute_inner(dependency, executed);
     }
 
     step.execute();

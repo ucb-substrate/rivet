@@ -10,14 +10,16 @@ fn main() {
         Dag {
             node: ModuleInfo {
                 module_name: "fourbitadder".into(),
-                pin_info: FlatPinInfo::None,
+                pin_info: FlatPinInfo::PinSyn(PathBuf::from(
+                    "/scratch/cs199-cbc/rivet/examples/hierarchical/src/build-fourbitadder/syn-rundir",
+                )),
                 verilog_paths: vec![PathBuf::from(
                     "/scratch/cs199-cbc/rivet/examples/hierarchical/src/fourbitadder.v",
                 )],
                 placement_constraints: PlacementConstraints {
                     top: TopLevelConstraint {
-                        width: 400.0,
-                        height: 400.0,
+                        width: 300.0,
+                        height: 300.0,
                         left: 0.0,
                         bottom: 0.0,
                         right: 0.0,

@@ -10,13 +10,13 @@ fn main() {
         Dag {
             node: ModuleInfo {
                 module_name: "fourbitadder".into(),
-                pin_info: FlatPinInfo::PinSyn(PathBuf::from(
-                    "/scratch/cs199-cbc/rivet/examples/hierarchical/src/build-fourbitadder/syn-rundir",
-                )),
-                // pin_info: FlatPinInfo::None,
-                verilog_paths: vec![PathBuf::from(
-                    "/scratch/cs199-cbc/rivet/examples/hierarchical/src/fourbitadder.v",
-                )],
+                pin_info: FlatPinInfo::PinSyn(
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("src/build-fourbitadder/syn-rundir"),
+                ),
+                verilog_paths: vec![
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/fourbitadder.v"),
+                ],
                 placement_constraints: PlacementConstraints {
                     top: TopLevelConstraint {
                         width: 300.0,
@@ -119,9 +119,9 @@ fn main() {
                 node: ModuleInfo {
                     module_name: "fulladder".into(),
                     pin_info: FlatPinInfo::None,
-                    verilog_paths: vec![PathBuf::from(
-                        "/scratch/cs199-cbc/rivet/examples/hierarchical/src/fulladder.v",
-                    )],
+                    verilog_paths: vec![
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/fulladder.v"),
+                    ],
                     placement_constraints: PlacementConstraints {
                         top: TopLevelConstraint {
                             width: 100.0,
@@ -183,9 +183,9 @@ fn main() {
                     node: ModuleInfo {
                         module_name: "halfadder".into(),
                         pin_info: FlatPinInfo::None,
-                        verilog_paths: vec![PathBuf::from(
-                            "/scratch/cs199-cbc/rivet/examples/hierarchical/src/halfadder.v",
-                        )],
+                        verilog_paths: vec![
+                            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/halfadder.v"),
+                        ],
                         placement_constraints: PlacementConstraints {
                             top: TopLevelConstraint {
                                 width: 30.0,
@@ -210,9 +210,13 @@ fn main() {
         .syn
         .replace_hook("syn_opt", "syn_opt", "syn_map", false);
 
-    flow.get_mut(&"fourbitadder".to_string()).unwrap().par.add_checkpoint(
+    flow.get_mut(&"fourbitadder".to_string())
+        .unwrap()
+        .par
+        .add_checkpoint(
             "sky130_innovus_settings".to_string(),
-            PathBuf::from("/scratch/cs199-cbc/rivet/examples/hierarchical/src/build-fourbitadder/par-rundir/post_sky130_innovus_settings"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("src/build-fourbitadder/par-rundir/post_sky130_innovus_settings"),
         );
 
     execute(flow.node.par);

@@ -208,11 +208,13 @@ fn main() {
     flow.get_mut(&"fourbitadder".to_string())
         .unwrap()
         .syn
+        .get()
         .replace_hook("syn_opt", "syn_opt", "syn_map", false);
 
     flow.get_mut(&"fourbitadder".to_string())
         .unwrap()
         .par
+        .get()
         .add_checkpoint(
             "sky130_innovus_settings".to_string(),
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))

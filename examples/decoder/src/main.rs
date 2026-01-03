@@ -3,6 +3,7 @@ use clap::Parser;
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -43,5 +44,5 @@ fn main() {
             directed_edges: vec![],
         },
     );
-    execute(flow.node.par);
+    execute(Arc::new(flow.node.par));
 }

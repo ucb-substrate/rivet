@@ -117,7 +117,7 @@ pub fn sky130_syn(
 
     let deps: Vec<Arc<dyn Step>> = dep_info
         .iter()
-        .map(|(_module, flow)| Arc::clone(&flow.par) as Arc<dyn Step>)
+        .map(|(_module, flow)| Arc::new(flow.par.clone()) as Arc<dyn Step>)
         .collect();
 
     let is_hierarchical = !submodules.is_empty();
@@ -158,7 +158,7 @@ pub fn sky130_par(
     netlist: &Path,
     submodules: Vec<SubmoduleInfo>,
     pin_info: &FlatPinInfo,
-    syn_step: Arc<GenusStep>,
+    syn_step: Arc<dyn Step>,
 ) -> InnovusStep {
     let filler_cells = vec![
         "FILL0".into(),
@@ -462,7 +462,7 @@ fn sky130_cadence_flat_flow(
         &output_netlist_path,
         all_submodules.clone(),
         &module.pin_info,
-        Arc::clone(&syn_pointer.get()),
+        Arc::new(syn_pointer.clone()),
     );
     Sky130FlatFlow {
         module: module.module_name.to_string(),

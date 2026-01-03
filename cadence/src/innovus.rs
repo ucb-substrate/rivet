@@ -14,7 +14,7 @@ use rust_decimal::Decimal;
 use std::sync::Arc;
 
 /// Defines the Innovus place and route step subflow
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InnovusStep {
     pub work_dir: PathBuf,
     pub module: String,

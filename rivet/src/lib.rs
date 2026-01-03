@@ -83,7 +83,7 @@ pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StepRef<T: Step> {
     reference: Arc<Mutex<T>>,
 }

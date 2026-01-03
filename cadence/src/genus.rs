@@ -13,7 +13,7 @@ use rivet::Step;
 use std::sync::Arc;
 
 /// Defines the Genus synthesis step subflow
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenusStep {
     pub work_dir: PathBuf,
     pub module: String,

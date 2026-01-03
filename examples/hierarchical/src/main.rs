@@ -2,6 +2,7 @@ use cadence::innovus::{HardMacroConstraint, PlacementConstraints, TopLevelConstr
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn main() {
     let mut flow = sky130_cadence_reference_flow(
@@ -221,5 +222,5 @@ fn main() {
                 .join("src/build-fourbitadder/par-rundir/post_sky130_innovus_settings"),
         );
 
-    execute(flow.node.par);
+    execute(Arc::new(flow.node.par));
 }

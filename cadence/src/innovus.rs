@@ -11,16 +11,16 @@ use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
 use rust_decimal::Decimal;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Defines the Innovus place and route step subflow
 #[derive(Debug)]
 pub struct InnovusStep {
     pub work_dir: PathBuf,
     pub module: String,
-    pub substeps: Mutex<Vec<Substep>>,
+    pub substeps: Vec<Substep>,
     pub pinned: bool,
-    pub start_checkpoint: Mutex<Option<Checkpoint>>,
+    pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
 }
 
@@ -37,27 +37,22 @@ impl InnovusStep {
         InnovusStep {
             work_dir: dir,
             module: modul,
-            substeps: Mutex::new(substeps),
+            substeps,
             pinned,
-            start_checkpoint: Mutex::new(None),
+            start_checkpoint: None,
             dependencies: deps,
         }
     }
 
     /// Generates the tcl file for place and route
-    fn make_tcl_file(
-        &self,
-        path: &PathBuf,
-        steps: Vec<Substep>,
-        checkpoint: Option<Checkpoint>,
-    ) -> io::Result<()> {
+    fn make_tcl_file(&self, path: &PathBuf, substeps: Vec<Substep>) -> io::Result<()> {
         let mut tcl_file = File::create(path).expect("failed to create par.tcl file");
 
-        if let Some(checkpoint) = checkpoint {
+        if let Some(checkpoint) = &self.start_checkpoint {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
         }
 
-        for step in steps.into_iter() {
+        for step in substeps.into_iter() {
             println!("\n--> Parsing step: {}\n", step.name);
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
@@ -73,10 +68,8 @@ impl InnovusStep {
     }
 
     /// Inserts a custom command as a substep in the par flow
-    pub fn add_hook(&self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
-        let mut substeps = self.substeps.lock().unwrap();
-
-        substeps.insert(
+    pub fn add_hook(&mut self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
+        self.substeps.insert(
             index,
             Substep {
                 name: name.to_string(),
@@ -88,18 +81,18 @@ impl InnovusStep {
 
     /// Replaces a specfic substep in the par flow with a new command
     pub fn replace_hook(
-        &self,
+        &mut self,
         new_substep_name: &str,
         tcl: &str,
         replaced_substep_name: &str,
         checkpointed: bool,
     ) {
-        let mut substeps = self.substeps.lock().unwrap();
-        if let Some(index) = substeps
+        if let Some(index) = self
+            .substeps
             .iter()
             .position(|s| s.name == replaced_substep_name)
         {
-            substeps[index] = Substep {
+            self.substeps[index] = Substep {
                 name: new_substep_name.to_string(),
                 command: tcl.to_string(),
                 checkpoint: checkpointed,
@@ -120,8 +113,8 @@ impl InnovusStep {
     }
 
     /// Assigns the starting checkpoint of the par flow
-    pub fn add_checkpoint(&self, name: String, checkpoint_path: PathBuf) {
-        *self.start_checkpoint.lock().unwrap() = Some(Checkpoint {
+    pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
+        self.start_checkpoint = Some(Checkpoint {
             name,
             path: checkpoint_path,
         });
@@ -131,18 +124,17 @@ impl InnovusStep {
 impl Step for InnovusStep {
     fn execute(&self) {
         let tcl_path = self.work_dir.clone().join("par.tcl");
-
-        let mut substeps = self.substeps.lock().unwrap().clone();
-        let start_checkpoint = self.start_checkpoint.lock().unwrap().clone();
-        if let Some(checkpoint) = &start_checkpoint {
-            let slice_index = substeps
+        let mut substeps = self.substeps.clone();
+        if let Some(checkpoint) = &self.start_checkpoint {
+            let slice_index = self
+                .substeps
                 .iter()
                 .position(|s| s.name == checkpoint.name)
                 .expect("Failed to find checkpoint name");
-            substeps = substeps[(slice_index + 1)..].to_vec();
+            substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
 
-        self.make_tcl_file(&tcl_path, substeps, start_checkpoint)
+        self.make_tcl_file(&tcl_path, substeps)
             .expect("Failed to create par.tcl");
 
         let status = Command::new("innovus")

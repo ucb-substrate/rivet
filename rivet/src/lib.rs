@@ -1,7 +1,7 @@
 use by_address::ByAddress;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 pub mod bash;
 
 #[derive(Debug)]
@@ -80,5 +80,36 @@ pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)
     Dag {
         node: new_node,
         directed_edges: new_edges,
+    }
+}
+
+#[derive(Debug)]
+pub struct StepRef<T: Step> {
+    reference: Arc<Mutex<T>>,
+}
+
+impl<T: Step> StepRef<T> {
+    pub fn new(data: T) -> Self {
+        Self {
+            reference: Arc::new(Mutex::new(data)),
+        }
+    }
+
+    pub fn get(&self) -> MutexGuard<'_, T> {
+        self.reference.lock().unwrap()
+    }
+}
+
+impl<T: Step> Step for StepRef<T> {
+    fn execute(&self) {
+        self.get().execute();
+    }
+
+    fn deps(&self) -> Vec<Arc<dyn Step>> {
+        self.get().deps()
+    }
+
+    fn pinned(&self) -> bool {
+        self.get().pinned()
     }
 }

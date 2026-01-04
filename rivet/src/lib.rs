@@ -85,18 +85,18 @@ pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)
 
 #[derive(Debug, Clone)]
 pub struct StepRef<T: Step> {
-    reference: Arc<Mutex<T>>,
+    inner: Arc<Mutex<T>>,
 }
 
 impl<T: Step> StepRef<T> {
     pub fn new(data: T) -> Self {
         Self {
-            reference: Arc::new(Mutex::new(data)),
+            inner: Arc::new(Mutex::new(data)),
         }
     }
 
     pub fn get(&self) -> MutexGuard<'_, T> {
-        self.reference.lock().unwrap()
+        self.inner.lock().unwrap()
     }
 }
 

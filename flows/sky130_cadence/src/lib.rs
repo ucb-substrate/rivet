@@ -158,7 +158,7 @@ pub fn sky130_par(
     netlist: &Path,
     submodules: Vec<SubmoduleInfo>,
     pin_info: &FlatPinInfo,
-    syn_step: Arc<dyn Step>,
+    syn_step: StepRef<GenusStep>,
 ) -> InnovusStep {
     let filler_cells = vec![
         "FILL0".into(),
@@ -314,7 +314,7 @@ pub fn sky130_par(
             ),
         ],
         matches!(pin_info, FlatPinInfo::PinPar(_)),
-        vec![syn_step],
+        vec![Arc::new(syn_step)],
     )
 }
 

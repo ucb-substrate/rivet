@@ -33,7 +33,7 @@ pub fn sky130_connect_nets() -> Substep {
 
 pub fn setup_techlef(working_directory: &Path, lef_file: &PathBuf) -> PathBuf {
     let cache_dir = working_directory.join("tech-sky130-cache");
-    fs::create_dir(&cache_dir).expect("failed to create directory");
+    fs::create_dir_all(&cache_dir).expect("failed to create directory");
 
     let file_stem = lef_file
         .file_stem()

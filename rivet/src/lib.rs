@@ -1,7 +1,8 @@
 use by_address::ByAddress;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
+pub mod bash;
 
 #[derive(Debug)]
 pub struct Dag<F> {
@@ -45,13 +46,14 @@ fn execute_inner(
     if executed.contains_key(&ByAddress(step.clone())) {
         return;
     }
-    for dependency in step.deps() {
-        execute_inner(dependency, executed);
-    }
 
     if step.pinned() {
         executed.insert(ByAddress(step.clone()), Arc::clone(&step));
         return;
+    }
+
+    for dependency in step.deps() {
+        execute_inner(dependency, executed);
     }
 
     step.execute();
@@ -78,5 +80,36 @@ pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)
     Dag {
         node: new_node,
         directed_edges: new_edges,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StepRef<T: Step> {
+    inner: Arc<Mutex<T>>,
+}
+
+impl<T: Step> StepRef<T> {
+    pub fn new(data: T) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(data)),
+        }
+    }
+
+    pub fn get(&self) -> MutexGuard<'_, T> {
+        self.inner.lock().unwrap()
+    }
+}
+
+impl<T: Step> Step for StepRef<T> {
+    fn execute(&self) {
+        self.get().execute();
+    }
+
+    fn deps(&self) -> Vec<Arc<dyn Step>> {
+        self.get().deps()
+    }
+
+    fn pinned(&self) -> bool {
+        self.get().pinned()
     }
 }

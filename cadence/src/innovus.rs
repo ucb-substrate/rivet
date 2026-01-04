@@ -11,14 +11,14 @@ use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
 use rust_decimal::Decimal;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Defines the Innovus place and route step subflow
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InnovusStep {
     pub work_dir: PathBuf,
     pub module: String,
-    pub substeps: Mutex<Vec<Substep>>,
+    pub substeps: Vec<Substep>,
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
@@ -37,7 +37,7 @@ impl InnovusStep {
         InnovusStep {
             work_dir: dir,
             module: modul,
-            substeps: Mutex::new(substeps),
+            substeps,
             pinned,
             start_checkpoint: None,
             dependencies: deps,
@@ -45,21 +45,21 @@ impl InnovusStep {
     }
 
     /// Generates the tcl file for place and route
-    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Substep>) -> io::Result<()> {
+    fn make_tcl_file(&self, path: &PathBuf, substeps: Vec<Substep>) -> io::Result<()> {
         let mut tcl_file = File::create(path).expect("failed to create par.tcl file");
 
-        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
+        if let Some(checkpoint) = &self.start_checkpoint {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
         }
 
-        for step in steps.into_iter() {
+        for step in substeps.into_iter() {
             println!("\n--> Parsing step: {}\n", step.name);
+            writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
-                let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
+                let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
 
                 writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
             }
-            writeln!(tcl_file, "{}", step.command)?;
         }
         writeln!(tcl_file, "exit")?;
 
@@ -68,10 +68,8 @@ impl InnovusStep {
     }
 
     /// Inserts a custom command as a substep in the par flow
-    pub fn add_hook(&self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
-        let mut substeps = self.substeps.lock().unwrap();
-
-        substeps.insert(
+    pub fn add_hook(&mut self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
+        self.substeps.insert(
             index,
             Substep {
                 name: name.to_string(),
@@ -83,18 +81,18 @@ impl InnovusStep {
 
     /// Replaces a specfic substep in the par flow with a new command
     pub fn replace_hook(
-        &self,
+        &mut self,
         new_substep_name: &str,
         tcl: &str,
         replaced_substep_name: &str,
         checkpointed: bool,
     ) {
-        let mut substeps = self.substeps.lock().unwrap();
-        if let Some(index) = substeps
+        if let Some(index) = self
+            .substeps
             .iter()
             .position(|s| s.name == replaced_substep_name)
         {
-            substeps[index] = Substep {
+            self.substeps[index] = Substep {
                 name: new_substep_name.to_string(),
                 command: tcl.to_string(),
                 checkpoint: checkpointed,
@@ -126,15 +124,14 @@ impl InnovusStep {
 impl Step for InnovusStep {
     fn execute(&self) {
         let tcl_path = self.work_dir.clone().join("par.tcl");
-
-        let mut substeps = self.substeps.lock().unwrap().clone();
-
-        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
-            let slice_index = substeps
+        let mut substeps = self.substeps.clone();
+        if let Some(checkpoint) = &self.start_checkpoint {
+            let slice_index = self
+                .substeps
                 .iter()
                 .position(|s| s.name == checkpoint.name)
                 .expect("Failed to find checkpoint name");
-            substeps = substeps[slice_index..].to_vec();
+            substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
 
         self.make_tcl_file(&tcl_path, substeps)

@@ -10,14 +10,14 @@ use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc, sd
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Defines the Genus synthesis step subflow
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenusStep {
     pub work_dir: PathBuf,
     pub module: String,
-    pub substeps: Mutex<Vec<Substep>>,
+    pub substeps: Vec<Substep>,
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
@@ -36,7 +36,7 @@ impl GenusStep {
         GenusStep {
             work_dir: dir,
             module: modul,
-            substeps: Mutex::new(steps),
+            substeps: steps,
             pinned,
             start_checkpoint: None,
             dependencies: deps,
@@ -56,7 +56,7 @@ impl GenusStep {
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
-        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
+        if let Some(checkpoint) = &self.start_checkpoint {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
         }
 
@@ -77,9 +77,8 @@ impl GenusStep {
     }
 
     /// Inserts a custom command as a substep in the synthesis flow
-    pub fn add_hook(&self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
-        let mut substeps = self.substeps.lock().unwrap();
-        substeps.insert(
+    pub fn add_hook(&mut self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
+        self.substeps.insert(
             index,
             Substep {
                 name: name.to_string(),
@@ -91,18 +90,18 @@ impl GenusStep {
 
     /// Replaces a specfic substep in the synthesis flow with a new command
     pub fn replace_hook(
-        &self,
+        &mut self,
         new_substep_name: &str,
         tcl: &str,
         replaced_substep_name: &str,
         checkpointed: bool,
     ) {
-        let mut substeps = self.substeps.lock().unwrap();
-        if let Some(index) = substeps
+        if let Some(index) = self
+            .substeps
             .iter()
             .position(|s| s.name == replaced_substep_name)
         {
-            substeps[index] = Substep {
+            self.substeps[index] = Substep {
                 name: new_substep_name.to_string(),
                 command: tcl.to_string(),
                 checkpoint: checkpointed,
@@ -115,7 +114,7 @@ impl GenusStep {
     }
 
     /// Assigns the starting checkpoint of the synthesis flow
-    pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
+    pub fn add_checkpoint(mut self, name: String, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
             name,
             path: checkpoint_path,
@@ -126,15 +125,14 @@ impl GenusStep {
 impl Step for GenusStep {
     fn execute(&self) {
         let tcl_path = self.work_dir.clone().join("syn.tcl");
-
-        let mut substeps = self.substeps.lock().unwrap().clone();
-
-        if let Some(checkpoint) = self.start_checkpoint.as_ref() {
-            let slice_index = substeps
+        let mut substeps = self.substeps.clone();
+        if let Some(checkpoint) = &self.start_checkpoint {
+            let slice_index = self
+                .substeps
                 .iter()
                 .position(|s| s.name == checkpoint.name)
                 .expect("Failed to find checkpoint name");
-            substeps = substeps[slice_index..].to_vec();
+            substeps = self.substeps[slice_index..].to_vec();
         }
 
         self.make_tcl_file(&tcl_path, substeps)

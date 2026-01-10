@@ -22,6 +22,7 @@ pub struct InnovusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub dependencies: Vec<Arc<dyn Step>>,
+    pub synthesis: bool,
 }
 
 impl InnovusStep {
@@ -31,6 +32,7 @@ impl InnovusStep {
         substeps: Vec<Substep>,
         pinned: bool,
         deps: Vec<Arc<dyn Step>>,
+        synthesis: bool,
     ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
@@ -41,6 +43,7 @@ impl InnovusStep {
             pinned,
             start_checkpoint: None,
             dependencies: deps,
+            synthesis,
         }
     }
 
@@ -137,14 +140,19 @@ impl Step for InnovusStep {
         self.make_tcl_file(&tcl_path, substeps)
             .expect("Failed to create par.tcl");
 
+        let mut args = vec![
+            "-file",
+            tcl_path.to_str().unwrap(),
+            "-stylus",
+            "-no_gui",
+            "-batch",
+        ];
+        if self.synthesis {
+            args.push("-synthesis");
+        }
+
         let status = Command::new("innovus")
-            .args([
-                "-file",
-                tcl_path.to_str().unwrap(),
-                "-stylus",
-                "-no_gui",
-                "-batch",
-            ])
+            .args(args)
             .current_dir(self.work_dir.clone())
             .status()
             .expect("Failed to execute par.tcl");

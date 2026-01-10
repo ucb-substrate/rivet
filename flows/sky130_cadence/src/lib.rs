@@ -315,6 +315,7 @@ pub fn sky130_par(
         ],
         matches!(pin_info, FlatPinInfo::PinPar(_)),
         vec![Arc::new(syn_step)],
+        false,
     )
 }
 

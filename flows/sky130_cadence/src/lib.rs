@@ -462,7 +462,7 @@ fn sky130_cadence_flat_flow(
         &output_netlist_path,
         all_submodules.clone(),
         &module.pin_info,
-        Arc::new(syn_pointer.clone()),
+        syn_pointer.clone(),
     );
     Sky130FlatFlow {
         module: module.module_name.to_string(),

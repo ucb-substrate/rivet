@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 fn main() {
     let mut flow = sky130_cadence_reference_flow(
-        PathBuf::from("/home/ff/eecs251b/"),
-        PathBuf::from("/scratch/cs199-cbc/rivet/examples/hierarchical/src"),
+        PathBuf::from(env!("SKY130PDK_OS_INSTALL_PATH")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/"),
         Dag {
             node: ModuleInfo {
                 module_name: "fourbitadder".into(),

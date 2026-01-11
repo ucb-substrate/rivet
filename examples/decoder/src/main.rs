@@ -19,15 +19,15 @@ struct CliArgs {
 
 fn main() {
     let flow = sky130_cadence_reference_flow(
-        PathBuf::from("/home/ff/eecs251b/"),
-        PathBuf::from("/scratch/cs199-cbc/rivet/examples/decoder/src"),
+        PathBuf::from(env!("SKY130PDK_OS_INSTALL_PATH")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/"),
         Dag {
             node: ModuleInfo {
                 module_name: "decoder".into(),
                 pin_info: FlatPinInfo::None,
-                verilog_paths: vec![PathBuf::from(
-                    "/scratch/cs199-cbc/rivet/examples/decoder/src/decoder.v",
-                )],
+                verilog_paths: vec![
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/decoder.v"),
+                ],
                 placement_constraints: PlacementConstraints {
                     top: TopLevelConstraint {
                         width: 30.0,

@@ -2,7 +2,6 @@ use cadence::innovus::{HardMacroConstraint, PlacementConstraints, TopLevelConstr
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 fn main() {
     let mut flow = sky130_cadence_reference_flow(
@@ -11,10 +10,7 @@ fn main() {
         Dag {
             node: ModuleInfo {
                 module_name: "fourbitadder".into(),
-                pin_info: FlatPinInfo::PinSyn(
-                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("src/build-fourbitadder/syn-rundir"),
-                ),
+                pin_info: FlatPinInfo::None,
                 verilog_paths: vec![
                     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/fourbitadder.v"),
                 ],
@@ -221,6 +217,5 @@ fn main() {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("src/build-fourbitadder/par-rundir/post_sky130_innovus_settings"),
         );
-
     execute(flow.node.par);
 }

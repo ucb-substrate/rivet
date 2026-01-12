@@ -41,7 +41,6 @@ pub fn setup_techlef(working_directory: &Path, lef_file: &PathBuf) -> PathBuf {
         .expect("failed to create file stem");
 
     let tlef_path = cache_dir.join(format!("{}.tlef", file_stem));
-
     let reader = BufReader::new(File::open(lef_file).expect("failed to read file"));
     let mut techlef = BufWriter::new(File::create(&tlef_path).expect("failed to write to file"));
 

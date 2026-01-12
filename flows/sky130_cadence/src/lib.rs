@@ -104,14 +104,14 @@ pub fn sky130_syn(
         work_dir,
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
-
     let dir_submodules: Vec<SubmoduleInfo> = dep_info
         .iter()
-        .map(|(module, flow)| SubmoduleInfo {
-            name: module.module_name.clone(),
-            verilog_paths: module.verilog_paths.clone(),
-            ilm: flow.par.get().ilm_path().to_path_buf(),
-            lef: flow.par.get().lef_path().to_path_buf(),
+        .map(|(module, _)| {
+            submodules
+                .iter()
+                .find(|s| s.name == module.module_name)
+                .cloned()
+                .expect("Submodule info should already be present in submodules list")
         })
         .collect();
 
@@ -427,11 +427,14 @@ fn sky130_cadence_flat_flow(
 ) -> Sky130FlatFlow {
     let mut all_submodules: Vec<SubmoduleInfo> = Vec::new();
     for (child_module, child_flow) in dep_info {
+        let ilm = child_flow.par.get().ilm_path().to_path_buf();
+        let lef = child_flow.par.get().lef_path().to_path_buf();
+
         all_submodules.push(SubmoduleInfo {
             name: child_module.module_name.clone(),
             verilog_paths: child_module.verilog_paths.clone(),
-            ilm: child_flow.par.get().ilm_path().to_path_buf(),
-            lef: child_flow.par.get().lef_path().to_path_buf(),
+            ilm,
+            lef,
         });
         all_submodules.extend(child_flow.submodules.clone());
     }

@@ -222,5 +222,5 @@ fn main() {
                 .join("src/build-fourbitadder/par-rundir/post_sky130_innovus_settings"),
         );
 
-    execute(Arc::new(flow.node.par));
+    execute(flow.node.par);
 }

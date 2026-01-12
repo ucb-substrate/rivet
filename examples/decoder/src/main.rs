@@ -44,5 +44,5 @@ fn main() {
             directed_edges: vec![],
         },
     );
-    execute(Arc::new(flow.node.par));
+    execute(flow.node.par);
 }

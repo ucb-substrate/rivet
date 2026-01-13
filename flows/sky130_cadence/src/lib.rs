@@ -35,8 +35,8 @@ pub enum FlatPinInfo {
 
 pub struct Sky130FlatFlow {
     pub module: String,
-    pub syn: StepRef<GenusStep>,
-    pub par: StepRef<InnovusStep>,
+    pub syn: Arc<StepRef<GenusStep>>,
+    pub par: Arc<StepRef<InnovusStep>>,
     pub submodules: Vec<SubmoduleInfo>,
 }
 
@@ -104,20 +104,20 @@ pub fn sky130_syn(
         work_dir,
         &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
     );
-
     let dir_submodules: Vec<SubmoduleInfo> = dep_info
         .iter()
-        .map(|(module, flow)| SubmoduleInfo {
-            name: module.module_name.clone(),
-            verilog_paths: module.verilog_paths.clone(),
-            ilm: flow.par.get().ilm_path().to_path_buf(),
-            lef: flow.par.get().lef_path().to_path_buf(),
+        .map(|(module, _)| {
+            submodules
+                .iter()
+                .find(|s| s.name == module.module_name)
+                .cloned()
+                .expect("Submodule info should already be present in submodules list")
         })
         .collect();
 
     let deps: Vec<Arc<dyn Step>> = dep_info
         .iter()
-        .map(|(_module, flow)| Arc::new(flow.par.clone()) as Arc<dyn Step>)
+        .map(|(_module, flow)| flow.par.clone() as Arc<dyn Step>)
         .collect();
 
     let is_hierarchical = !submodules.is_empty();
@@ -158,7 +158,7 @@ pub fn sky130_par(
     netlist: &Path,
     submodules: Vec<SubmoduleInfo>,
     pin_info: &FlatPinInfo,
-    syn_step: StepRef<GenusStep>,
+    syn_step: Arc<StepRef<GenusStep>>,
 ) -> InnovusStep {
     let filler_cells = vec![
         "FILL0".into(),
@@ -314,7 +314,7 @@ pub fn sky130_par(
             ),
         ],
         matches!(pin_info, FlatPinInfo::PinPar(_)),
-        vec![Arc::new(syn_step)],
+        vec![syn_step],
         false,
     )
 }
@@ -427,11 +427,14 @@ fn sky130_cadence_flat_flow(
 ) -> Sky130FlatFlow {
     let mut all_submodules: Vec<SubmoduleInfo> = Vec::new();
     for (child_module, child_flow) in dep_info {
+        let ilm = child_flow.par.get().ilm_path().to_path_buf();
+        let lef = child_flow.par.get().lef_path().to_path_buf();
+
         all_submodules.push(SubmoduleInfo {
             name: child_module.module_name.clone(),
             verilog_paths: child_module.verilog_paths.clone(),
-            ilm: child_flow.par.get().ilm_path().to_path_buf(),
-            lef: child_flow.par.get().lef_path().to_path_buf(),
+            ilm,
+            lef,
         });
         all_submodules.extend(child_flow.submodules.clone());
     }
@@ -446,7 +449,7 @@ fn sky130_cadence_flat_flow(
         all_submodules.clone(),
         &module.pin_info,
     );
-    let syn_pointer = StepRef::new(syn);
+    let syn_pointer = Arc::new(StepRef::new(syn));
     let par_work_dir = work_dir.join("par-rundir");
     let output_netlist_path = if !dep_info.is_empty() {
         syn_work_dir.join(format!("{}_noilm.mapped.v", module.module_name))
@@ -465,10 +468,11 @@ fn sky130_cadence_flat_flow(
         &module.pin_info,
         syn_pointer.clone(),
     );
+    let par_pointer = Arc::new(StepRef::new(par));
     Sky130FlatFlow {
         module: module.module_name.to_string(),
         syn: syn_pointer,
-        par: StepRef::new(par),
+        par: par_pointer,
         submodules: all_submodules.clone(),
     }
 }

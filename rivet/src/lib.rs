@@ -43,12 +43,13 @@ fn execute_inner(
     step: Arc<dyn Step>,
     executed: &mut HashMap<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>,
 ) {
-    if executed.contains_key(&ByAddress(step.clone())) {
+    let step_addr = ByAddress(step.clone());
+    if executed.contains_key(&step_addr) {
         return;
     }
 
     if step.pinned() {
-        executed.insert(ByAddress(step.clone()), Arc::clone(&step));
+        executed.insert(step_addr, Arc::clone(&step));
         return;
     }
 
@@ -99,7 +100,6 @@ impl<T: Step> StepRef<T> {
         self.inner.lock().unwrap()
     }
 }
-
 impl<T: Step> Step for StepRef<T> {
     fn execute(&self) {
         self.get().execute();

@@ -34,7 +34,9 @@ pub trait Step: Debug {
     fn execute(&self);
 }
 
-pub fn execute(target: Arc<dyn Step>) {
+pub fn execute(target: impl Step + 'static) {
+    let target = Arc::new(target) as Arc<dyn Step>;
+
     let mut executed = HashMap::<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>::new();
     execute_inner(target, &mut executed);
 }

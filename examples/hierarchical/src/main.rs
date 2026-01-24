@@ -27,8 +27,6 @@ fn main() {
                         HardMacroConstraint {
                             x: 10.0,
                             y: 10.0,
-                            width: 100.0,
-                            height: 100.0,
                             orientation: "r0".into(),
                             top_layer: "met3".into(),
                             stackup: vec![
@@ -48,8 +46,6 @@ fn main() {
                         HardMacroConstraint {
                             x: 10.0,
                             y: 150.0,
-                            width: 100.0,
-                            height: 100.0,
                             orientation: "r0".into(),
                             top_layer: "met3".into(),
                             stackup: vec![
@@ -69,8 +65,6 @@ fn main() {
                         HardMacroConstraint {
                             x: 150.0,
                             y: 10.0,
-                            width: 100.0,
-                            height: 100.0,
                             orientation: "r0".into(),
                             top_layer: "met3".into(),
                             stackup: vec![
@@ -90,8 +84,6 @@ fn main() {
                         HardMacroConstraint {
                             x: 150.0,
                             y: 150.0,
-                            width: 100.0,
-                            height: 100.0,
                             orientation: "r0".into(),
                             top_layer: "met3".into(),
                             stackup: vec![
@@ -132,8 +124,6 @@ fn main() {
                             HardMacroConstraint {
                                 x: 10.0,
                                 y: 10.0,
-                                width: 30.0,
-                                height: 30.0,
                                 orientation: "r0".into(),
                                 top_layer: "met3".into(),
                                 stackup: vec![
@@ -153,8 +143,6 @@ fn main() {
                             HardMacroConstraint {
                                 x: 50.0,
                                 y: 10.0,
-                                width: 30.0,
-                                height: 30.0,
                                 orientation: "r0".into(),
                                 top_layer: "met3".into(),
                                 stackup: vec![

@@ -716,7 +716,7 @@ pub fn generate_floorplan_tcl(placement_constraints: PlacementConstraints) -> St
             }
             writeln!(
                 floorplan,
-                "create_route_halo -bottom_layer {b} -space {s} -top_layer {t} -inst {inst}"
+                "create_route_halo -bottom_layer {b} -space {s} -top_layer {layer} -inst {inst}"
             )
             .unwrap();
             writeln!(

@@ -790,8 +790,6 @@ pub struct TopLevelConstraint {
 pub struct HardMacroConstraint {
     pub x: f64,
     pub y: f64,
-    pub width: f64,
-    pub height: f64,
     pub stackup: Vec<String>,
     pub spacing: f64,
     pub par_blockage_ratio: f64,

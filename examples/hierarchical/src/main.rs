@@ -1,11 +1,12 @@
-use cadence::innovus::{HardMacroConstraint, PlacementConstraints, TopLevelConstraint};
+use cadence::innovus::{Floorplan, HardMacroConstraint, TopLevelConstraint};
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
+use std::error::Error;
 use std::path::PathBuf;
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let mut flow = sky130_cadence_reference_flow(
-        PathBuf::from(env!("SKY130PDK_OS_INSTALL_PATH")),
+        PathBuf::from(std::env::var("SKY130PDK_OS_INSTALL_PATH")?),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/"),
         Dag {
             node: ModuleInfo {
@@ -14,7 +15,7 @@ fn main() {
                 verilog_paths: vec![
                     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/fourbitadder.v"),
                 ],
-                placement_constraints: PlacementConstraints {
+                placement_constraints: Floorplan {
                     top: TopLevelConstraint {
                         width: 300.0,
                         height: 300.0,
@@ -111,7 +112,7 @@ fn main() {
                     verilog_paths: vec![
                         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/fulladder.v"),
                     ],
-                    placement_constraints: PlacementConstraints {
+                    placement_constraints: Floorplan {
                         top: TopLevelConstraint {
                             width: 100.0,
                             height: 100.0,
@@ -171,7 +172,7 @@ fn main() {
                         verilog_paths: vec![
                             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/halfadder.v"),
                         ],
-                        placement_constraints: PlacementConstraints {
+                        placement_constraints: Floorplan {
                             top: TopLevelConstraint {
                                 width: 30.0,
                                 height: 30.0,
@@ -197,4 +198,5 @@ fn main() {
         .replace_hook("syn_opt", "syn_opt", "syn_map", false);
 
     execute(flow.node.par);
+    Ok(())
 }

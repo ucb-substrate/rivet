@@ -1,7 +1,8 @@
-use cadence::innovus::{PlacementConstraints, TopLevelConstraint};
+use cadence::innovus::{Floorplan, TopLevelConstraint};
 use clap::Parser;
 use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
+use std::error::Error;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
@@ -16,9 +17,9 @@ struct CliArgs {
     config: PathBuf,
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let flow = sky130_cadence_reference_flow(
-        PathBuf::from(env!("SKY130PDK_OS_INSTALL_PATH")),
+        PathBuf::from(std::env::var("SKY130PDK_OS_INSTALL_PATH")?),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/"),
         Dag {
             node: ModuleInfo {
@@ -27,7 +28,7 @@ fn main() {
                 verilog_paths: vec![
                     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/decoder.v"),
                 ],
-                placement_constraints: PlacementConstraints {
+                placement_constraints: Floorplan {
                     top: TopLevelConstraint {
                         width: 30.0,
                         height: 30.0,
@@ -44,4 +45,5 @@ fn main() {
         },
     );
     execute(flow.node.par);
+    Ok(())
 }

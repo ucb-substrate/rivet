@@ -294,14 +294,10 @@ pub fn innovus_settings(bottom_routing: i64, top_routing: i64) -> Substep {
     }
 }
 
-pub fn floorplan_design(
-    work_dir: &Path,
-    power_spec: &String,
-    placement_constraints: PlacementConstraints,
-) -> Substep {
+pub fn floorplan_design(work_dir: &Path, power_spec: &String, floorplan: Floorplan) -> Substep {
     let floorplan_tcl_path = work_dir.join("floorplan.tcl");
     let mut floorplan_tcl_file = File::create(&floorplan_tcl_path).expect("failed to create file");
-    let floorplan_tcl = generate_floorplan_tcl(placement_constraints);
+    let floorplan_tcl = generate_floorplan_tcl(floorplan);
     writeln!(floorplan_tcl_file, "{floorplan_tcl}").unwrap();
     let floorplan_path_string = floorplan_tcl_path.display();
 
@@ -665,11 +661,11 @@ pub fn write_ilm(
     }
 }
 
-pub fn generate_floorplan_tcl(placement_constraints: PlacementConstraints) -> String {
-    let mut floorplan = String::new();
-    let toplevel = placement_constraints.top;
-    let macros = placement_constraints.hard_macros;
-    let obstructions = placement_constraints.obstructs;
+pub fn generate_floorplan_tcl(floorplan: Floorplan) -> String {
+    let mut command = String::new();
+    let toplevel = floorplan.top;
+    let macros = floorplan.hard_macros;
+    let obstructions = floorplan.obstructs;
 
     let w = toplevel.width.to_string();
     let h = toplevel.height.to_string();
@@ -678,7 +674,7 @@ pub fn generate_floorplan_tcl(placement_constraints: PlacementConstraints) -> St
     let r = toplevel.right.to_string();
     let t = toplevel.top.to_string();
     writeln!(
-        floorplan,
+        command,
         "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size {{ {w} {h} {l} {b} {r} {t}}}"
     ).unwrap();
 
@@ -697,12 +693,12 @@ pub fn generate_floorplan_tcl(placement_constraints: PlacementConstraints) -> St
             if constraint.create_physical {
                 let cell = constraint.master.clone().to_string();
                 writeln!(
-                    floorplan,
+                    command,
                     "create_inst -cell {cell} -inst {inst} -location {{{x} {y}}} -orient {orientation} -physical -status fixed"
                 ).unwrap();
             }
 
-            writeln!(floorplan, "place_inst {inst} {x} {y} {orientation} {fixed}").unwrap();
+            writeln!(command, "place_inst {inst} {x} {y} {orientation} {fixed}").unwrap();
             let mut layers = String::new();
             let layer = constraint.top_layer;
             let b = constraint.stackup[1].clone();
@@ -714,21 +710,21 @@ pub fn generate_floorplan_tcl(placement_constraints: PlacementConstraints) -> St
                 layers = constraint.stackup.clone()[..index].to_vec().join(" ");
             }
             writeln!(
-                floorplan,
+                command,
                 "create_route_halo -bottom_layer {b} -space {s} -top_layer {layer} -inst {inst}"
             )
             .unwrap();
             writeln!(
-                floorplan,
+                command,
                 "create_place_halo -insts {inst} -halo_deltas {{{p} {p} {p} {p}}} -snap_to_site"
             )
             .unwrap();
             writeln!(
-                    floorplan,
+                    command,
                     "set pg_blockage_shape [get_db [get_db hinsts {inst}][get_db insts {inst}] .place_halo_polygon]"
                 ).unwrap();
             writeln!(
-                floorplan,
+                command,
                 "create_route_blockage -pg_nets -layers {{{layers}}} -polygon $pg_blockage_shape"
             )
             .unwrap();
@@ -751,27 +747,27 @@ pub fn generate_floorplan_tcl(placement_constraints: PlacementConstraints) -> St
 
             if constraint.obs_types.contains(&"Place".to_string()) {
                 writeln!(
-                    floorplan,
+                    command,
                     "create_place_blockage -name {inst}_place -area {{{x1} {y1} {x2} {y2}}}"
                 )
                 .unwrap();
             }
             if constraint.obs_types.contains(&"Route".to_string()) {
                 writeln!(
-                    floorplan,
+                    command,
                     "create_route_blockage -name {inst}_route -except_pg_nets -{layers} -spacing 0 -area {{{x1} {y1} {x2} {y2}}}"
                 ).unwrap();
             }
             if constraint.obs_types.contains(&"Power".to_string()) {
                 writeln!(
-                    floorplan,
+                    command,
                     "create_route_blockage -name {inst}_power -pg_nets -{layers} -area {{{x1} {y1} {x2} {y2}}}"
                 ).unwrap();
             }
         }
     }
 
-    floorplan
+    command
 }
 
 /// left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
@@ -811,7 +807,7 @@ pub struct ObstructionConstraint {
 }
 
 #[derive(Debug, Clone)]
-pub struct PlacementConstraints {
+pub struct Floorplan {
     pub top: TopLevelConstraint,
     pub hard_macros: Option<Vec<HardMacroConstraint>>,
     pub obstructs: Option<Vec<ObstructionConstraint>>,

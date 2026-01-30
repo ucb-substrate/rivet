@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         right: 0.0,
                         top: 0.0,
                     },
-                    hard_macros: Some(vec![
+                    hard_macros: vec![
                         HardMacroConstraint {
                             x: 10.0,
                             y: 10.0,
@@ -101,8 +101,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             name: "fa_4".into(),
                             master: "fulladder".into(),
                         },
-                    ]),
-                    obstructs: None,
+                    ],
+                    obstructs: vec![],
                 },
             },
             directed_edges: vec![Dag {
@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             right: 0.0,
                             top: 0.0,
                         },
-                        hard_macros: Some(vec![
+                        hard_macros: vec![
                             HardMacroConstraint {
                                 x: 10.0,
                                 y: 10.0,
@@ -160,8 +160,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 name: "ha2".into(),
                                 master: "fulladder".into(),
                             },
-                        ]),
-                        obstructs: None,
+                        ],
+                        obstructs: vec![],
                     },
                 },
 
@@ -181,8 +181,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 right: 0.0,
                                 top: 0.0,
                             },
-                            hard_macros: None,
-                            obstructs: None,
+                            hard_macros: vec![],
+                            obstructs: vec![],
                         },
                     },
                     directed_edges: vec![],

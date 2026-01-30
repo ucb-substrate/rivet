@@ -706,9 +706,8 @@ pub fn generate_floorplan_tcl(placement_constraints: PlacementConstraints) -> St
             let mut layers = String::new();
             let layer = constraint.top_layer;
             let b = constraint.stackup[1].clone();
-            let s = constraint.spacing;
-            let r = constraint.par_blockage_ratio;
-            let p = (s * r).round();
+            let s = constraint.route_halo_size;
+            let p = constraint.place_halo_size;
             let i = constraint.stackup.iter().position(|x| x == &layer);
 
             if let Some(index) = i {
@@ -791,8 +790,8 @@ pub struct HardMacroConstraint {
     pub x: f64,
     pub y: f64,
     pub stackup: Vec<String>,
-    pub spacing: f64,
-    pub par_blockage_ratio: f64,
+    pub route_halo_size: f64,
+    pub place_halo_size: f64,
     pub top_layer: String,
     pub orientation: String,
     pub create_physical: bool,

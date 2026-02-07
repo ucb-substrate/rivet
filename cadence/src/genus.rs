@@ -20,6 +20,7 @@ pub struct GenusStep {
     pub substeps: Vec<Substep>,
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
+    pub endpoint: Option<String>,
     pub dependencies: Vec<Arc<dyn Step>>,
 }
 
@@ -39,6 +40,7 @@ impl GenusStep {
             substeps: steps,
             pinned,
             start_checkpoint: None,
+            endpoint: None,
             dependencies: deps,
         }
     }
@@ -133,6 +135,13 @@ impl Step for GenusStep {
                 .position(|s| s.name == checkpoint.name)
                 .expect("Failed to find checkpoint name");
             substeps = self.substeps[(slice_index + 1)..].to_vec();
+        }
+        if let Some(endpoint_name) = &self.endpoint {
+            let slice_index = substeps
+                .iter()
+                .position(|s| s.name == *endpoint_name)
+                .expect("Failed to find endpoint name");
+            substeps = substeps[..=slice_index].to_vec();
         }
 
         self.make_tcl_file(&tcl_path, substeps)

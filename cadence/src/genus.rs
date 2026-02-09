@@ -46,13 +46,15 @@ impl GenusStep {
     }
 
     /// Generates the tcl file for synthesis
-    fn make_tcl_file(&self, path: &PathBuf, steps: Vec<Substep>) -> io::Result<()> {
+    fn make_tcl_file(&self, path: &Path, steps: Vec<Substep>) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("failed to create syn.tcl parent directory");
         }
 
-        let mut tcl_file = File::create(path).expect("failed to create syn.tcl file");
+        let mut tcl_file =
+            File::create(path.join("syn.tcl")).expect("failed to create syn.tcl file");
 
+        File::create(path.join("rivet_error.log")).expect("failed to create par.tcl file");
         writeln!(
             tcl_file,
             "set_db super_thread_debug_directory super_thread_debug"
@@ -69,7 +71,11 @@ impl GenusStep {
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
 
-                writeln!(tcl_file, "write_db -to_file {}", checkpoint_file.display())?;
+                writeln!(
+                    tcl_file,
+                    "write_db -no_wait rivet_error.log -to_file {}",
+                    checkpoint_file.display()
+                )?;
             }
         }
         writeln!(tcl_file, "quit")?;
@@ -126,7 +132,6 @@ impl GenusStep {
 
 impl Step for GenusStep {
     fn execute(&self) {
-        let tcl_path = self.work_dir.clone().join("syn.tcl");
         let mut substeps = self.substeps.clone();
         if let Some(checkpoint) = &self.start_checkpoint {
             let slice_index = self
@@ -144,11 +149,16 @@ impl Step for GenusStep {
             substeps = substeps[..=slice_index].to_vec();
         }
 
-        self.make_tcl_file(&tcl_path, substeps)
+        self.make_tcl_file(&self.work_dir, substeps)
             .expect("Failed to create syn.tcl");
 
         let status = Command::new("genus")
-            .args(["-f", tcl_path.to_str().unwrap(), "-no_gui", "-batch"])
+            .args([
+                "-f",
+                self.work_dir.join("syn.tcl").to_str().unwrap(),
+                "-no_gui",
+                "-batch",
+            ])
             .current_dir(self.work_dir.clone())
             .status()
             .expect("Failed to execute syn.tcl");

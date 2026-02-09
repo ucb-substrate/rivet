@@ -50,9 +50,11 @@ impl InnovusStep {
     }
 
     /// Generates the tcl file for place and route
-    fn make_tcl_file(&self, path: &PathBuf, substeps: Vec<Substep>) -> io::Result<()> {
-        let mut tcl_file = File::create(path).expect("failed to create par.tcl file");
+    fn make_tcl_file(&self, path: &Path, substeps: Vec<Substep>) -> io::Result<()> {
+        let mut tcl_file =
+            File::create(path.join("par.tcl")).expect("failed to create par.tcl file");
 
+        File::create(path.join("rivet_error.log")).expect("failed to create par.tcl file");
         if let Some(checkpoint) = &self.start_checkpoint {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
         }
@@ -63,7 +65,11 @@ impl InnovusStep {
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
 
-                writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
+                writeln!(
+                    tcl_file,
+                    "write_db -no_wait rivet_error.log {}",
+                    checkpoint_file.display()
+                )?;
             }
         }
         writeln!(tcl_file, "exit")?;
@@ -132,7 +138,6 @@ impl InnovusStep {
 
 impl Step for InnovusStep {
     fn execute(&self) {
-        let tcl_path = self.work_dir.clone().join("par.tcl");
         let mut substeps = self.substeps.clone();
         if let Some(checkpoint) = &self.start_checkpoint {
             let slice_index = self
@@ -150,12 +155,14 @@ impl Step for InnovusStep {
             substeps = substeps[..=slice_index].to_vec();
         }
 
-        self.make_tcl_file(&tcl_path, substeps)
+        self.make_tcl_file(&self.work_dir, substeps)
             .expect("Failed to create par.tcl");
+
+        let tcl_file = self.work_dir.join("par.tcl");
 
         let mut args = vec![
             "-file",
-            tcl_path.to_str().unwrap(),
+            tcl_file.to_str().unwrap(),
             "-stylus",
             "-no_gui",
             "-batch",

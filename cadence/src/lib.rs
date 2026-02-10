@@ -24,6 +24,7 @@ pub struct Checkpoint {
 pub struct SubmoduleInfo {
     pub name: String,
     pub verilog_paths: Vec<PathBuf>,
+    pub gds: PathBuf,
     pub ilm: PathBuf,
     pub lef: PathBuf,
 }

@@ -123,6 +123,10 @@ impl InnovusStep {
         self.work_dir.join(format!("{}.mapped.sdc", self.module))
     }
 
+    pub fn gds_path(&self) -> PathBuf {
+        self.work_dir.join(format!("{}.gds", self.module))
+    }
+
     /// Assigns the starting checkpoint of the par flow
     pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {

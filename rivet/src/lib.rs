@@ -7,7 +7,7 @@ pub mod bash;
 #[derive(Debug)]
 pub struct Dag<F> {
     pub node: F,
-    pub directed_edges: Vec<Dag<F>>,
+    pub directed_edges: Vec<Arc<Dag<F>>>,
 }
 pub trait NamedNode {
     fn name(&self) -> String;
@@ -19,8 +19,10 @@ impl<F: NamedNode> Dag<F> {
             Some(&mut self.node)
         } else {
             for edge in &mut self.directed_edges {
-                if let Some(found) = edge.get_mut(target) {
-                    return Some(found);
+                if let Some(child_dag) = Arc::get_mut(edge) {
+                    if let Some(found) = child_dag.get_mut(target) {
+                        return Some(found);
+                    }
                 }
             }
             None

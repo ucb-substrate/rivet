@@ -3,6 +3,7 @@ use rivet::{Dag, execute};
 use sky130_cadence::{FlatPinInfo, ModuleInfo, sky130_cadence_reference_flow};
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut flow = sky130_cadence_reference_flow(
@@ -105,7 +106,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     obstructs: vec![],
                 },
             },
-            directed_edges: vec![Dag {
+            directed_edges: vec![Arc::new(Dag {
                 node: ModuleInfo {
                     module_name: "fulladder".into(),
                     pin_info: FlatPinInfo::None,
@@ -165,7 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     },
                 },
 
-                directed_edges: vec![Dag {
+                directed_edges: vec![Arc::new(Dag {
                     node: ModuleInfo {
                         module_name: "halfadder".into(),
                         pin_info: FlatPinInfo::None,
@@ -186,8 +187,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         },
                     },
                     directed_edges: vec![],
-                }],
-            }],
+                })],
+            })],
         },
     );
 

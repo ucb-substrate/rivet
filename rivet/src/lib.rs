@@ -67,10 +67,10 @@ fn execute_inner(
 }
 
 pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)>) -> F) -> Dag<F> {
-    let new_edges: Vec<Dag<F>> = dag
+    let new_edges: Vec<Arc<Dag<F>>> = dag
         .directed_edges
         .iter()
-        .map(|edge_dag| hierarchical(edge_dag, flat_flow_gen))
+        .map(|edge_dag| Arc::new(hierarchical(edge_dag, flat_flow_gen))) // Added Arc::new() here
         .collect();
 
     let sub_blocks: Vec<(&M, &F)> = dag

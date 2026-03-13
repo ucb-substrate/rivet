@@ -53,8 +53,12 @@ impl Step for BashStep {
             .expect("Failed to execute BashStep");
 
         if !status.success() {
-            eprintln!("Failed to execute bash command");
-            panic!("Stopped flow");
+            panic!(
+                "BashStep '{}.{}' failed in directory: {}",
+                self.block,
+                self.name,
+                self.work_dir.display()
+            );
         }
     }
 

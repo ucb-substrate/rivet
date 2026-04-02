@@ -111,6 +111,17 @@ impl InnovusStep {
         }
     }
 
+    /// Deletes a specfic substep in the par flow
+    pub fn delete_hook(&mut self, deleted_substep_name: &str) {
+        if let Some(index) = self
+            .substeps
+            .iter()
+            .position(|s| s.name == deleted_substep_name)
+        {
+            self.substeps.remove(index);
+        }
+    }
+
     pub fn ilm_path(&self) -> PathBuf {
         self.work_dir.join(format!("{}ILMDir", self.module))
     }

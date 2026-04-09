@@ -192,7 +192,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     );
 
-    flow.get_mut(&"fourbitadder".to_string())
+    flow.get_mut(&"fourbitadder")
         .unwrap()
         .syn
         .get()

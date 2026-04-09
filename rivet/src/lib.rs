@@ -14,8 +14,8 @@ pub trait NamedNode {
 }
 
 impl<F: NamedNode> Dag<F> {
-    pub fn get_mut(&mut self, target: &String) -> Option<&mut F> {
-        if &self.node.name() == target {
+    pub fn get_mut(&mut self, target: &str) -> Option<&mut F> {
+        if self.node.name() == target {
             Some(&mut self.node)
         } else {
             for edge in &mut self.directed_edges {

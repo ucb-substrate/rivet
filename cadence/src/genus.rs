@@ -85,14 +85,15 @@ impl GenusStep {
     }
 
     /// Inserts a custom command as a substep in the synthesis flow
-    pub fn add_hook(&mut self, name: &str, tcl: &str, index: usize, checkpointed: bool) {
-        self.substeps.insert(
-            index,
-            Substep {
-                name: name.to_string(),
-                command: tcl.to_string(),
-                checkpoint: checkpointed,
-            },
+    pub fn add_hook(&mut self, name: &str, tcl: &str, after_substep: &str, checkpointed: bool) {
+        if let Some(&index) = self.substep_index.get(after_substep_name) {
+            self.substeps.insert(
+                index + 1,
+                Substep {
+                    name: name.to_string(),
+                    command: tcl.to_string(),
+                    checkpoint: checkpointed,
+                },
         );
     }
 

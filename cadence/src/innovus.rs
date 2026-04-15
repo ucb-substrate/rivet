@@ -140,14 +140,14 @@ impl InnovusStep {
     }
 
     /// Assigns the starting checkpoint of the par flow
-    pub fn add_checkpoint(&mut self, name: String, checkpoint_path: PathBuf) {
+    pub fn add_checkpoint(&mut self, name: &str, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
             name,
             path: checkpoint_path,
         });
     }
 
-    pub fn add_endpoint(&mut self, name: String) {
+    pub fn add_endpoint(&mut self, name: &str) {
         self.endpoint = Some(name);
     }
 }

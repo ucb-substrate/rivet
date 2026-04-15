@@ -86,7 +86,7 @@ impl GenusStep {
 
     /// Inserts a custom command as a substep in the synthesis flow
     pub fn add_hook(&mut self, name: &str, tcl: &str, after_substep: &str, checkpointed: bool) {
-        if let Some(&index) = self.substep_index.get(after_substep_name) {
+        if let Some(index) = self.substeps.iter().position(|s| s.name == after_substep) {
             self.substeps.insert(
                 index + 1,
                 Substep {
@@ -94,7 +94,8 @@ impl GenusStep {
                     command: tcl.to_string(),
                     checkpoint: checkpointed,
                 },
-        );
+            );
+        }
     }
 
     /// Replaces a specfic substep in the synthesis flow with a new command
@@ -136,13 +137,13 @@ impl GenusStep {
     /// Assigns the starting checkpoint of the synthesis flow
     pub fn add_checkpoint(mut self, name: &str, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
-            name,
+            name: name.to_string(),
             path: checkpoint_path,
         });
     }
 
     pub fn add_endpoint(&mut self, name: &str) {
-        self.endpoint = Some(name);
+        self.endpoint = Some(name.to_string());
     }
 }
 

@@ -4,16 +4,18 @@ use cadence::genus::{
 };
 use cadence::innovus::{
     Floorplan, InnovusStep, Layer, PinAssignment, add_fillers, floorplan_design, innovus_settings,
-    opt_design, par_init_design, par_read_design_files, par_write_design, place_opt_design,
+    opt_design, par_init_design, par_read_design_files, place_opt_design,
     place_pins, power_straps, route_design, set_default_process, write_ilm, write_regs,
 };
 use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep};
 use indoc::formatdoc;
+use rivet::bash::BashStep;
 use rivet::{Dag, NamedNode, Step, StepRef, hierarchical};
 use sky130::{setup_techlef, sky130_connect_nets};
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-
 use std::sync::Arc;
 
 use rust_decimal::Decimal;
@@ -22,8 +24,252 @@ use rust_decimal_macros::dec;
 pub struct ModuleInfo {
     pub module_name: String,
     pub pin_info: FlatPinInfo,
-    pub verilog_paths: Vec<PathBuf>,
+    pub verilog: Vec<PathBuf>,
+    pub srams: Vec<Sram22>,
     pub placement_constraints: Floorplan,
+    pub floorplan_commands: String,
+    pub routing_top_layer: usize,
+    pub power_top_layer: usize,
+    pub sdc: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Sram22 {
+    pub num_words: u64,
+    pub data_width: u64,
+    pub mux_ratio: u64,
+    pub write_size: u64,
+}
+
+impl Sram22 {
+    pub fn name(&self) -> String {
+        format!(
+            "sram22_{}x{}m{}w{}",
+            self.num_words, self.data_width, self.mux_ratio, self.write_size
+        )
+    }
+
+    fn sram_dir(&self, sram_work_dir: &Path) -> PathBuf {
+        sram_work_dir.join(self.name())
+    }
+
+    pub fn lef(&self, sram_work_dir: &Path) -> PathBuf {
+        self.sram_dir(sram_work_dir).join(format!("{}.lef", self.name()))
+    }
+
+    pub fn verilog(&self, sram_work_dir: &Path) -> PathBuf {
+        self.sram_dir(sram_work_dir).join(format!("{}.v", self.name()))
+    }
+
+    pub fn spice(&self, sram_work_dir: &Path) -> PathBuf {
+        self.sram_dir(sram_work_dir).join(format!("{}.spice", self.name()))
+    }
+
+    pub fn gds(&self, sram_work_dir: &Path) -> PathBuf {
+        self.sram_dir(sram_work_dir).join(format!("{}.gds", self.name()))
+    }
+
+    pub fn ensure_generated(&self, sram_work_dir: &Path) -> bool {
+        self.lef(sram_work_dir).exists()
+            && self.gds(sram_work_dir).exists()
+            && self.spice(sram_work_dir).exists()
+    }
+}
+
+/// Writes sram22.toml configs and a run_generate_sram.sh script into sram_work_dir.
+/// sram22 is invoked from $SRAM22_ROOT with output directed to sram_work_dir/{sram_name}/.
+pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyhow::Result<()> {
+    let sram22_root =
+        std::env::var("SRAM22_ROOT").expect("SRAM22_ROOT environment variable must be set");
+
+    let script_path = sram_work_dir.join("run_generate_sram.sh");
+    let mut script = fs::File::create(&script_path)?;
+    let mut perms = fs::metadata(&script_path)?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script_path, perms)?;
+
+    writeln!(script, "#!/bin/bash")?;
+    writeln!(script, "set -e")?;
+
+    for sram in srams {
+        let name = sram.name();
+        let sram_output_dir = sram.sram_dir(sram_work_dir);
+        let sram_output_dir_str = sram_output_dir.display();
+
+        let config_path = sram_work_dir.join(format!("{}.toml", name));
+        let config_content = format!(
+            "num_words = {}\ndata_width = {}\nmux_ratio = {}\nwrite_size = {}\n",
+            sram.num_words, sram.data_width, sram.mux_ratio, sram.write_size
+        );
+        fs::write(&config_path, config_content)?;
+
+        let config_path_str = config_path.display();
+        let lef_path = sram.lef(sram_work_dir).display().to_string();
+        let gds_path = sram.gds(sram_work_dir).display().to_string();
+
+        writeln!(script, "echo \"Generating SRAM: {name}\"")?;
+        writeln!(script, "mkdir -p {sram_output_dir_str}")?;
+        writeln!(script, "cd {sram22_root}")?;
+        writeln!(script, "sram22 --config {config_path_str} --output {sram_output_dir_str}")?;
+        writeln!(script)?;
+        writeln!(
+            script,
+            "if [ ! -f \"{lef_path}\" ] || [ ! -f \"{gds_path}\" ]; then"
+        )?;
+        writeln!(
+            script,
+            "    echo \"ERROR: SRAM compiler failed for {name}\" >&2"
+        )?;
+        writeln!(script, "    exit 1")?;
+        writeln!(script, "fi")?;
+    }
+
+    Ok(())
+}
+
+fn sky130_syn_read_design_files(
+    work_dir: &Path,
+    verilog_paths: &[PathBuf],
+    mmmc_conf: MmmcConfig,
+    tlef: &Path,
+    pdk_lef: &Path,
+    submodules: Option<Vec<SubmoduleInfo>>,
+    is_hierarchical: bool,
+    srams: &[Sram22],
+) -> Substep {
+    let mut substep = syn_read_design_files(
+        work_dir,
+        verilog_paths,
+        mmmc_conf,
+        tlef,
+        pdk_lef,
+        submodules,
+        is_hierarchical,
+    );
+
+    if !srams.is_empty() {
+        let sram_work_dir = work_dir.parent().unwrap().join("sram");
+        let sram_lefs: Vec<String> = srams
+            .iter()
+            .map(|s| s.lef(&sram_work_dir).display().to_string())
+            .collect();
+        let sram_verilog: Vec<String> = srams
+            .iter()
+            .map(|s| s.verilog(&sram_work_dir).display().to_string())
+            .collect();
+        substep.command.push_str(&format!(
+            "\nread_physical -lef {{ {} }}\nread_hdl -sv {{ {} }}",
+            sram_lefs.join(" "),
+            sram_verilog.join(" ")
+        ));
+    }
+
+    substep
+}
+
+fn sky130_par_read_design_files(
+    work_dir: &Path,
+    module: &str,
+    netlist_path: &Path,
+    mmmc_conf: MmmcConfig,
+    tlef: &Path,
+    pdk_lef: &Path,
+    submodules: Option<Vec<SubmoduleInfo>>,
+    srams: &[Sram22],
+) -> Substep {
+    let mut substep = par_read_design_files(
+        work_dir,
+        module,
+        netlist_path,
+        mmmc_conf,
+        tlef,
+        pdk_lef,
+        submodules,
+    );
+
+    if !srams.is_empty() {
+        let sram_work_dir = work_dir.parent().unwrap().join("sram");
+        let sram_lefs: Vec<String> = srams
+            .iter()
+            .map(|s| s.lef(&sram_work_dir).display().to_string())
+            .collect();
+        substep
+            .command
+            .push_str(&format!("\nread_physical -lef {{ {} }}", sram_lefs.join(" ")));
+    }
+
+    substep
+}
+
+fn sky130_par_write_design(
+    pdk_root: &Path,
+    work_dir: &Path,
+    module: &str,
+    srams: &[Sram22],
+    corners: Vec<MmmcCorner>,
+) -> Substep {
+    let par_rundir = work_dir.display().to_string();
+    let module = module.to_owned();
+    let setup = corners
+        .iter()
+        .find(|p| p.corner_type == "setup")
+        .unwrap()
+        .name
+        .clone();
+    let hold = corners
+        .iter()
+        .find(|p| p.corner_type == "hold")
+        .unwrap()
+        .name
+        .clone();
+    let typical = corners
+        .iter()
+        .find(|p| p.corner_type == "extra")
+        .unwrap()
+        .name
+        .clone();
+
+    let sram_work_dir = work_dir.parent().unwrap().join("sram");
+    let pdk_gds = pdk_root
+        .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds")
+        .display()
+        .to_string();
+    let mut merge_gds = vec![pdk_gds];
+    merge_gds.extend(
+        srams
+            .iter()
+            .map(|s| s.gds(&sram_work_dir).display().to_string()),
+    );
+    let merge_str = merge_gds.join(" ");
+
+    Substep {
+        checkpoint: true,
+        command: formatdoc!(
+            r#"
+            set_db timing_enable_simultaneous_setup_hold_mode true
+            write_db {module}_FINAL -def -verilog
+            set_db write_stream_virtual_connection false
+            connect_global_net VDD -type net -net_base_name VPWR
+            connect_global_net VDD -type net -net_base_name VPB
+            connect_global_net VDD -type net -net_base_name vdd
+            connect_global_net VSS -type net -net_base_name VGND
+            connect_global_net VSS -type net -net_base_name VNB
+            connect_global_net VSS -type net -net_base_name vss
+            write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{}}
+            write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{}}
+            write_stream -mode ALL -format stream -map_file /scratch/cs199-cbc/rivet/pdks/sky130/src/sky130_lefpin.map -uniquify_cell_names -merge {{ {merge_str} }} {par_rundir}/{module}.gds
+            write_sdf -max_view {setup}.setup_view -min_view {hold}.hold_view -typical_view {typical}.extra_view {par_rundir}/{module}.par.sdf
+            set_db extract_rc_coupled true
+            extract_rc
+            write_parasitics -spef_file {par_rundir}/{module}.{setup}.par.spef -rc_corner {setup}.setup_rc
+            write_parasitics -spef_file {par_rundir}/{module}.{hold}.par.spef -rc_corner {hold}.hold_rc
+            write_parasitics -spef_file {par_rundir}/{module}.{typical}.par.spef -rc_corner {typical}.extra_rc
+            write_db post_write_design
+            ln -sfn post_write_design latest
+            "#
+        ),
+        name: "write_design".into(),
+    }
 }
 
 pub enum FlatPinInfo {
@@ -50,6 +296,8 @@ pub fn sky130_syn(
     work_dir: &PathBuf,
     module: &String,
     verilog_paths: &[PathBuf],
+    srams: &[Sram22],
+    sram_work_dir: &Path,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
     submodules: Vec<SubmoduleInfo>,
     pin_info: &FlatPinInfo,
@@ -114,12 +362,32 @@ pub fn sky130_syn(
         })
         .collect();
 
-    let deps: Vec<Arc<dyn Step>> = dep_info
+    let mut deps: Vec<Arc<dyn Step>> = dep_info
         .iter()
         .map(|(_module, flow)| Arc::new(flow.par.clone()) as Arc<dyn Step>)
         .collect();
 
     let is_hierarchical = !submodules.is_empty();
+
+    // Check the rivet build directory first; only generate missing SRAMs.
+    let missing_srams: Vec<Sram22> = srams
+        .iter()
+        .filter(|s| !s.ensure_generated(sram_work_dir))
+        .cloned()
+        .collect();
+
+    if !missing_srams.is_empty() {
+        fs::create_dir_all(sram_work_dir).expect("Failed to create sram directory");
+        generate_compiler_script(&missing_srams, sram_work_dir)
+            .expect("Failed to generate SRAM compiler script");
+        let sram_compiler = Arc::new(BashStep::new(
+            sram_work_dir.to_path_buf(),
+            "generate_sram",
+            module.as_str(),
+            vec![],
+        ));
+        deps.push(sram_compiler);
+    }
 
     GenusStep::new(
         work_dir,
@@ -127,7 +395,7 @@ pub fn sky130_syn(
         vec![
             set_default_options(),
             dont_avoid_lib_cells("ICGX1"),
-            syn_read_design_files(
+            sky130_syn_read_design_files(
                 work_dir,
                 verilog_paths,
                 syn_con.clone(),
@@ -135,6 +403,7 @@ pub fn sky130_syn(
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
                 Some(submodules.clone()),
                 is_hierarchical,
+                srams,
             ),
             elaborate(module),
             syn_init_design(module, Some(dir_submodules.clone())),
@@ -155,6 +424,8 @@ pub fn sky130_par(
     module: &String,
     constraints: &Floorplan,
     netlist: &Path,
+    srams: &[Sram22],
+    sram_work_dir: &Path,
     submodules: Vec<SubmoduleInfo>,
     pin_info: &FlatPinInfo,
     syn_step: StepRef<GenusStep>,
@@ -265,7 +536,7 @@ pub fn sky130_par(
         module,
         vec![
             set_default_process(130),
-            par_read_design_files(
+            sky130_par_read_design_files(
                 work_dir,
                 module,
                 netlist,
@@ -273,6 +544,7 @@ pub fn sky130_par(
                 &tlef,
                 &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
                 Some(submodules),
+                srams,
             ),
             par_init_design(),
             innovus_settings(2, 6),
@@ -291,10 +563,11 @@ pub fn sky130_par(
             opt_design(),
             write_regs(),
             sky130_connect_nets(),
-            par_write_design(
+            sky130_par_write_design(
                 pdk_root,
                 work_dir,
                 module,
+                srams,
                 vec![
                     ss_100c_1v60.clone(),
                     ff_n40c_1v95.clone(),
@@ -398,7 +671,7 @@ pub fn sky130_cadence_power_spec(module: &str, voltage: Decimal) -> String {
     set_hierarchy_separator /
     set_design {}
     create_power_nets -nets VDD -voltage {voltage}
-    create_power_nets -nets VPWR -voltage {voltage} 
+    create_power_nets -nets VPWR -voltage {voltage}
     create_power_nets -nets VPB -voltage {voltage}
     create_power_nets -nets vdd -voltage {voltage}
     create_ground_nets -nets {{ VSS VGND VNB vss }}
@@ -424,6 +697,9 @@ fn sky130_cadence_flat_flow(
     module: &ModuleInfo,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
 ) -> Sky130FlatFlow {
+    // Shared SRAM cache dir for both syn and par under this module's build dir.
+    let sram_work_dir = work_dir.join("sram");
+
     let mut all_submodules: Vec<SubmoduleInfo> = Vec::new();
     for (child_module, child_flow) in dep_info {
         let ilm = child_flow.par.get().ilm_path().to_path_buf();
@@ -432,7 +708,7 @@ fn sky130_cadence_flat_flow(
 
         all_submodules.push(SubmoduleInfo {
             name: child_module.module_name.clone(),
-            verilog_paths: child_module.verilog_paths.clone(),
+            verilog_paths: child_module.verilog.clone(),
             gds,
             ilm,
             lef,
@@ -445,7 +721,9 @@ fn sky130_cadence_flat_flow(
         pdk_root,
         &syn_work_dir,
         &module.module_name,
-        &module.verilog_paths,
+        &module.verilog,
+        &module.srams,
+        &sram_work_dir,
         dep_info,
         all_submodules.clone(),
         &module.pin_info,
@@ -465,6 +743,8 @@ fn sky130_cadence_flat_flow(
         &module.module_name,
         &final_constraints,
         &output_netlist_path,
+        &module.srams,
+        &sram_work_dir,
         all_submodules.clone(),
         &module.pin_info,
         syn_pointer.clone(),

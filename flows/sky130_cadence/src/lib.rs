@@ -3,9 +3,10 @@ use cadence::genus::{
     syn_generic, syn_init_design, syn_map, syn_read_design_files, syn_write_design,
 };
 use cadence::innovus::{
-    Floorplan, InnovusStep, Layer, PinAssignment, add_fillers, floorplan_design, innovus_settings,
-    opt_design, par_init_design, par_read_design_files, place_opt_design,
-    place_pins, power_straps, route_design, set_default_process, write_ilm, write_regs,
+    Floorplan, HardMacroConstraint, InnovusStep, Layer, PinAssignment, TopLevelConstraint,
+    add_fillers, floorplan_design, innovus_settings, opt_design, par_init_design,
+    par_read_design_files, place_opt_design, place_pins, power_straps, route_design,
+    set_default_process, write_ilm, write_regs,
 };
 use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep};
 use indoc::formatdoc;
@@ -776,4 +777,246 @@ pub fn sky130_cadence_reference_flow(
             &sub_blocks,
         )
     })
+}
+
+fn decoder_flow() -> anyhow::Result<()> {
+    let work_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/decoder");
+    let pdk_root = PathBuf::from(std::env::var("SKY130PDK_OS_INSTALL_PATH")?);
+
+    let flow = sky130_cadence_reference_flow(
+        pdk_root,
+        work_dir,
+        Dag {
+            node: ModuleInfo {
+                module_name: "decoder".into(),
+                verilog: vec![
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../examples/decoder/decoder.v"),
+                ],
+                pin_info: FlatPinInfo::None,
+                srams: vec![],
+                placement_constraints: Floorplan {
+                    top: TopLevelConstraint {
+                        width: 30.0,
+                        height: 30.0,
+                        left: 0.0,
+                        bottom: 0.0,
+                        right: 0.0,
+                        top: 0.0,
+                    },
+                    hard_macros: vec![],
+                    obstructs: vec![],
+                },
+                floorplan_commands: String::new(),
+                routing_top_layer: 10,
+                power_top_layer: 10,
+                sdc: String::new(),
+            },
+            directed_edges: vec![],
+        },
+    );
+
+    execute(flow.node.par);
+    Ok(())
+}
+
+fn hierarchical_flow() -> anyhow::Result<()> {
+    let pdk_root = PathBuf::from(std::env::var("SKY130PDK_OS_INSTALL_PATH")?);
+    let work_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/hierarchical");
+
+    let stackup = || -> Vec<String> {
+        vec![
+            "li1".into(),
+            "met1".into(),
+            "met2".into(),
+            "met3".into(),
+            "met4".into(),
+            "met5".into(),
+        ]
+    };
+
+    let mut flow = sky130_cadence_reference_flow(
+        pdk_root,
+        work_dir,
+        Dag {
+            node: ModuleInfo {
+                module_name: "fourbitadder".into(),
+                pin_info: FlatPinInfo::None,
+                verilog: vec![
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../examples/hierarchical/fourbitadder.v"),
+                ],
+                srams: vec![],
+                placement_constraints: Floorplan {
+                    top: TopLevelConstraint {
+                        width: 300.0,
+                        height: 300.0,
+                        left: 0.0,
+                        bottom: 0.0,
+                        right: 0.0,
+                        top: 0.0,
+                    },
+                    hard_macros: vec![
+                        HardMacroConstraint {
+                            x: 10.0,
+                            y: 10.0,
+                            orientation: "r0".into(),
+                            top_layer: "met3".into(),
+                            stackup: stackup(),
+                            route_halo_size: 2.0,
+                            place_halo_size: 1.2,
+                            create_physical: false,
+                            name: "fa_1".into(),
+                            master: "fulladder".into(),
+                        },
+                        HardMacroConstraint {
+                            x: 10.0,
+                            y: 150.0,
+                            orientation: "r0".into(),
+                            top_layer: "met3".into(),
+                            stackup: stackup(),
+                            route_halo_size: 2.0,
+                            place_halo_size: 1.2,
+                            create_physical: false,
+                            name: "fa_2".into(),
+                            master: "fulladder".into(),
+                        },
+                        HardMacroConstraint {
+                            x: 150.0,
+                            y: 10.0,
+                            orientation: "r0".into(),
+                            top_layer: "met3".into(),
+                            stackup: stackup(),
+                            route_halo_size: 2.0,
+                            place_halo_size: 1.2,
+                            create_physical: false,
+                            name: "fa_3".into(),
+                            master: "fulladder".into(),
+                        },
+                        HardMacroConstraint {
+                            x: 150.0,
+                            y: 150.0,
+                            orientation: "r0".into(),
+                            top_layer: "met3".into(),
+                            stackup: stackup(),
+                            route_halo_size: 2.0,
+                            place_halo_size: 1.2,
+                            create_physical: false,
+                            name: "fa_4".into(),
+                            master: "fulladder".into(),
+                        },
+                    ],
+                    obstructs: vec![],
+                },
+                floorplan_commands: String::new(),
+                routing_top_layer: 10,
+                power_top_layer: 10,
+                sdc: String::new(),
+            },
+            directed_edges: vec![Arc::new(Dag {
+                node: ModuleInfo {
+                    module_name: "fulladder".into(),
+                    pin_info: FlatPinInfo::None,
+                    verilog: vec![
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../examples/hierarchical/fulladder.v"),
+                    ],
+                    srams: vec![],
+                    placement_constraints: Floorplan {
+                        top: TopLevelConstraint {
+                            width: 100.0,
+                            height: 100.0,
+                            left: 0.0,
+                            bottom: 0.0,
+                            right: 0.0,
+                            top: 0.0,
+                        },
+                        hard_macros: vec![
+                            HardMacroConstraint {
+                                x: 10.0,
+                                y: 10.0,
+                                orientation: "r0".into(),
+                                top_layer: "met3".into(),
+                                stackup: stackup(),
+                                route_halo_size: 2.0,
+                                place_halo_size: 1.2,
+                                create_physical: false,
+                                name: "ha1".into(),
+                                master: "halfadder".into(),
+                            },
+                            HardMacroConstraint {
+                                x: 50.0,
+                                y: 10.0,
+                                orientation: "r0".into(),
+                                top_layer: "met3".into(),
+                                stackup: stackup(),
+                                route_halo_size: 2.0,
+                                place_halo_size: 1.2,
+                                create_physical: false,
+                                name: "ha2".into(),
+                                master: "halfadder".into(),
+                            },
+                        ],
+                        obstructs: vec![],
+                    },
+                    floorplan_commands: String::new(),
+                    routing_top_layer: 10,
+                    power_top_layer: 10,
+                    sdc: String::new(),
+                },
+                directed_edges: vec![Arc::new(Dag {
+                    node: ModuleInfo {
+                        module_name: "halfadder".into(),
+                        pin_info: FlatPinInfo::None,
+                        verilog: vec![
+                            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                                .join("../../examples/hierarchical/halfadder.v"),
+                        ],
+                        srams: vec![],
+                        placement_constraints: Floorplan {
+                            top: TopLevelConstraint {
+                                width: 30.0,
+                                height: 30.0,
+                                left: 0.0,
+                                bottom: 0.0,
+                                right: 0.0,
+                                top: 0.0,
+                            },
+                            hard_macros: vec![],
+                            obstructs: vec![],
+                        },
+                        floorplan_commands: String::new(),
+                        routing_top_layer: 10,
+                        power_top_layer: 10,
+                        sdc: String::new(),
+                    },
+                    directed_edges: vec![],
+                })],
+            })],
+        },
+    );
+
+    flow.get_mut(&"fourbitadder")
+        .unwrap()
+        .syn
+        .get()
+        .replace_hook("syn_opt", "syn_opt", "syn_map", false);
+
+    execute(flow.node.par);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_vlsi() -> anyhow::Result<()> {
+        decoder_flow()
+    }
+
+    #[test]
+    fn hierarchical_vlsi() -> anyhow::Result<()> {
+        hierarchical_flow()
+    }
 }

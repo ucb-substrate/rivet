@@ -11,7 +11,7 @@ use cadence::innovus::{
 use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep};
 use indoc::formatdoc;
 use rivet::bash::BashStep;
-use rivet::{Dag, NamedNode, Step, StepRef, hierarchical};
+use rivet::{Dag, NamedNode, Step, StepRef, execute, hierarchical};
 use sky130::{setup_techlef, sky130_connect_nets};
 use std::fs;
 use std::io::Write;
@@ -55,19 +55,23 @@ impl Sram22 {
     }
 
     pub fn lef(&self, sram_work_dir: &Path) -> PathBuf {
-        self.sram_dir(sram_work_dir).join(format!("{}.lef", self.name()))
+        self.sram_dir(sram_work_dir)
+            .join(format!("{}.lef", self.name()))
     }
 
     pub fn verilog(&self, sram_work_dir: &Path) -> PathBuf {
-        self.sram_dir(sram_work_dir).join(format!("{}.v", self.name()))
+        self.sram_dir(sram_work_dir)
+            .join(format!("{}.v", self.name()))
     }
 
     pub fn spice(&self, sram_work_dir: &Path) -> PathBuf {
-        self.sram_dir(sram_work_dir).join(format!("{}.spice", self.name()))
+        self.sram_dir(sram_work_dir)
+            .join(format!("{}.spice", self.name()))
     }
 
     pub fn gds(&self, sram_work_dir: &Path) -> PathBuf {
-        self.sram_dir(sram_work_dir).join(format!("{}.gds", self.name()))
+        self.sram_dir(sram_work_dir)
+            .join(format!("{}.gds", self.name()))
     }
 
     pub fn ensure_generated(&self, sram_work_dir: &Path) -> bool {
@@ -111,7 +115,10 @@ pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyho
         writeln!(script, "echo \"Generating SRAM: {name}\"")?;
         writeln!(script, "mkdir -p {sram_output_dir_str}")?;
         writeln!(script, "cd {sram22_root}")?;
-        writeln!(script, "sram22 --config {config_path_str} --output {sram_output_dir_str}")?;
+        writeln!(
+            script,
+            "sram22 --config {config_path_str} --output-dir {sram_output_dir_str}"
+        )?;
         writeln!(script)?;
         writeln!(
             script,
@@ -194,9 +201,10 @@ fn sky130_par_read_design_files(
             .iter()
             .map(|s| s.lef(&sram_work_dir).display().to_string())
             .collect();
-        substep
-            .command
-            .push_str(&format!("\nread_physical -lef {{ {} }}", sram_lefs.join(" ")));
+        substep.command.push_str(&format!(
+            "\nread_physical -lef {{ {} }}",
+            sram_lefs.join(" ")
+        ));
     }
 
     substep

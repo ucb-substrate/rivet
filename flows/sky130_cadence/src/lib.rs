@@ -156,16 +156,6 @@ fn sky130_syn_read_design_files(
         sdc_content,
     );
 
-    if !srams.is_empty() {
-        let sram_verilog: Vec<String> = srams
-            .iter()
-            .map(|s| s.verilog(&sram_work_dir).display().to_string())
-            .collect();
-        substep
-            .command
-            .push_str(&format!("\nread_hdl -sv {{ {} }}", sram_verilog.join(" ")));
-    }
-
     substep
 }
 

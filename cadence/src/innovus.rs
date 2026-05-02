@@ -67,7 +67,7 @@ impl InnovusStep {
 
                 writeln!(
                     tcl_file,
-                    "write_db -no_wait rivet_error.log {}",
+                    "write_db {}",
                     checkpoint_file.display()
                 )?;
             }
@@ -256,10 +256,12 @@ pub fn par_read_design_files(
     tlef: &Path,
     pdk_lef: &Path,
     submodules: Option<Vec<SubmoduleInfo>>,
+    hard_macros: &[PathBuf],
+    sdc_content: &str,
 ) -> Substep {
     let mut sdc_file =
         File::create(work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
-    writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
+    writeln!(sdc_file, "{}", sdc_content).expect("Failed to write");
     let mmmc_tcl = mmmc(mmmc_conf);
     let mmmc_tcl_path = work_dir.to_path_buf().join("mmmc.tcl");
     let _ = fs::write(&mmmc_tcl_path, mmmc_tcl);
@@ -273,6 +275,8 @@ pub fn par_read_design_files(
                 .map(|p| p.lef.to_string_lossy().to_string()),
         );
     }
+
+    lefs_vec.extend(hard_macros.iter().map(|p| p.display().to_string()));
 
     let lefs: String = lefs_vec.join(" ");
     let mut command = formatdoc!(
@@ -331,10 +335,10 @@ pub fn innovus_settings(bottom_routing: i64, top_routing: i64) -> Substep {
     }
 }
 
-pub fn floorplan_design(work_dir: &Path, power_spec: &String, floorplan: Floorplan) -> Substep {
+pub fn floorplan_design(work_dir: &Path, power_spec: &String, floorplan: Floorplan, site_name: &str) -> Substep {
     let floorplan_tcl_path = work_dir.join("floorplan.tcl");
     let mut floorplan_tcl_file = File::create(&floorplan_tcl_path).expect("failed to create file");
-    let floorplan_tcl = generate_floorplan_tcl(floorplan);
+    let floorplan_tcl = generate_floorplan_tcl(floorplan, site_name);
     writeln!(floorplan_tcl_file, "{floorplan_tcl}").unwrap();
     let floorplan_path_string = floorplan_tcl_path.display();
 
@@ -698,7 +702,7 @@ pub fn write_ilm(
     }
 }
 
-pub fn generate_floorplan_tcl(floorplan: Floorplan) -> String {
+pub fn generate_floorplan_tcl(floorplan: Floorplan, site_name: &str) -> String {
     let mut command = String::new();
     let toplevel = floorplan.top;
     let macros = floorplan.hard_macros;
@@ -712,7 +716,7 @@ pub fn generate_floorplan_tcl(floorplan: Floorplan) -> String {
     let t = toplevel.top.to_string();
     writeln!(
         command,
-        "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site CoreSite -die_size {{ {w} {h} {l} {b} {r} {t}}}"
+        "create_floorplan -core_margins_by die -flip f -die_size_by_io_height max -site {site_name} -die_size {{ {w} {h} {l} {b} {r} {t}}}"
     ).unwrap();
 
     for constraint in macros.into_iter() {
@@ -844,4 +848,16 @@ pub struct Floorplan {
     pub top: TopLevelConstraint,
     pub hard_macros: Vec<HardMacroConstraint>,
     pub obstructs: Vec<ObstructionConstraint>,
+}
+
+pub fn generate_open_chip_script(work_dir: &Path, db: &str) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let script_path = work_dir.join("open_chip.sh");
+    let mut f = File::create(&script_path)?;
+    writeln!(f, "#!/bin/bash")?;
+    writeln!(f, "innovus -db {db}")?;
+    let mut perms = fs::metadata(&script_path)?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script_path, perms)?;
+    Ok(())
 }

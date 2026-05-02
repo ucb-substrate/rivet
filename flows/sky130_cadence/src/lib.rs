@@ -79,8 +79,6 @@ impl Sram22 {
     }
 }
 
-/// Writes sram22.toml configs and a run_generate_sram.sh script into sram_work_dir.
-/// sram22 is invoked from $SRAM22_ROOT with output directed to sram_work_dir/{sram_name}/.
 pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyhow::Result<()> {
     let sram22_root =
         std::env::var("SRAM22_ROOT").expect("SRAM22_ROOT environment variable must be set");
@@ -163,10 +161,9 @@ fn sky130_syn_read_design_files(
             .iter()
             .map(|s| s.verilog(&sram_work_dir).display().to_string())
             .collect();
-        substep.command.push_str(&format!(
-            "\nread_hdl -sv {{ {} }}",
-            sram_verilog.join(" ")
-        ));
+        substep
+            .command
+            .push_str(&format!("\nread_hdl -sv {{ {} }}", sram_verilog.join(" ")));
     }
 
     substep
@@ -366,7 +363,6 @@ pub fn sky130_scl_cadence_syn(
 
     let is_hierarchical = !submodules.is_empty();
 
-    // Check the rivet build directory first; only generate missing SRAMs.
     let missing_srams: Vec<Sram22> = srams
         .iter()
         .filter(|s| !s.ensure_generated(sram_work_dir))
@@ -707,7 +703,6 @@ fn sky130_scl_cadence_flat_flow(
     module: &ModuleInfo,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
 ) -> Sky130FlatFlow {
-    // Shared SRAM cache dir for both syn and par under this module's build dir.
     let sram_work_dir = work_dir.join("sram");
 
     let mut all_submodules: Vec<SubmoduleInfo> = Vec::new();
@@ -790,8 +785,6 @@ pub fn sky130_scl_cadence_reference_flow(
     })
 }
 
-// ─── Open-source sky130_fd_sc_hd variants ────────────────────────────────────
-
 fn sky130_os_cadence_par_write_design(
     pdk_root: &Path,
     work_dir: &Path,
@@ -801,9 +794,24 @@ fn sky130_os_cadence_par_write_design(
 ) -> Substep {
     let par_rundir = work_dir.display().to_string();
     let module = module.to_owned();
-    let setup = corners.iter().find(|p| p.corner_type == "setup").unwrap().name.clone();
-    let hold  = corners.iter().find(|p| p.corner_type == "hold").unwrap().name.clone();
-    let typical = corners.iter().find(|p| p.corner_type == "extra").unwrap().name.clone();
+    let setup = corners
+        .iter()
+        .find(|p| p.corner_type == "setup")
+        .unwrap()
+        .name
+        .clone();
+    let hold = corners
+        .iter()
+        .find(|p| p.corner_type == "hold")
+        .unwrap()
+        .name
+        .clone();
+    let typical = corners
+        .iter()
+        .find(|p| p.corner_type == "extra")
+        .unwrap()
+        .name
+        .clone();
 
     let sram_work_dir = work_dir.parent().unwrap().join("sram");
     let pdk_gds = pdk_root
@@ -811,7 +819,11 @@ fn sky130_os_cadence_par_write_design(
         .display()
         .to_string();
     let mut merge_gds = vec![pdk_gds];
-    merge_gds.extend(srams.iter().map(|s| s.gds(&sram_work_dir).display().to_string()));
+    merge_gds.extend(
+        srams
+            .iter()
+            .map(|s| s.gds(&sram_work_dir).display().to_string()),
+    );
     let merge_str = merge_gds.join(" ");
 
     let lefpin_map = concat!(
@@ -864,7 +876,10 @@ pub fn sky130_os_cadence_syn(
     let ff_n40c_1v95 = MmmcCorner {
         name: "ff_n40c_1v95".to_string(),
         corner_type: "hold".to_string(),
-        libs: vec![pdk_root.join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__ff_n40C_1v95_ccsnoise.lib")],
+        libs: vec![
+            pdk_root
+                .join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__ff_n40C_1v95_ccsnoise.lib"),
+        ],
         temperature: dec!(-40.0),
     };
     let tt_025c_1v80 = MmmcCorner {
@@ -876,7 +891,11 @@ pub fn sky130_os_cadence_syn(
 
     let syn_con = MmmcConfig {
         sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
-        corners: vec![ss_100c_1v60.clone(), ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
+        corners: vec![
+            ss_100c_1v60.clone(),
+            ff_n40c_1v95.clone(),
+            tt_025c_1v80.clone(),
+        ],
         setup: vec![ss_100c_1v60.clone()],
         hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
         dynamic: tt_025c_1v80.clone(),
@@ -1013,7 +1032,10 @@ pub fn sky130_os_cadence_par(
     let ff_n40c_1v95 = MmmcCorner {
         name: "ff_n40c_1v95".to_string(),
         corner_type: "hold".to_string(),
-        libs: vec![pdk_root.join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__ff_n40C_1v95_ccsnoise.lib")],
+        libs: vec![
+            pdk_root
+                .join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__ff_n40C_1v95_ccsnoise.lib"),
+        ],
         temperature: dec!(-40.0),
     };
     let tt_025c_1v80 = MmmcCorner {
@@ -1025,7 +1047,11 @@ pub fn sky130_os_cadence_par(
 
     let par_con = MmmcConfig {
         sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
-        corners: vec![ss_100c_1v60.clone(), ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
+        corners: vec![
+            ss_100c_1v60.clone(),
+            ff_n40c_1v95.clone(),
+            tt_025c_1v80.clone(),
+        ],
         setup: vec![ss_100c_1v60.clone()],
         hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
         dynamic: tt_025c_1v80.clone(),
@@ -1081,13 +1107,21 @@ pub fn sky130_os_cadence_par(
                 work_dir,
                 module,
                 srams,
-                vec![ss_100c_1v60.clone(), ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
+                vec![
+                    ss_100c_1v60.clone(),
+                    ff_n40c_1v95.clone(),
+                    tt_025c_1v80.clone(),
+                ],
             ),
             write_ilm(
                 work_dir,
                 module,
                 &layers[0],
-                vec![ss_100c_1v60.clone(), ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
+                vec![
+                    ss_100c_1v60.clone(),
+                    ff_n40c_1v95.clone(),
+                    tt_025c_1v80.clone(),
+                ],
             ),
         ],
         matches!(pin_info, FlatPinInfo::PinPar(_)),
@@ -1168,7 +1202,12 @@ pub fn sky130_os_cadence_reference_flow(
     work_dir: PathBuf,
     hierarchy: Dag<ModuleInfo>,
 ) -> Dag<Sky130FlatFlow> {
-    hierarchical(&hierarchy, &|block: &ModuleInfo, sub_blocks: Vec<(&ModuleInfo, &Sky130FlatFlow)>| -> Sky130FlatFlow {
+    hierarchical(&hierarchy, &|block: &ModuleInfo,
+                               sub_blocks: Vec<(
+        &ModuleInfo,
+        &Sky130FlatFlow,
+    )>|
+     -> Sky130FlatFlow {
         sky130_os_cadence_flat_flow(
             &pdk_root,
             &work_dir.join(format!("build-{}", &block.module_name)),
@@ -1177,8 +1216,6 @@ pub fn sky130_os_cadence_reference_flow(
         )
     })
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn decoder_flow() -> anyhow::Result<()> {
     let work_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/decoder");

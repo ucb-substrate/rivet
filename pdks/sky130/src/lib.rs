@@ -45,21 +45,21 @@ pub fn setup_techlef(working_directory: &Path, lef_file: &PathBuf) -> PathBuf {
     let mut techlef = BufWriter::new(File::create(&tlef_path).expect("failed to write to file"));
 
     let licon = r#"
-LAYER licon
-    TYPE CUT ;
-END licon
-"#;
+    LAYER licon
+        TYPE CUT ;
+    END licon
+    "#;
     let nwell = r#"
-LAYER nwell
-    TYPE MASTERSLICE ;
-END nwell
-LAYER pwell
-    TYPE MASTERSLICE ;
-END pwell
-LAYER li1
-    TYPE MASTERSLICE ;
-END li1
-"#;
+    LAYER nwell
+        TYPE MASTERSLICE ;
+    END nwell
+    LAYER pwell
+        TYPE MASTERSLICE ;
+    END pwell
+    LAYER li1
+        TYPE MASTERSLICE ;
+    END li1
+    "#;
 
     for line_result in reader.lines() {
         let line = line_result.expect("failed to read line from file");

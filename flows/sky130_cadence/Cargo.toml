@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rivet = { path = "../../rivet" } 
+rivet = { path = "../../rivet" }
 cadence = { version = "0.1.0", path = "../../cadence" }
+anyhow = "1"
 indoc = "2"
 rust_decimal = "1"
 rust_decimal_macros = "1"

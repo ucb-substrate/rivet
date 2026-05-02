@@ -73,7 +73,7 @@ impl GenusStep {
 
                 writeln!(
                     tcl_file,
-                    "write_db -no_wait rivet_error.log -to_file {}",
+                    "write_db -to_file {}",
                     checkpoint_file.display()
                 )?;
             }
@@ -135,7 +135,7 @@ impl GenusStep {
     }
 
     /// Assigns the starting checkpoint of the synthesis flow
-    pub fn add_checkpoint(mut self, name: &str, checkpoint_path: PathBuf) {
+    pub fn add_checkpoint(&mut self, name: &str, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
             name: name.to_string(),
             path: checkpoint_path,
@@ -234,10 +234,12 @@ pub fn syn_read_design_files(
     pdk_lef: &Path,
     submodules: Option<Vec<SubmoduleInfo>>,
     is_hierarchical: bool,
+    hard_macros: &[PathBuf],
+    sdc_content: &str,
 ) -> Substep {
     let mut sdc_file =
         File::create(work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
-    writeln!(sdc_file, "{}", sdc()).expect("Failed to write");
+    writeln!(sdc_file, "{}", sdc_content).expect("Failed to write");
     let mmmc_tcl = mmmc(mmmc_conf);
     let mmmc_tcl_path = work_dir.to_path_buf().join("mmmc.tcl");
     let _ = fs::write(&mmmc_tcl_path, mmmc_tcl);
@@ -251,6 +253,8 @@ pub fn syn_read_design_files(
                 .map(|p| p.lef.to_string_lossy().to_string()),
         );
     }
+
+    lefs_vec.extend(hard_macros.iter().map(|p| p.display().to_string()));
 
     let lefs: String = lefs_vec.join(" ");
 
@@ -380,16 +384,13 @@ pub fn syn_map() -> Substep {
     }
 }
 
-pub fn add_tieoffs() -> Substep {
+pub fn add_tieoffs(hi_cell: &str, lo_cell: &str) -> Substep {
     Substep {
         checkpoint: true,
         command: formatdoc!(
             r#"set_db message:WSDF-201 .max_print 20
         set_db use_tiehilo_for_const duplicate
-        set ACTIVE_SET [string map {{ .setup_view .setup_set .hold_view .hold_set .extra_view .extra_set }} [get_db [get_analysis_views] .name]]
-        set HI_TIEOFF [get_db base_cell:TIEHI .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
-        set LO_TIEOFF [get_db base_cell:TIELO .lib_cells -if {{ .library.library_set.name == $ACTIVE_SET }}]
-        add_tieoffs -high $HI_TIEOFF -low $LO_TIEOFF -max_fanout 1 -verbose
+        add_tieoffs -high {hi_cell} -low {lo_cell} -max_fanout 1 -verbose
         "#
         ),
         name: "add_tieoffs".into(),

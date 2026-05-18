@@ -1236,7 +1236,7 @@ fn decoder_flow() -> anyhow::Result<()> {
                     obstructs: vec![],
                 },
                 floorplan_commands: String::new(),
-                sdc: String::new(),
+                sdc: cadence::sdc(),
             },
             directed_edges: vec![],
         },

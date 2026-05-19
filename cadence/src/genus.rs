@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc, sdc};
+use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -71,11 +71,7 @@ impl GenusStep {
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
 
-                writeln!(
-                    tcl_file,
-                    "write_db -to_file {}",
-                    checkpoint_file.display()
-                )?;
+                writeln!(tcl_file, "write_db -to_file {}", checkpoint_file.display())?;
             }
         }
         writeln!(tcl_file, "quit")?;
@@ -225,18 +221,31 @@ pub fn dont_avoid_lib_cells(base_name: &str) -> Substep {
     }
 }
 
+pub struct DesignFiles<'a> {
+    pub work_dir: &'a Path,
+    pub verilog_paths: &'a [PathBuf],
+    pub mmmc_conf: MmmcConfig,
+    pub tlef: &'a Path,
+    pub pdk_lef: &'a Path,
+    pub submodules: Option<Vec<SubmoduleInfo>>,
+    pub is_hierarchical: bool,
+    pub hard_macros: &'a [PathBuf],
+    pub sdc_content: &'a str,
+}
+
 /// Reads the module verilog, mmmc.tcl, pdk lefs, ilms paths, and sdc constraints
-pub fn syn_read_design_files(
-    work_dir: &Path,
-    verilog_paths: &[PathBuf],
-    mmmc_conf: MmmcConfig,
-    tlef: &Path,
-    pdk_lef: &Path,
-    submodules: Option<Vec<SubmoduleInfo>>,
-    is_hierarchical: bool,
-    hard_macros: &[PathBuf],
-    sdc_content: &str,
-) -> Substep {
+pub fn syn_read_design_files(files: DesignFiles<'_>) -> Substep {
+    let DesignFiles {
+        work_dir,
+        verilog_paths,
+        mmmc_conf,
+        tlef,
+        pdk_lef,
+        submodules,
+        is_hierarchical,
+        hard_macros,
+        sdc_content,
+    } = files;
     let mut sdc_file =
         File::create(work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
     writeln!(sdc_file, "{}", sdc_content).expect("Failed to write");

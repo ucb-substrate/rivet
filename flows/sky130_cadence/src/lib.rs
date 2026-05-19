@@ -1,12 +1,13 @@
 use cadence::genus::{
-    GenusStep, add_tieoffs, dont_avoid_lib_cells, elaborate, power_intent, set_default_options,
-    syn_generic, syn_init_design, syn_map, syn_read_design_files, syn_write_design,
+    DesignFiles as GenusDesignFiles, GenusStep, add_tieoffs, dont_avoid_lib_cells, elaborate,
+    power_intent, set_default_options, syn_generic, syn_init_design, syn_map,
+    syn_read_design_files, syn_write_design,
 };
 use cadence::innovus::{
-    Floorplan, HardMacroConstraint, InnovusStep, Layer, PinAssignment, TopLevelConstraint,
-    add_fillers, floorplan_design, innovus_settings, opt_design, par_init_design,
-    par_read_design_files, place_opt_design, place_pins, power_straps, route_design,
-    set_default_process, write_ilm, write_regs,
+    DesignFiles as InnovusDesignFiles, Floorplan, HardMacroConstraint, InnovusStep, Layer,
+    PinAssignment, TopLevelConstraint, add_fillers, floorplan_design, innovus_settings, opt_design,
+    par_init_design, par_read_design_files, place_opt_design, place_pins, power_straps,
+    route_design, set_default_process, write_ilm, write_regs,
 };
 use cadence::{MmmcConfig, MmmcCorner, SubmoduleInfo, Substep};
 use indoc::formatdoc;
@@ -131,58 +132,27 @@ pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyho
     Ok(())
 }
 
-fn sky130_syn_read_design_files(
-    work_dir: &Path,
-    verilog_paths: &[PathBuf],
-    mmmc_conf: MmmcConfig,
-    tlef: &Path,
-    pdk_lef: &Path,
-    submodules: Option<Vec<SubmoduleInfo>>,
-    is_hierarchical: bool,
-    srams: &[Sram22],
-    sdc_content: &str,
-) -> Substep {
-    let sram_work_dir = work_dir.parent().unwrap().join("sram");
+pub fn sky130_syn_read_design_files(files: GenusDesignFiles<'_>, srams: &[Sram22]) -> Substep {
+    let sram_work_dir = files.work_dir.parent().unwrap().join("sram");
     let sram_lefs: Vec<PathBuf> = srams.iter().map(|s| s.lef(&sram_work_dir)).collect();
-    let mut substep = syn_read_design_files(
-        work_dir,
-        verilog_paths,
-        mmmc_conf,
-        tlef,
-        pdk_lef,
-        submodules,
-        is_hierarchical,
-        &sram_lefs,
-        sdc_content,
-    );
 
-    substep
+    let hard_macros = [files.hard_macros, &sram_lefs].concat();
+
+    syn_read_design_files(GenusDesignFiles {
+        hard_macros: &hard_macros,
+        ..files
+    })
 }
 
-fn sky130_par_read_design_files(
-    work_dir: &Path,
-    module: &str,
-    netlist_path: &Path,
-    mmmc_conf: MmmcConfig,
-    tlef: &Path,
-    pdk_lef: &Path,
-    submodules: Option<Vec<SubmoduleInfo>>,
-    srams: &[Sram22],
-    sdc_content: &str,
-) -> Substep {
-    let sram_work_dir = work_dir.parent().unwrap().join("sram");
+fn sky130_par_read_design_files(files: InnovusDesignFiles, srams: &[Sram22]) -> Substep {
+    let sram_work_dir = files.work_dir.parent().unwrap().join("sram");
     let sram_lefs: Vec<PathBuf> = srams.iter().map(|s| s.lef(&sram_work_dir)).collect();
-    par_read_design_files(
-        work_dir,
-        module,
-        netlist_path,
-        mmmc_conf,
-        tlef,
-        pdk_lef,
-        submodules,
-        &sram_lefs,
-        sdc_content,
-    )
+
+    let hard_macros = [files.hard_macros, &sram_lefs].concat();
+    par_read_design_files(InnovusDesignFiles {
+        hard_macros: &hard_macros,
+        ..files
+    })
 }
 
 fn sky130_scl_cadence_par_write_design(
@@ -274,18 +244,34 @@ impl NamedNode for Sky130FlatFlow {
     }
 }
 
-pub fn sky130_scl_cadence_syn(
-    pdk_root: &Path,
-    work_dir: &PathBuf,
-    module: &String,
-    verilog_paths: &[PathBuf],
-    srams: &[Sram22],
-    sram_work_dir: &Path,
-    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
-    submodules: Vec<SubmoduleInfo>,
-    pin_info: &FlatPinInfo,
-    sdc: &str,
-) -> GenusStep {
+pub struct SclSynConfig<'a> {
+    pub pdk_root: &'a Path,
+    pub work_dir: &'a PathBuf,
+    pub module: &'a String,
+    pub verilog_paths: &'a [PathBuf],
+    pub srams: &'a [Sram22],
+    pub sram_work_dir: &'a Path,
+    pub dep_info: &'a [(&'a ModuleInfo, &'a Sky130FlatFlow)],
+    pub submodules: Vec<SubmoduleInfo>,
+    pub pin_info: &'a FlatPinInfo,
+    pub sdc: &'a str,
+}
+
+pub struct SclParConfig<'a> {
+    pub pdk_root: &'a Path,
+    pub work_dir: &'a PathBuf,
+    pub module: &'a String,
+    pub constraints: &'a Floorplan,
+    pub netlist: &'a Path,
+    pub srams: &'a [Sram22],
+    pub submodules: Vec<SubmoduleInfo>,
+    pub pin_info: &'a FlatPinInfo,
+    pub syn_step: StepRef<GenusStep>,
+    pub sdc: &'a str,
+}
+
+pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
+    let SclSynConfig { pdk_root, work_dir, module, verilog_paths, srams, sram_work_dir, dep_info, submodules, pin_info, sdc } = config;
     let ss_100c_1v60 = MmmcCorner {
         name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
@@ -379,15 +365,19 @@ pub fn sky130_scl_cadence_syn(
             set_default_options(),
             dont_avoid_lib_cells("ICGX1"),
             sky130_syn_read_design_files(
-                work_dir,
-                verilog_paths,
-                syn_con.clone(),
-                &tlef,
-                &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
-                Some(submodules.clone()),
-                is_hierarchical,
+                GenusDesignFiles {
+                    work_dir,
+                    verilog_paths,
+                    mmmc_conf: syn_con,
+                    tlef: &tlef,
+                    pdk_lef: &pdk_root
+                        .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
+                    submodules: Some(submodules.clone()),
+                    is_hierarchical,
+                    hard_macros: &[],
+                    sdc_content: sdc,
+                },
                 srams,
-                sdc,
             ),
             elaborate(module),
             syn_init_design(module, Some(dir_submodules.clone())),
@@ -402,19 +392,8 @@ pub fn sky130_scl_cadence_syn(
     )
 }
 
-pub fn sky130_scl_cadence_par(
-    pdk_root: &Path,
-    work_dir: &PathBuf,
-    module: &String,
-    constraints: &Floorplan,
-    netlist: &Path,
-    srams: &[Sram22],
-    sram_work_dir: &Path,
-    submodules: Vec<SubmoduleInfo>,
-    pin_info: &FlatPinInfo,
-    syn_step: StepRef<GenusStep>,
-    sdc: &str,
-) -> InnovusStep {
+pub fn sky130_scl_cadence_par(config: SclParConfig<'_>) -> InnovusStep {
+    let SclParConfig { pdk_root, work_dir, module, constraints, netlist, srams, submodules, pin_info, syn_step, sdc } = config;
     let filler_cells = vec![
         "FILL0".into(),
         "FILL1".into(),
@@ -522,15 +501,19 @@ pub fn sky130_scl_cadence_par(
         vec![
             set_default_process(130),
             sky130_par_read_design_files(
-                work_dir,
-                module,
-                netlist,
-                par_con.clone(),
-                &tlef,
-                &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
-                Some(submodules),
+                InnovusDesignFiles {
+                    work_dir,
+                    module,
+                    netlist_path: netlist,
+                    mmmc_conf: par_con,
+                    tlef: &tlef,
+                    pdk_lef: &pdk_root
+                        .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
+                    submodules: Some(submodules),
+                    hard_macros: &[],
+                    sdc_content: sdc,
+                },
                 srams,
-                sdc,
             ),
             par_init_design(),
             innovus_settings(2, 6),
@@ -712,18 +695,18 @@ fn sky130_scl_cadence_flat_flow(
     }
 
     let syn_work_dir = work_dir.join("syn-rundir");
-    let syn = sky130_scl_cadence_syn(
+    let syn = sky130_scl_cadence_syn(SclSynConfig {
         pdk_root,
-        &syn_work_dir,
-        &module.module_name,
-        &module.verilog,
-        &module.srams,
-        &sram_work_dir,
+        work_dir: &syn_work_dir,
+        module: &module.module_name,
+        verilog_paths: &module.verilog,
+        srams: &module.srams,
+        sram_work_dir: &sram_work_dir,
         dep_info,
-        all_submodules.clone(),
-        &module.pin_info,
-        &module.sdc,
-    );
+        submodules: all_submodules.clone(),
+        pin_info: &module.pin_info,
+        sdc: &module.sdc,
+    });
     let syn_pointer = StepRef::new(syn);
     let par_work_dir = work_dir.join("par-rundir");
     let output_netlist_path = if !dep_info.is_empty() {
@@ -733,19 +716,18 @@ fn sky130_scl_cadence_flat_flow(
     };
 
     let final_constraints = module.placement_constraints.clone();
-    let par = sky130_scl_cadence_par(
+    let par = sky130_scl_cadence_par(SclParConfig {
         pdk_root,
-        &par_work_dir,
-        &module.module_name,
-        &final_constraints,
-        &output_netlist_path,
-        &module.srams,
-        &sram_work_dir,
-        all_submodules.clone(),
-        &module.pin_info,
-        syn_pointer.clone(),
-        &module.sdc,
-    );
+        work_dir: &par_work_dir,
+        module: &module.module_name,
+        constraints: &final_constraints,
+        netlist: &output_netlist_path,
+        srams: &module.srams,
+        submodules: all_submodules.clone(),
+        pin_info: &module.pin_info,
+        syn_step: syn_pointer.clone(),
+        sdc: &module.sdc,
+    });
     let par_pointer = StepRef::new(par);
     Sky130FlatFlow {
         module: module.module_name.to_string(),
@@ -845,18 +827,34 @@ fn sky130_os_cadence_par_write_design(
     }
 }
 
-pub fn sky130_os_cadence_syn(
-    pdk_root: &Path,
-    work_dir: &PathBuf,
-    module: &String,
-    verilog_paths: &[PathBuf],
-    srams: &[Sram22],
-    sram_work_dir: &Path,
-    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
-    submodules: Vec<SubmoduleInfo>,
-    pin_info: &FlatPinInfo,
-    sdc: &str,
-) -> GenusStep {
+pub struct OsSynConfig<'a> {
+    pub pdk_root: &'a Path,
+    pub work_dir: &'a PathBuf,
+    pub module: &'a String,
+    pub verilog_paths: &'a [PathBuf],
+    pub srams: &'a [Sram22],
+    pub sram_work_dir: &'a Path,
+    pub dep_info: &'a [(&'a ModuleInfo, &'a Sky130FlatFlow)],
+    pub submodules: Vec<SubmoduleInfo>,
+    pub pin_info: &'a FlatPinInfo,
+    pub sdc: &'a str,
+}
+
+pub struct OsParConfig<'a> {
+    pub pdk_root: &'a Path,
+    pub work_dir: &'a PathBuf,
+    pub module: &'a String,
+    pub constraints: &'a Floorplan,
+    pub netlist: &'a Path,
+    pub srams: &'a [Sram22],
+    pub submodules: Vec<SubmoduleInfo>,
+    pub pin_info: &'a FlatPinInfo,
+    pub syn_step: StepRef<GenusStep>,
+    pub sdc: &'a str,
+}
+
+pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
+    let OsSynConfig { pdk_root, work_dir, module, verilog_paths, srams, sram_work_dir, dep_info, submodules, pin_info, sdc } = config;
     let ss_100c_1v60 = MmmcCorner {
         name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
@@ -940,15 +938,18 @@ pub fn sky130_os_cadence_syn(
         vec![
             set_default_options(),
             sky130_syn_read_design_files(
-                work_dir,
-                verilog_paths,
-                syn_con.clone(),
-                &tlef,
-                &pdk_root.join("libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef"),
-                Some(submodules.clone()),
-                is_hierarchical,
+                GenusDesignFiles {
+                    work_dir,
+                    verilog_paths,
+                    mmmc_conf: syn_con,
+                    tlef: &tlef,
+                    pdk_lef: &pdk_root.join("libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef"),
+                    submodules: Some(submodules.clone()),
+                    is_hierarchical,
+                    hard_macros: &[],
+                    sdc_content: sdc,
+                },
                 srams,
-                sdc,
             ),
             elaborate(module),
             syn_init_design(module, Some(dir_submodules.clone())),
@@ -963,19 +964,8 @@ pub fn sky130_os_cadence_syn(
     )
 }
 
-pub fn sky130_os_cadence_par(
-    pdk_root: &Path,
-    work_dir: &PathBuf,
-    module: &String,
-    constraints: &Floorplan,
-    netlist: &Path,
-    srams: &[Sram22],
-    sram_work_dir: &Path,
-    submodules: Vec<SubmoduleInfo>,
-    pin_info: &FlatPinInfo,
-    syn_step: StepRef<GenusStep>,
-    sdc: &str,
-) -> InnovusStep {
+pub fn sky130_os_cadence_par(config: OsParConfig<'_>) -> InnovusStep {
+    let OsParConfig { pdk_root, work_dir, module, constraints, netlist, srams, submodules, pin_info, syn_step, sdc } = config;
     let filler_cells = vec![
         "sky130_fd_sc_hd__fill_1".into(),
         "sky130_fd_sc_hd__fill_2".into(),
@@ -1063,15 +1053,18 @@ pub fn sky130_os_cadence_par(
         vec![
             set_default_process(130),
             sky130_par_read_design_files(
-                work_dir,
-                module,
-                netlist,
-                par_con.clone(),
-                &tlef,
-                &pdk_root.join("libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef"),
-                Some(submodules),
+                InnovusDesignFiles {
+                    work_dir,
+                    module,
+                    netlist_path: netlist,
+                    mmmc_conf: par_con,
+                    tlef: &tlef,
+                    pdk_lef: &pdk_root.join("libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef"),
+                    submodules: Some(submodules),
+                    hard_macros: &[],
+                    sdc_content: sdc,
+                },
                 srams,
-                sdc,
             ),
             par_init_design(),
             innovus_settings(2, 6),
@@ -1144,18 +1137,18 @@ fn sky130_os_cadence_flat_flow(
     }
 
     let syn_work_dir = work_dir.join("syn-rundir");
-    let syn = sky130_os_cadence_syn(
+    let syn = sky130_os_cadence_syn(OsSynConfig {
         pdk_root,
-        &syn_work_dir,
-        &module.module_name,
-        &module.verilog,
-        &module.srams,
-        &sram_work_dir,
+        work_dir: &syn_work_dir,
+        module: &module.module_name,
+        verilog_paths: &module.verilog,
+        srams: &module.srams,
+        sram_work_dir: &sram_work_dir,
         dep_info,
-        all_submodules.clone(),
-        &module.pin_info,
-        &module.sdc,
-    );
+        submodules: all_submodules.clone(),
+        pin_info: &module.pin_info,
+        sdc: &module.sdc,
+    });
     let syn_pointer = StepRef::new(syn);
     let par_work_dir = work_dir.join("par-rundir");
     let output_netlist_path = if !dep_info.is_empty() {
@@ -1165,19 +1158,18 @@ fn sky130_os_cadence_flat_flow(
     };
 
     let final_constraints = module.placement_constraints.clone();
-    let par = sky130_os_cadence_par(
+    let par = sky130_os_cadence_par(OsParConfig {
         pdk_root,
-        &par_work_dir,
-        &module.module_name,
-        &final_constraints,
-        &output_netlist_path,
-        &module.srams,
-        &sram_work_dir,
-        all_submodules.clone(),
-        &module.pin_info,
-        syn_pointer.clone(),
-        &module.sdc,
-    );
+        work_dir: &par_work_dir,
+        module: &module.module_name,
+        constraints: &final_constraints,
+        netlist: &output_netlist_path,
+        srams: &module.srams,
+        submodules: all_submodules.clone(),
+        pin_info: &module.pin_info,
+        syn_step: syn_pointer.clone(),
+        sdc: &module.sdc,
+    });
     let par_pointer = StepRef::new(par);
     Sky130FlatFlow {
         module: module.module_name.to_string(),
@@ -1207,7 +1199,7 @@ pub fn sky130_os_cadence_reference_flow(
     })
 }
 
-fn decoder_flow() -> anyhow::Result<()> {
+pub fn decoder_flow() -> anyhow::Result<()> {
     let work_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/decoder");
     let pdk_root = PathBuf::from(std::env::var("SKY130PDK_OS_INSTALL_PATH")?);
 
@@ -1246,7 +1238,7 @@ fn decoder_flow() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hierarchical_flow() -> anyhow::Result<()> {
+pub fn hierarchical_flow() -> anyhow::Result<()> {
     let pdk_root = PathBuf::from(std::env::var("SKY130PDK_OS_INSTALL_PATH")?);
     let work_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/hierarchical");
 
@@ -1416,7 +1408,7 @@ fn hierarchical_flow() -> anyhow::Result<()> {
         },
     );
 
-    flow.get_mut(&"fourbitadder")
+    flow.get_mut("fourbitadder")
         .unwrap()
         .syn
         .get()

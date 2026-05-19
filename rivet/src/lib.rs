@@ -30,7 +30,7 @@ impl<F: NamedNode> Dag<F> {
     }
 }
 
-pub trait Step: Debug {
+pub trait Step: Debug + Send + Sync {
     fn deps(&self) -> Vec<Arc<dyn Step>>;
     fn pinned(&self) -> bool;
     fn execute(&self);

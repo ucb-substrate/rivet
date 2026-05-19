@@ -36,6 +36,7 @@ impl PegasusStep {
         }
     }
 
+    #[allow(dead_code)]
     fn make_ctl_file(
         &self,
         path: &PathBuf,
@@ -88,6 +89,7 @@ impl Step for PegasusStep {
                 .current_dir(self.work_dir.clone())
                 .status()
                 .expect("Failed to execute pegasus");
+            assert!(status.success(), "Pegasus command failed with status: {}", status);
 
             let lvs_status = Command::new("pegasus")
                 .args([

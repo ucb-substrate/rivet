@@ -244,34 +244,18 @@ impl NamedNode for Sky130FlatFlow {
     }
 }
 
-pub struct SclSynConfig<'a> {
-    pub pdk_root: &'a Path,
-    pub work_dir: &'a PathBuf,
-    pub module: &'a String,
-    pub verilog_paths: &'a [PathBuf],
-    pub srams: &'a [Sram22],
-    pub sram_work_dir: &'a Path,
-    pub dep_info: &'a [(&'a ModuleInfo, &'a Sky130FlatFlow)],
-    pub submodules: Vec<SubmoduleInfo>,
-    pub pin_info: &'a FlatPinInfo,
-    pub sdc: &'a str,
-}
-
-pub struct SclParConfig<'a> {
-    pub pdk_root: &'a Path,
-    pub work_dir: &'a PathBuf,
-    pub module: &'a String,
-    pub constraints: &'a Floorplan,
-    pub netlist: &'a Path,
-    pub srams: &'a [Sram22],
-    pub submodules: Vec<SubmoduleInfo>,
-    pub pin_info: &'a FlatPinInfo,
-    pub syn_step: StepRef<GenusStep>,
-    pub sdc: &'a str,
-}
-
-pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
-    let SclSynConfig { pdk_root, work_dir, module, verilog_paths, srams, sram_work_dir, dep_info, submodules, pin_info, sdc } = config;
+pub fn sky130_scl_cadence_syn(
+    pdk_root: &Path,
+    work_dir: &PathBuf,
+    module: &String,
+    verilog_paths: &[PathBuf],
+    srams: &[Sram22],
+    sram_work_dir: &Path,
+    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
+    submodules: Vec<SubmoduleInfo>,
+    pin_info: &FlatPinInfo,
+    sdc: &str,
+) -> GenusStep {
     let ss_100c_1v60 = MmmcCorner {
         name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
@@ -392,8 +376,19 @@ pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
     )
 }
 
-pub fn sky130_scl_cadence_par(config: SclParConfig<'_>) -> InnovusStep {
-    let SclParConfig { pdk_root, work_dir, module, constraints, netlist, srams, submodules, pin_info, syn_step, sdc } = config;
+pub fn sky130_scl_cadence_par(
+    pdk_root: &Path,
+    work_dir: &PathBuf,
+    module: &String,
+    constraints: &Floorplan,
+    netlist: &Path,
+    srams: &[Sram22],
+    sram_work_dir: &Path,
+    submodules: Vec<SubmoduleInfo>,
+    pin_info: &FlatPinInfo,
+    syn_step: StepRef<GenusStep>,
+    sdc: &str,
+) -> InnovusStep {
     let filler_cells = vec![
         "FILL0".into(),
         "FILL1".into(),
@@ -695,18 +690,18 @@ fn sky130_scl_cadence_flat_flow(
     }
 
     let syn_work_dir = work_dir.join("syn-rundir");
-    let syn = sky130_scl_cadence_syn(SclSynConfig {
+    let syn = sky130_scl_cadence_syn(
         pdk_root,
-        work_dir: &syn_work_dir,
-        module: &module.module_name,
-        verilog_paths: &module.verilog,
-        srams: &module.srams,
-        sram_work_dir: &sram_work_dir,
+        &syn_work_dir,
+        &module.module_name,
+        &module.verilog,
+        &module.srams,
+        &sram_work_dir,
         dep_info,
-        submodules: all_submodules.clone(),
-        pin_info: &module.pin_info,
-        sdc: &module.sdc,
-    });
+        all_submodules.clone(),
+        &module.pin_info,
+        &module.sdc,
+    );
     let syn_pointer = StepRef::new(syn);
     let par_work_dir = work_dir.join("par-rundir");
     let output_netlist_path = if !dep_info.is_empty() {
@@ -716,18 +711,19 @@ fn sky130_scl_cadence_flat_flow(
     };
 
     let final_constraints = module.placement_constraints.clone();
-    let par = sky130_scl_cadence_par(SclParConfig {
+    let par = sky130_scl_cadence_par(
         pdk_root,
-        work_dir: &par_work_dir,
-        module: &module.module_name,
-        constraints: &final_constraints,
-        netlist: &output_netlist_path,
-        srams: &module.srams,
-        submodules: all_submodules.clone(),
-        pin_info: &module.pin_info,
-        syn_step: syn_pointer.clone(),
-        sdc: &module.sdc,
-    });
+        &par_work_dir,
+        &module.module_name,
+        &final_constraints,
+        &output_netlist_path,
+        &module.srams,
+        &sram_work_dir,
+        all_submodules.clone(),
+        &module.pin_info,
+        syn_pointer.clone(),
+        &module.sdc,
+    );
     let par_pointer = StepRef::new(par);
     Sky130FlatFlow {
         module: module.module_name.to_string(),
@@ -827,34 +823,18 @@ fn sky130_os_cadence_par_write_design(
     }
 }
 
-pub struct OsSynConfig<'a> {
-    pub pdk_root: &'a Path,
-    pub work_dir: &'a PathBuf,
-    pub module: &'a String,
-    pub verilog_paths: &'a [PathBuf],
-    pub srams: &'a [Sram22],
-    pub sram_work_dir: &'a Path,
-    pub dep_info: &'a [(&'a ModuleInfo, &'a Sky130FlatFlow)],
-    pub submodules: Vec<SubmoduleInfo>,
-    pub pin_info: &'a FlatPinInfo,
-    pub sdc: &'a str,
-}
-
-pub struct OsParConfig<'a> {
-    pub pdk_root: &'a Path,
-    pub work_dir: &'a PathBuf,
-    pub module: &'a String,
-    pub constraints: &'a Floorplan,
-    pub netlist: &'a Path,
-    pub srams: &'a [Sram22],
-    pub submodules: Vec<SubmoduleInfo>,
-    pub pin_info: &'a FlatPinInfo,
-    pub syn_step: StepRef<GenusStep>,
-    pub sdc: &'a str,
-}
-
-pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
-    let OsSynConfig { pdk_root, work_dir, module, verilog_paths, srams, sram_work_dir, dep_info, submodules, pin_info, sdc } = config;
+pub fn sky130_os_cadence_syn(
+    pdk_root: &Path,
+    work_dir: &PathBuf,
+    module: &String,
+    verilog_paths: &[PathBuf],
+    srams: &[Sram22],
+    sram_work_dir: &Path,
+    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
+    submodules: Vec<SubmoduleInfo>,
+    pin_info: &FlatPinInfo,
+    sdc: &str,
+) -> GenusStep {
     let ss_100c_1v60 = MmmcCorner {
         name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
@@ -964,8 +944,19 @@ pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
     )
 }
 
-pub fn sky130_os_cadence_par(config: OsParConfig<'_>) -> InnovusStep {
-    let OsParConfig { pdk_root, work_dir, module, constraints, netlist, srams, submodules, pin_info, syn_step, sdc } = config;
+pub fn sky130_os_cadence_par(
+    pdk_root: &Path,
+    work_dir: &PathBuf,
+    module: &String,
+    constraints: &Floorplan,
+    netlist: &Path,
+    srams: &[Sram22],
+    sram_work_dir: &Path,
+    submodules: Vec<SubmoduleInfo>,
+    pin_info: &FlatPinInfo,
+    syn_step: StepRef<GenusStep>,
+    sdc: &str,
+) -> InnovusStep {
     let filler_cells = vec![
         "sky130_fd_sc_hd__fill_1".into(),
         "sky130_fd_sc_hd__fill_2".into(),
@@ -1137,18 +1128,18 @@ fn sky130_os_cadence_flat_flow(
     }
 
     let syn_work_dir = work_dir.join("syn-rundir");
-    let syn = sky130_os_cadence_syn(OsSynConfig {
+    let syn = sky130_os_cadence_syn(
         pdk_root,
-        work_dir: &syn_work_dir,
-        module: &module.module_name,
-        verilog_paths: &module.verilog,
-        srams: &module.srams,
-        sram_work_dir: &sram_work_dir,
+        &syn_work_dir,
+        &module.module_name,
+        &module.verilog,
+        &module.srams,
+        &sram_work_dir,
         dep_info,
-        submodules: all_submodules.clone(),
-        pin_info: &module.pin_info,
-        sdc: &module.sdc,
-    });
+        all_submodules.clone(),
+        &module.pin_info,
+        &module.sdc,
+    );
     let syn_pointer = StepRef::new(syn);
     let par_work_dir = work_dir.join("par-rundir");
     let output_netlist_path = if !dep_info.is_empty() {
@@ -1158,18 +1149,19 @@ fn sky130_os_cadence_flat_flow(
     };
 
     let final_constraints = module.placement_constraints.clone();
-    let par = sky130_os_cadence_par(OsParConfig {
+    let par = sky130_os_cadence_par(
         pdk_root,
-        work_dir: &par_work_dir,
-        module: &module.module_name,
-        constraints: &final_constraints,
-        netlist: &output_netlist_path,
-        srams: &module.srams,
-        submodules: all_submodules.clone(),
-        pin_info: &module.pin_info,
-        syn_step: syn_pointer.clone(),
-        sdc: &module.sdc,
-    });
+        &par_work_dir,
+        &module.module_name,
+        &final_constraints,
+        &output_netlist_path,
+        &module.srams,
+        &sram_work_dir,
+        all_submodules.clone(),
+        &module.pin_info,
+        syn_pointer.clone(),
+        &module.sdc,
+    );
     let par_pointer = StepRef::new(par);
     Sky130FlatFlow {
         module: module.module_name.to_string(),

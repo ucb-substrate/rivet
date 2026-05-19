@@ -6,7 +6,7 @@ use std::process::Command;
 use std::{fs, io};
 
 use crate::MmmcCorner;
-use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc, sdc};
+use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
@@ -65,11 +65,7 @@ impl InnovusStep {
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
 
-                writeln!(
-                    tcl_file,
-                    "write_db {}",
-                    checkpoint_file.display()
-                )?;
+                writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
             }
         }
         writeln!(tcl_file, "exit")?;
@@ -248,17 +244,30 @@ pub fn set_default_process(node_size: i64) -> Substep {
     }
 }
 
-pub fn par_read_design_files(
-    work_dir: &Path,
-    module: &str,
-    netlist_path: &Path,
-    mmmc_conf: MmmcConfig,
-    tlef: &Path,
-    pdk_lef: &Path,
-    submodules: Option<Vec<SubmoduleInfo>>,
-    hard_macros: &[PathBuf],
-    sdc_content: &str,
-) -> Substep {
+pub struct DesignFiles<'a> {
+    pub work_dir: &'a Path,
+    pub module: &'a str,
+    pub netlist_path: &'a Path,
+    pub mmmc_conf: MmmcConfig,
+    pub tlef: &'a Path,
+    pub pdk_lef: &'a Path,
+    pub submodules: Option<Vec<SubmoduleInfo>>,
+    pub hard_macros: &'a [PathBuf],
+    pub sdc_content: &'a str,
+}
+
+pub fn par_read_design_files(files: DesignFiles<'_>) -> Substep {
+    let DesignFiles {
+        work_dir,
+        module,
+        netlist_path,
+        mmmc_conf,
+        tlef,
+        pdk_lef,
+        submodules,
+        hard_macros,
+        sdc_content,
+    } = files;
     let mut sdc_file =
         File::create(work_dir.join("clock_pin_constraints.sdc")).expect("failed to create file");
     writeln!(sdc_file, "{}", sdc_content).expect("Failed to write");
@@ -335,7 +344,12 @@ pub fn innovus_settings(bottom_routing: i64, top_routing: i64) -> Substep {
     }
 }
 
-pub fn floorplan_design(work_dir: &Path, power_spec: &String, floorplan: Floorplan, site_name: &str) -> Substep {
+pub fn floorplan_design(
+    work_dir: &Path,
+    power_spec: &String,
+    floorplan: Floorplan,
+    site_name: &str,
+) -> Substep {
     let floorplan_tcl_path = work_dir.join("floorplan.tcl");
     let mut floorplan_tcl_file = File::create(&floorplan_tcl_path).expect("failed to create file");
     let floorplan_tcl = generate_floorplan_tcl(floorplan, site_name);

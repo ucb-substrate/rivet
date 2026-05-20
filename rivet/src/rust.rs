@@ -1,11 +1,9 @@
 use crate::Step;
 use std::fmt::Debug;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct RustStep<F> {
-    pub work_dir: PathBuf,
     pub rust_fn: F,
     pub dependencies: Vec<Arc<dyn Step>>,
     pub pinned: bool,
@@ -14,7 +12,6 @@ pub struct RustStep<F> {
 impl<F> Debug for RustStep<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RustStep")
-            .field("work_dir", &self.work_dir)
             .field("rust_fn", &"<fn>")
             .field("dependencies", &self.dependencies)
             .field("pinned", &self.pinned)
@@ -23,10 +20,8 @@ impl<F> Debug for RustStep<F> {
 }
 
 impl<F> RustStep<F> {
-    pub fn new(work_dir: impl Into<PathBuf>, rust_fn: F, deps: Vec<Arc<dyn Step>>) -> Self {
-        let dir = work_dir.into();
+    pub fn new(rust_fn: F, deps: Vec<Arc<dyn Step>>) -> Self {
         RustStep {
-            work_dir: dir,
             rust_fn,
             dependencies: deps,
             pinned: false,
@@ -38,9 +33,9 @@ impl<F> RustStep<F> {
     }
 }
 
-impl<F: Fn(&PathBuf) + Send + Sync> Step for RustStep<F> {
+impl<F: Fn() + Send + Sync> Step for RustStep<F> {
     fn execute(&self) {
-        (self.rust_fn)(&self.work_dir);
+        (self.rust_fn)();
     }
 
     fn deps(&self) -> Vec<Arc<dyn Step>> {

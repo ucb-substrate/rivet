@@ -47,20 +47,25 @@ fn execute_inner(
     step: Arc<dyn Step>,
     executed: &mut HashMap<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>,
 ) {
+    println!("Checking status of step {step:?}");
     let step_addr = ByAddress(step.clone());
     if executed.contains_key(&step_addr) {
+        println!("Step has already been executed, skipping");
         return;
     }
 
     if step.pinned() {
+        println!("Step is pinned, skipping");
         executed.insert(step_addr, Arc::clone(&step));
         return;
     }
 
+    println!("Executing step dependencies: {:?}", step.deps());
     for dependency in step.deps() {
         execute_inner(dependency, executed);
     }
 
+    println!("Executing step {step:?}");
     step.execute();
 
     executed.insert(ByAddress(step.clone()), Arc::clone(&step));

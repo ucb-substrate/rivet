@@ -11,6 +11,7 @@ pub struct BashStep {
     pub name: String,
     pub block: String,
     pub dependencies: Vec<Arc<dyn Step>>,
+    pub pinned: bool,
 }
 
 impl BashStep {
@@ -28,7 +29,12 @@ impl BashStep {
             name: file,
             block: module,
             dependencies: deps,
+            pinned: false,
         }
+    }
+
+    pub fn pin(&mut self) {
+        self.pinned = true;
     }
 }
 
@@ -44,6 +50,8 @@ impl Step for BashStep {
         let out_file = File::create(out_path).expect("Failed to create stdout file");
         let err_file = File::create(err_path).expect("Failed to create stderr file");
 
+        // TODO: Make this similar to a TCL tool where a bash script is composed of several
+        // substeps and templated here, rather than running a hardcoded script path.
         let status = Command::new("/bin/bash")
             .args([format!("run_{}.sh", self.name)])
             .current_dir(&self.work_dir)
@@ -67,6 +75,6 @@ impl Step for BashStep {
     }
 
     fn pinned(&self) -> bool {
-        false
+        self.pinned
     }
 }

@@ -4,6 +4,7 @@ pub mod pegasus;
 
 use indoc::formatdoc;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as FmtWrite;
 use std::path::PathBuf;
 
@@ -20,7 +21,7 @@ pub struct Checkpoint {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmoduleInfo {
     pub name: String,
     pub verilog_paths: Vec<PathBuf>,

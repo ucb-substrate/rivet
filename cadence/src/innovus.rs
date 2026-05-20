@@ -11,6 +11,8 @@ use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
 use rust_decimal::Decimal;
+use serde::Deserialize;
+use serde::Serialize;
 use std::sync::Arc;
 
 /// Defines the Innovus place and route step subflow
@@ -822,7 +824,7 @@ pub fn generate_floorplan_tcl(floorplan: Floorplan, site_name: &str) -> String {
 }
 
 /// left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopLevelConstraint {
     pub width: f64,
     pub height: f64,
@@ -832,7 +834,7 @@ pub struct TopLevelConstraint {
     pub top: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardMacroConstraint {
     pub x: f64,
     pub y: f64,
@@ -846,7 +848,7 @@ pub struct HardMacroConstraint {
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObstructionConstraint {
     pub x: f64,
     pub y: f64,
@@ -857,7 +859,7 @@ pub struct ObstructionConstraint {
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Floorplan {
     pub top: TopLevelConstraint,
     pub hard_macros: Vec<HardMacroConstraint>,

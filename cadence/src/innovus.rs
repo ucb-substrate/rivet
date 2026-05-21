@@ -72,6 +72,7 @@ impl InnovusStep {
         writeln!(tcl_file, "}} err}}] {{")?;
         writeln!(tcl_file, "puts stderr \"FATAL: $err\"")?;
         writeln!(tcl_file, "puts stderr $::errorInfo")?;
+        writeln!(tcl_file, "exit 1")?;
         writeln!(tcl_file, "}}")?;
 
         writeln!(tcl_file, "exit")?;

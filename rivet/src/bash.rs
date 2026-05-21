@@ -10,7 +10,7 @@ pub struct BashStep {
     pub work_dir: PathBuf,
     pub name: String,
     pub block: String,
-    pub dependencies: Vec<Arc<dyn Step>>,
+    pub deps: Vec<Arc<dyn Step>>,
     pub pinned: bool,
 }
 
@@ -28,7 +28,7 @@ impl BashStep {
             work_dir: dir,
             name: file,
             block: module,
-            dependencies: deps,
+            deps,
             pinned: false,
         }
     }
@@ -71,7 +71,7 @@ impl Step for BashStep {
     }
 
     fn deps(&self) -> Vec<Arc<dyn Step>> {
-        self.dependencies.clone()
+        self.deps.clone()
     }
 
     fn pinned(&self) -> bool {

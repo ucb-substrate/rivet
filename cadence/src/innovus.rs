@@ -24,7 +24,7 @@ pub struct InnovusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
-    pub dependencies: Vec<Arc<dyn Step>>,
+    pub deps: Vec<Arc<dyn Step>>,
     pub synthesis: bool,
 }
 
@@ -46,7 +46,7 @@ impl InnovusStep {
             pinned,
             start_checkpoint: None,
             endpoint: None,
-            dependencies: deps,
+            deps,
             synthesis,
         }
     }
@@ -199,7 +199,7 @@ impl Step for InnovusStep {
     }
 
     fn deps(&self) -> Vec<Arc<dyn Step>> {
-        self.dependencies.clone()
+        self.deps.clone()
     }
 
     fn pinned(&self) -> bool {

@@ -110,6 +110,11 @@ impl<T: Step> StepRef<T> {
     pub fn get(&self) -> MutexGuard<'_, T> {
         self.inner.lock().unwrap()
     }
+
+    pub fn mut_inner<R>(&self, mut_fn: impl FnOnce(&mut T) -> R) -> R {
+        let mut inner = self.inner.lock().unwrap();
+        mut_fn(&mut inner)
+    }
 }
 impl<T: Step> Step for StepRef<T> {
     fn execute(&self) {

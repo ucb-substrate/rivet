@@ -54,8 +54,7 @@ impl InnovusStep {
     /// Generates the tcl file for place and route
     fn make_tcl_file(&self, path: &Path, substeps: Vec<Substep>) -> io::Result<()> {
         let mut tcl_file = File::create(path.join("par.tcl"))?;
-
-        writeln!(tcl_file, "if {{[catch {{")?;
+        let mut catch_fatal = File::create(path.join("catch_fatal.tcl"))?;
 
         if let Some(checkpoint) = &self.start_checkpoint {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display())?;
@@ -69,13 +68,15 @@ impl InnovusStep {
                 writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
             }
         }
-        writeln!(tcl_file, "}} err]}} {{")?;
-        writeln!(tcl_file, "puts stderr \"FATAL: $err\"")?;
-        writeln!(tcl_file, "puts stderr $::errorInfo")?;
-        writeln!(tcl_file, "exit 1")?;
-        writeln!(tcl_file, "}}")?;
 
-        writeln!(tcl_file, "exit")?;
+        writeln!(catch_fatal, "if {{[catch {{")?;
+        writeln!(catch_fatal, "source -verbose par.tcl")?;
+        writeln!(catch_fatal, "}} err]}} {{")?;
+        writeln!(catch_fatal, "puts stderr \"FATAL: $err\"")?;
+        writeln!(catch_fatal, "puts stderr $::errorInfo")?;
+        writeln!(catch_fatal, "exit 1")?;
+        writeln!(catch_fatal, "}}")?;
+        writeln!(catch_fatal, "exit")?;
 
         println!("\nFinished creating tcl file\n");
         Ok(())
@@ -178,7 +179,7 @@ impl Step for InnovusStep {
         self.make_tcl_file(&self.work_dir, substeps)
             .expect("Failed to create par.tcl");
 
-        let tcl_file = self.work_dir.join("par.tcl");
+        let tcl_file = self.work_dir.join("catch_fatal.tcl");
 
         let mut args = vec![
             "-file",

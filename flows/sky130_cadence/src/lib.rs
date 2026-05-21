@@ -271,7 +271,18 @@ pub struct SclParConfig<'a> {
 }
 
 pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
-    let SclSynConfig { pdk_root, work_dir, module, verilog_paths, srams, sram_work_dir, dep_info, submodules, pin_info, sdc } = config;
+    let SclSynConfig {
+        pdk_root,
+        work_dir,
+        module,
+        verilog_paths,
+        srams,
+        sram_work_dir,
+        dep_info,
+        submodules,
+        pin_info,
+        sdc,
+    } = config;
     let ss_100c_1v60 = MmmcCorner {
         name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
@@ -393,7 +404,18 @@ pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
 }
 
 pub fn sky130_scl_cadence_par(config: SclParConfig<'_>) -> InnovusStep {
-    let SclParConfig { pdk_root, work_dir, module, constraints, netlist, srams, submodules, pin_info, syn_step, sdc } = config;
+    let SclParConfig {
+        pdk_root,
+        work_dir,
+        module,
+        constraints,
+        netlist,
+        srams,
+        submodules,
+        pin_info,
+        syn_step,
+        sdc,
+    } = config;
     let filler_cells = vec![
         "FILL0".into(),
         "FILL1".into(),
@@ -680,9 +702,9 @@ fn sky130_scl_cadence_flat_flow(
 
     let mut all_submodules: Vec<SubmoduleInfo> = Vec::new();
     for (child_module, child_flow) in dep_info {
-        let ilm = child_flow.par.get().ilm_path().to_path_buf();
-        let lef = child_flow.par.get().lef_path().to_path_buf();
-        let gds = child_flow.par.get().gds_path().to_path_buf();
+        let (ilm, lef, gds) = child_flow
+            .par
+            .update(|par| (par.ilm_path(), par.lef_path(), par.gds_path()));
 
         all_submodules.push(SubmoduleInfo {
             name: child_module.module_name.clone(),
@@ -854,7 +876,18 @@ pub struct OsParConfig<'a> {
 }
 
 pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
-    let OsSynConfig { pdk_root, work_dir, module, verilog_paths, srams, sram_work_dir, dep_info, submodules, pin_info, sdc } = config;
+    let OsSynConfig {
+        pdk_root,
+        work_dir,
+        module,
+        verilog_paths,
+        srams,
+        sram_work_dir,
+        dep_info,
+        submodules,
+        pin_info,
+        sdc,
+    } = config;
     let ss_100c_1v60 = MmmcCorner {
         name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
@@ -965,7 +998,18 @@ pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
 }
 
 pub fn sky130_os_cadence_par(config: OsParConfig<'_>) -> InnovusStep {
-    let OsParConfig { pdk_root, work_dir, module, constraints, netlist, srams, submodules, pin_info, syn_step, sdc } = config;
+    let OsParConfig {
+        pdk_root,
+        work_dir,
+        module,
+        constraints,
+        netlist,
+        srams,
+        submodules,
+        pin_info,
+        syn_step,
+        sdc,
+    } = config;
     let filler_cells = vec![
         "sky130_fd_sc_hd__fill_1".into(),
         "sky130_fd_sc_hd__fill_2".into(),
@@ -1123,9 +1167,9 @@ fn sky130_os_cadence_flat_flow(
 
     let mut all_submodules: Vec<SubmoduleInfo> = Vec::new();
     for (child_module, child_flow) in dep_info {
-        let ilm = child_flow.par.get().ilm_path().to_path_buf();
-        let lef = child_flow.par.get().lef_path().to_path_buf();
-        let gds = child_flow.par.get().gds_path().to_path_buf();
+        let (ilm, lef, gds) = child_flow
+            .par
+            .update(|par| (par.ilm_path(), par.lef_path(), par.gds_path()));
         all_submodules.push(SubmoduleInfo {
             name: child_module.module_name.clone(),
             verilog_paths: child_module.verilog.clone(),
@@ -1411,8 +1455,7 @@ pub fn hierarchical_flow() -> anyhow::Result<()> {
     flow.get_mut("fourbitadder")
         .unwrap()
         .syn
-        .get()
-        .replace_hook("syn_opt", "syn_opt", "syn_map", false);
+        .update(|syn| syn.replace_hook("syn_opt", "syn_opt", "syn_map", false));
 
     execute(flow.node.par);
     Ok(())

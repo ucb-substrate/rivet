@@ -11,6 +11,8 @@ use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
 use rust_decimal::Decimal;
+use serde::Deserialize;
+use serde::Serialize;
 use std::sync::Arc;
 
 /// Defines the Innovus place and route step subflow
@@ -22,7 +24,7 @@ pub struct InnovusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
-    pub dependencies: Vec<Arc<dyn Step>>,
+    pub deps: Vec<Arc<dyn Step>>,
     pub synthesis: bool,
 }
 
@@ -44,23 +46,21 @@ impl InnovusStep {
             pinned,
             start_checkpoint: None,
             endpoint: None,
-            dependencies: deps,
+            deps,
             synthesis,
         }
     }
 
     /// Generates the tcl file for place and route
     fn make_tcl_file(&self, path: &Path, substeps: Vec<Substep>) -> io::Result<()> {
-        let mut tcl_file =
-            File::create(path.join("par.tcl")).expect("failed to create par.tcl file");
+        let mut tcl_file = File::create(path.join("par.tcl"))?;
+        let mut catch_fatal = File::create(path.join("catch_fatal.tcl"))?;
 
-        File::create(path.join("rivet_error.log")).expect("failed to create par.tcl file");
         if let Some(checkpoint) = &self.start_checkpoint {
-            writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
+            writeln!(tcl_file, "read_db {}", checkpoint.path.display())?;
         }
 
         for step in substeps.into_iter() {
-            println!("\n--> Parsing step: {}\n", step.name);
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
@@ -68,7 +68,15 @@ impl InnovusStep {
                 writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
             }
         }
-        writeln!(tcl_file, "exit")?;
+
+        writeln!(catch_fatal, "if {{[catch {{")?;
+        writeln!(catch_fatal, "source -verbose par.tcl")?;
+        writeln!(catch_fatal, "}} err]}} {{")?;
+        writeln!(catch_fatal, "puts stderr \"FATAL: $err\"")?;
+        writeln!(catch_fatal, "puts stderr $::errorInfo")?;
+        writeln!(catch_fatal, "exit 1")?;
+        writeln!(catch_fatal, "}}")?;
+        writeln!(catch_fatal, "exit")?;
 
         println!("\nFinished creating tcl file\n");
         Ok(())
@@ -171,7 +179,7 @@ impl Step for InnovusStep {
         self.make_tcl_file(&self.work_dir, substeps)
             .expect("Failed to create par.tcl");
 
-        let tcl_file = self.work_dir.join("par.tcl");
+        let tcl_file = self.work_dir.join("catch_fatal.tcl");
 
         let mut args = vec![
             "-file",
@@ -197,7 +205,7 @@ impl Step for InnovusStep {
     }
 
     fn deps(&self) -> Vec<Arc<dyn Step>> {
-        self.dependencies.clone()
+        self.deps.clone()
     }
 
     fn pinned(&self) -> bool {
@@ -822,7 +830,7 @@ pub fn generate_floorplan_tcl(floorplan: Floorplan, site_name: &str) -> String {
 }
 
 /// left: x-coordinate of left edge, bottom: y-coordinate of bottom edge, right: x-coordinate of right edge, top: y-coordinate of top edge
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopLevelConstraint {
     pub width: f64,
     pub height: f64,
@@ -832,7 +840,7 @@ pub struct TopLevelConstraint {
     pub top: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardMacroConstraint {
     pub x: f64,
     pub y: f64,
@@ -846,7 +854,7 @@ pub struct HardMacroConstraint {
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObstructionConstraint {
     pub x: f64,
     pub y: f64,
@@ -857,7 +865,7 @@ pub struct ObstructionConstraint {
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Floorplan {
     pub top: TopLevelConstraint,
     pub hard_macros: Vec<HardMacroConstraint>,

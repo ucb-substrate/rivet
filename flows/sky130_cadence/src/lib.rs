@@ -704,7 +704,7 @@ fn sky130_scl_cadence_flat_flow(
     for (child_module, child_flow) in dep_info {
         let (ilm, lef, gds) = child_flow
             .par
-            .update(|par| (par.ilm_path(), par.lef_path(), par.gds_path()));
+            .get(|par| (par.ilm_path(), par.lef_path(), par.gds_path()));
 
         all_submodules.push(SubmoduleInfo {
             name: child_module.module_name.clone(),
@@ -1169,7 +1169,7 @@ fn sky130_os_cadence_flat_flow(
     for (child_module, child_flow) in dep_info {
         let (ilm, lef, gds) = child_flow
             .par
-            .update(|par| (par.ilm_path(), par.lef_path(), par.gds_path()));
+            .get(|par| (par.ilm_path(), par.lef_path(), par.gds_path()));
         all_submodules.push(SubmoduleInfo {
             name: child_module.module_name.clone(),
             verilog_paths: child_module.verilog.clone(),

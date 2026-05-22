@@ -1,5 +1,5 @@
 use by_address::ByAddress;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -17,22 +17,31 @@ pub trait NamedNode {
 
 pub struct DagIter<'a, F> {
     stack: Vec<&'a Dag<F>>,
+    visited: HashSet<ByAddress<&'a Dag<F>>>,
 }
 
 impl<'a, F> Iterator for DagIter<'a, F> {
     type Item = &'a F;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let dag = self.stack.pop()?;
-        self.stack
-            .extend(dag.directed_edges.iter().rev().map(|e| e.as_ref()));
-        Some(&dag.node)
+        loop {
+            let dag = self.stack.pop()?;
+            if !self.visited.insert(ByAddress(dag)) {
+                continue;
+            }
+            self.stack
+                .extend(dag.directed_edges.iter().rev().map(|e| e.as_ref()));
+            return Some(&dag.node);
+        }
     }
 }
 
 impl<F> Dag<F> {
     pub fn iter(&self) -> DagIter<'_, F> {
-        DagIter { stack: vec![self] }
+        DagIter {
+            stack: vec![self],
+            visited: HashSet::new(),
+        }
     }
 }
 

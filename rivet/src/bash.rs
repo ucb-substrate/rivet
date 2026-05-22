@@ -1,10 +1,9 @@
-use crate::Step;
+use crate::{Step, StepRef};
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::thread;
 
 #[derive(Debug, Clone)]
@@ -12,7 +11,7 @@ pub struct BashStep {
     pub work_dir: PathBuf,
     pub name: String,
     pub block: String,
-    pub deps: Vec<Arc<dyn Step>>,
+    pub deps: Vec<StepRef<dyn Step>>,
     pub pinned: bool,
 }
 
@@ -21,7 +20,7 @@ impl BashStep {
         work_dir: impl Into<PathBuf>,
         name: impl Into<String>,
         block: impl Into<String>,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
         let file = name.into();
@@ -95,7 +94,7 @@ impl Step for BashStep {
         }
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.deps.clone()
     }
 

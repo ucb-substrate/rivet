@@ -343,9 +343,9 @@ pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
         })
         .collect();
 
-    let mut deps: Vec<Arc<dyn Step>> = dep_info
+    let mut deps: Vec<StepRef<dyn Step>> = dep_info
         .iter()
-        .map(|(_module, flow)| Arc::new(flow.par.clone()) as Arc<dyn Step>)
+        .map(|(_module, flow)| flow.par.clone().into_dyn())
         .collect();
 
     let is_hierarchical = !submodules.is_empty();
@@ -360,13 +360,13 @@ pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
         fs::create_dir_all(sram_work_dir).expect("Failed to create sram directory");
         generate_compiler_script(&missing_srams, sram_work_dir)
             .expect("Failed to generate SRAM compiler script");
-        let sram_compiler = Arc::new(BashStep::new(
+        let sram_compiler = StepRef::new(BashStep::new(
             sram_work_dir.to_path_buf(),
             "generate_sram",
             module.as_str(),
             vec![],
         ));
-        deps.push(sram_compiler);
+        deps.push(sram_compiler.into_dyn());
     }
 
     GenusStep::new(
@@ -578,7 +578,7 @@ pub fn sky130_scl_cadence_par(config: SclParConfig<'_>) -> InnovusStep {
             ),
         ],
         matches!(pin_info, FlatPinInfo::PinPar(_)),
-        vec![Arc::new(syn_step) as Arc<dyn Step>],
+        vec![syn_step.into_dyn()],
         false,
     )
 }
@@ -939,9 +939,9 @@ pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
         })
         .collect();
 
-    let mut deps: Vec<Arc<dyn Step>> = dep_info
+    let mut deps: Vec<StepRef<dyn Step>> = dep_info
         .iter()
-        .map(|(_module, flow)| Arc::new(flow.par.clone()) as Arc<dyn Step>)
+        .map(|(_module, flow)| flow.par.clone().into_dyn())
         .collect();
 
     let is_hierarchical = !submodules.is_empty();
@@ -956,13 +956,13 @@ pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
         fs::create_dir_all(sram_work_dir).expect("Failed to create sram directory");
         generate_compiler_script(&missing_srams, sram_work_dir)
             .expect("Failed to generate SRAM compiler script");
-        let sram_compiler = Arc::new(BashStep::new(
+        let sram_compiler = StepRef::new(BashStep::new(
             sram_work_dir.to_path_buf(),
             "generate_sram",
             module.as_str(),
             vec![],
         ));
-        deps.push(sram_compiler);
+        deps.push(sram_compiler.into_dyn());
     }
 
     GenusStep::new(
@@ -1152,7 +1152,7 @@ pub fn sky130_os_cadence_par(config: OsParConfig<'_>) -> InnovusStep {
             ),
         ],
         matches!(pin_info, FlatPinInfo::PinPar(_)),
-        vec![Arc::new(syn_step) as Arc<dyn Step>],
+        vec![syn_step.into_dyn()],
         false,
     )
 }

@@ -9,8 +9,7 @@ use std::{fs, io};
 use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc};
 use fs::File;
 use indoc::formatdoc;
-use rivet::Step;
-use std::sync::Arc;
+use rivet::{Step, StepRef};
 
 /// Defines the Genus synthesis step subflow
 #[derive(Debug, Clone)]
@@ -21,7 +20,7 @@ pub struct GenusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
-    pub dependencies: Vec<Arc<dyn Step>>,
+    pub dependencies: Vec<StepRef<dyn Step>>,
 }
 
 impl GenusStep {
@@ -30,7 +29,7 @@ impl GenusStep {
         module: impl Into<String>,
         steps: Vec<Substep>,
         pinned: bool,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
@@ -182,7 +181,7 @@ impl Step for GenusStep {
         }
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.dependencies.clone()
     }
 

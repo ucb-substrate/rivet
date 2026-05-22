@@ -1,7 +1,9 @@
 use by_address::ByAddress;
-use std::collections::{HashMap, HashSet};
+use std::any::Any;
+use std::collections::HashSet;
 use std::fmt::Debug;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::ops::Deref;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub mod bash;
 pub mod rust;
@@ -60,45 +62,47 @@ impl<F: NamedNode> Dag<F> {
     }
 }
 
-pub trait Step: Debug + Send + Sync {
-    fn deps(&self) -> Vec<Arc<dyn Step>>;
+pub trait Step: Debug + Any + Send + Sync {
+    fn deps(&self) -> Vec<StepRef<dyn Step>>;
     fn pinned(&self) -> bool;
     fn execute(&self);
 }
 
-pub fn execute(target: impl Step + 'static) {
-    let target = Arc::new(target) as Arc<dyn Step>;
-
-    let mut executed = HashMap::<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>::new();
-    execute_inner(target, &mut executed);
+#[derive(Default)]
+pub struct Executor {
+    executed: HashSet<ByAddress<StepRef<dyn Step>>>,
 }
 
-fn execute_inner(
-    step: Arc<dyn Step>,
-    executed: &mut HashMap<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>,
-) {
-    println!("Checking status of step {step:?}");
-    let step_addr = ByAddress(step.clone());
-    if executed.contains_key(&step_addr) {
-        println!("Step has already been executed, skipping");
-        return;
+impl Executor {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    if step.pinned() {
-        println!("Step is pinned, skipping");
-        executed.insert(step_addr, Arc::clone(&step));
-        return;
+    pub fn execute<T: Step>(mut self, step: StepRef<T>) -> Self {
+        self.execute_step(step.into_dyn());
+        self
     }
 
-    println!("Executing step dependencies: {:?}", step.deps());
-    for dependency in step.deps() {
-        execute_inner(dependency, executed);
+    fn execute_step(&mut self, step: StepRef<dyn Step>) {
+        let step_addr = ByAddress(step.clone());
+        if self.executed.contains(&step_addr) {
+            return;
+        }
+        if step.read().pinned() {
+            self.executed.insert(step_addr);
+            return;
+        }
+        let deps = step.read().deps();
+        for dep in deps {
+            self.execute_step(dep);
+        }
+        step.read().execute();
+        self.executed.insert(ByAddress(step));
     }
+}
 
-    println!("Executing step {step:?}");
-    step.execute();
-
-    executed.insert(ByAddress(step.clone()), Arc::clone(&step));
+pub fn execute(step: StepRef<impl Step + 'static>) {
+    Executor::new().execute(step);
 }
 
 pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)>) -> F) -> Dag<F> {
@@ -123,42 +127,59 @@ pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct StepRef<T: Step> {
-    inner: Arc<Mutex<T>>,
+#[derive(Debug)]
+pub struct StepRef<T: ?Sized> {
+    inner: Arc<RwLock<T>>,
 }
 
-impl<T: Step> StepRef<T> {
-    pub fn new(data: T) -> Self {
+impl<T: ?Sized> Clone for StepRef<T> {
+    fn clone(&self) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(data)),
+            inner: self.inner.clone(),
         }
     }
+}
 
-    pub fn lock(&self) -> MutexGuard<'_, T> {
-        self.inner.lock().unwrap()
+impl<T: ?Sized> Deref for StepRef<T> {
+    type Target = RwLock<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.inner
+    }
+}
+
+impl<T> StepRef<T> {
+    pub fn new(data: T) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(data)),
+        }
+    }
+}
+
+impl<T: ?Sized> StepRef<T> {
+    pub fn read(&self) -> RwLockReadGuard<'_, T> {
+        self.inner.read().unwrap()
+    }
+
+    pub fn write(&self) -> RwLockWriteGuard<'_, T> {
+        self.inner.write().unwrap()
     }
 
     pub fn get<R>(&self, get_fn: impl FnOnce(&T) -> R) -> R {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
         get_fn(&inner)
     }
 
     pub fn update<R>(&self, update_fn: impl FnOnce(&mut T) -> R) -> R {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         update_fn(&mut inner)
     }
 }
-impl<T: Step> Step for StepRef<T> {
-    fn execute(&self) {
-        self.lock().execute();
-    }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
-        self.lock().deps()
-    }
-
-    fn pinned(&self) -> bool {
-        self.lock().pinned()
+impl<T: Step + 'static> StepRef<T> {
+    pub fn into_dyn(self) -> StepRef<dyn Step> {
+        StepRef {
+            inner: self.inner as Arc<RwLock<dyn Step>>,
+        }
     }
 }

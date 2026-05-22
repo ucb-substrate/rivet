@@ -111,9 +111,9 @@ impl<T: Step> StepRef<T> {
         self.inner.lock().unwrap()
     }
 
-    pub fn update<R>(&self, mut_fn: impl FnOnce(&mut T) -> R) -> R {
+    pub fn update<R>(&self, update_fn: impl FnOnce(&mut T) -> R) -> R {
         let mut inner = self.inner.lock().unwrap();
-        mut_fn(&mut inner)
+        update_fn(&mut inner)
     }
 }
 impl<T: Step> Step for StepRef<T> {

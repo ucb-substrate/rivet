@@ -1297,7 +1297,7 @@ pub fn hierarchical_flow() -> anyhow::Result<()> {
         ]
     };
 
-    let mut flow = sky130_scl_cadence_reference_flow(
+    let flow = sky130_scl_cadence_reference_flow(
         pdk_root,
         work_dir,
         Dag {
@@ -1452,7 +1452,7 @@ pub fn hierarchical_flow() -> anyhow::Result<()> {
         },
     );
 
-    flow.get_mut("fourbitadder")
+    flow.get("fourbitadder")
         .unwrap()
         .syn
         .update(|syn| syn.replace_hook("syn_opt", "syn_opt", "syn_map", false));

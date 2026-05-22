@@ -15,20 +15,39 @@ pub trait NamedNode {
     fn name(&self) -> String;
 }
 
+pub struct DagIter<'a, F> {
+    stack: Vec<&'a Dag<F>>,
+}
+
+impl<'a, F> Iterator for DagIter<'a, F> {
+    type Item = &'a F;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let dag = self.stack.pop()?;
+        self.stack
+            .extend(dag.directed_edges.iter().rev().map(|e| e.as_ref()));
+        Some(&dag.node)
+    }
+}
+
+impl<F> Dag<F> {
+    pub fn iter(&self) -> DagIter<'_, F> {
+        DagIter { stack: vec![self] }
+    }
+}
+
+impl<'a, F> IntoIterator for &'a Dag<F> {
+    type Item = &'a F;
+    type IntoIter = DagIter<'a, F>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 impl<F: NamedNode> Dag<F> {
-    pub fn get_mut(&mut self, target: &str) -> Option<&mut F> {
-        if self.node.name() == target {
-            Some(&mut self.node)
-        } else {
-            for edge in &mut self.directed_edges {
-                if let Some(child_dag) = Arc::get_mut(edge) {
-                    if let Some(found) = child_dag.get_mut(target) {
-                        return Some(found);
-                    }
-                }
-            }
-            None
-        }
+    pub fn get(&self, target: &str) -> Option<&F> {
+        self.iter().find(|n| n.name() == target)
     }
 }
 

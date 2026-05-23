@@ -155,8 +155,115 @@ fn sky130_par_read_design_files(files: InnovusDesignFiles, srams: &[Sram22]) -> 
     })
 }
 
-fn sky130_scl_cadence_par_write_design(
-    pdk_root: &Path,
+fn scl_power_strap_layers() -> Vec<Layer> {
+    vec![
+        Layer {
+            top: "met1".into(),
+            bot: "met1".into(),
+            spacing: dec!(4.000),
+            trim_antenna: false,
+            add_stripes_command: r#"add_stripes -nets {VDD VSS} -layer met1 -direction horizontal -start_offset -.2 -width .4 -spacing 3.74 -set_to_set_distance 8.28 -start_from bottom -switch_layer_over_obs false -max_same_layer_jog_length 2 -pad_core_ring_top_layer_limit met5 -pad_core_ring_bottom_layer_limit met1 -block_ring_top_layer_limit met5 -block_ring_bottom_layer_limit met1 -use_wire_group 0 -snap_wire_center_to_grid none"#.to_string(),
+        },
+        Layer {
+            top: "met4".to_string(),
+            bot: "met1".to_string(),
+            spacing: dec!(2.000),
+            trim_antenna: true,
+            add_stripes_command: r#"add_stripes -create_pins 0 -block_ring_bottom_layer_limit met4 -block_ring_top_layer_limit met1 -direction vertical -layer met4 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met1 -set_to_set_distance 75.90 -spacing 3.66 -switch_layer_over_obs 0 -width 1.86 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 0] + 7.35]"#.to_string(),
+        },
+        Layer {
+            top: "met5".to_string(),
+            bot: "met4".to_string(),
+            spacing: dec!(2.000),
+            trim_antenna: true,
+            add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
+        },
+    ]
+}
+
+fn os_power_strap_layers() -> Vec<Layer> {
+    vec![
+        Layer {
+            top: "met4".to_string(),
+            bot: "met1".to_string(),
+            spacing: dec!(2.000),
+            trim_antenna: true,
+            add_stripes_command: r#"add_stripes -create_pins 0 -block_ring_bottom_layer_limit met4 -block_ring_top_layer_limit met1 -direction vertical -layer met4 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met1 -set_to_set_distance 75.90 -spacing 3.66 -switch_layer_over_obs 0 -width 1.86 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 0] + 7.35]"#.to_string(),
+        },
+        Layer {
+            top: "met5".to_string(),
+            bot: "met4".to_string(),
+            spacing: dec!(2.000),
+            trim_antenna: true,
+            add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
+        },
+    ]
+}
+
+pub struct Sky130PdkConfig {
+    pub lib_ss: PathBuf,
+    pub lib_ff: PathBuf,
+    pub lib_tt: PathBuf,
+    pub tlef: PathBuf,
+    pub pdk_lef: PathBuf,
+    pub pdk_gds: PathBuf,
+    pub filler_cells: Vec<String>,
+    pub power_strap_layers: Vec<Layer>,
+    /// Steps inserted after set_default_options() in syn (e.g. dont_avoid_lib_cells for SCL)
+    pub extra_syn_steps: Vec<Substep>,
+    /// Steps inserted after sky130_innovus_settings() in par (e.g. sky130_os_innovus_settings for OS)
+    pub extra_par_steps: Vec<Substep>,
+}
+
+impl Sky130PdkConfig {
+    pub fn scl(pdk_root: &Path) -> Self {
+        let base = pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5");
+        Self {
+            lib_ss: base.join("lib/sky130_ss_1.62_125_nldm.lib"),
+            lib_ff: base.join("lib/sky130_ff_1.98_0_nldm.lib"),
+            lib_tt: base.join("lib/sky130_tt_1.8_25_nldm.lib"),
+            tlef: base.join("lef/sky130_scl_9T.tlef"),
+            pdk_lef: base.join("lef/sky130_scl_9T.lef"),
+            pdk_gds: base.join("gds/sky130_scl_9T.gds"),
+            filler_cells: vec![
+                "FILL0".into(),
+                "FILL1".into(),
+                "FILL4".into(),
+                "FILL9".into(),
+                "FILL16".into(),
+                "FILL25".into(),
+                "FILL36".into(),
+            ],
+            power_strap_layers: scl_power_strap_layers(),
+            extra_syn_steps: vec![dont_avoid_lib_cells("ICGX1")],
+            extra_par_steps: vec![],
+        }
+    }
+
+    pub fn os(pdk_root: &Path) -> Self {
+        let base = pdk_root.join("libs.ref/sky130_fd_sc_hd");
+        Self {
+            lib_ss: base.join("lib/sky130_fd_sc_hd__ss_100C_1v60.lib"),
+            lib_ff: base.join("lib/sky130_fd_sc_hd__ff_n40C_1v95_ccsnoise.lib"),
+            lib_tt: base.join("lib/sky130_fd_sc_hd__tt_025C_1v80.lib"),
+            tlef: base.join("techlef/sky130_fd_sc_hd__nom.tlef"),
+            pdk_lef: base.join("lef/sky130_fd_sc_hd.lef"),
+            pdk_gds: base.join("gds/sky130_fd_sc_hd.gds"),
+            filler_cells: vec![
+                "sky130_fd_sc_hd__fill_1".into(),
+                "sky130_fd_sc_hd__fill_2".into(),
+                "sky130_fd_sc_hd__fill_4".into(),
+                "sky130_fd_sc_hd__fill_8".into(),
+            ],
+            power_strap_layers: os_power_strap_layers(),
+            extra_syn_steps: vec![],
+            extra_par_steps: vec![sky130_os_innovus_settings()],
+        }
+    }
+}
+
+fn sky130_cadence_par_write_design(
+    pdk_gds: &Path,
     work_dir: &Path,
     module: &str,
     srams: &[Sram22],
@@ -184,11 +291,8 @@ fn sky130_scl_cadence_par_write_design(
         .clone();
 
     let sram_work_dir = work_dir.parent().unwrap().join("sram");
-    let pdk_gds = pdk_root
-        .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/gds/sky130_scl_9T.gds")
-        .display()
-        .to_string();
-    let mut merge_gds = vec![pdk_gds];
+    let pdk_gds_str = pdk_gds.display().to_string();
+    let mut merge_gds = vec![pdk_gds_str];
     merge_gds.extend(
         srams
             .iter()
@@ -244,8 +348,7 @@ impl NamedNode for Sky130FlatFlow {
     }
 }
 
-pub struct SclSynConfig<'a> {
-    pub pdk_root: &'a Path,
+pub struct Sky130SynConfig<'a> {
     pub work_dir: &'a PathBuf,
     pub module: &'a String,
     pub verilog_paths: &'a [PathBuf],
@@ -257,8 +360,7 @@ pub struct SclSynConfig<'a> {
     pub sdc: &'a str,
 }
 
-pub struct SclParConfig<'a> {
-    pub pdk_root: &'a Path,
+pub struct Sky130ParConfig<'a> {
     pub work_dir: &'a PathBuf,
     pub module: &'a String,
     pub constraints: &'a Floorplan,
@@ -270,9 +372,8 @@ pub struct SclParConfig<'a> {
     pub sdc: &'a str,
 }
 
-pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
-    let SclSynConfig {
-        pdk_root,
+pub fn sky130_cadence_syn(config: Sky130SynConfig<'_>, pdk: &Sky130PdkConfig) -> GenusStep {
+    let Sky130SynConfig {
         work_dir,
         module,
         verilog_paths,
@@ -283,55 +384,43 @@ pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
         pin_info,
         sdc,
     } = config;
+
     let ss_100c_1v60 = MmmcCorner {
         name: "ss_100c_1v60".to_string(),
         corner_type: "setup".to_string(),
-        libs: vec![
-            pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib"),
-        ],
+        libs: vec![pdk.lib_ss.clone()],
         temperature: dec!(100.0),
     };
     let ff_n40c_1v95 = MmmcCorner {
         name: "ff_n40c_1v95".to_string(),
         corner_type: "hold".to_string(),
-        libs: vec![
-            pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib"),
-        ],
+        libs: vec![pdk.lib_ff.clone()],
         temperature: dec!(-40.0),
     };
-
     let tt_025c_1v80 = MmmcCorner {
         name: "tt_025c_1v80".to_string(),
         corner_type: "extra".to_string(),
-        libs: vec![
-            pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib"),
-        ],
+        libs: vec![pdk.lib_tt.clone()],
         temperature: dec!(25.0),
     };
 
     let syn_con = MmmcConfig {
         sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
-
         corners: vec![
             ss_100c_1v60.clone(),
             ff_n40c_1v95.clone(),
             tt_025c_1v80.clone(),
         ],
-
         setup: vec![ss_100c_1v60.clone()],
-
         hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
-
         dynamic: tt_025c_1v80.clone(),
-
         leakage: tt_025c_1v80.clone(),
     };
+
     fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
 
-    let tlef = setup_techlef(
-        work_dir,
-        &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
-    );
+    let tlef = setup_techlef(work_dir, &pdk.tlef);
+
     let dir_submodules: Vec<SubmoduleInfo> = dep_info
         .iter()
         .map(|(module, _)| {
@@ -369,43 +458,43 @@ pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
         deps.push(sram_compiler);
     }
 
+    let mut substeps = vec![set_default_options()];
+    substeps.extend(pdk.extra_syn_steps.iter().cloned());
+    substeps.extend([
+        sky130_syn_read_design_files(
+            GenusDesignFiles {
+                work_dir,
+                verilog_paths,
+                mmmc_conf: syn_con,
+                tlef: &tlef,
+                pdk_lef: &pdk.pdk_lef,
+                submodules: Some(submodules.clone()),
+                is_hierarchical,
+                hard_macros: &[],
+                sdc_content: sdc,
+            },
+            srams,
+        ),
+        elaborate(module),
+        syn_init_design(module, Some(dir_submodules.clone())),
+        power_intent(work_dir, &sky130_cadence_power_spec(module, dec!(1.8))),
+        syn_generic(),
+        syn_map(),
+        add_tieoffs("sky130_fd_sc_hd__conb_1", "sky130_fd_sc_hd__conb_1"),
+        syn_write_design(module, ss_100c_1v60.clone(), is_hierarchical),
+    ]);
+
     GenusStep::new(
         work_dir,
         module,
-        vec![
-            set_default_options(),
-            dont_avoid_lib_cells("ICGX1"),
-            sky130_syn_read_design_files(
-                GenusDesignFiles {
-                    work_dir,
-                    verilog_paths,
-                    mmmc_conf: syn_con,
-                    tlef: &tlef,
-                    pdk_lef: &pdk_root
-                        .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
-                    submodules: Some(submodules.clone()),
-                    is_hierarchical,
-                    hard_macros: &[],
-                    sdc_content: sdc,
-                },
-                srams,
-            ),
-            elaborate(module),
-            syn_init_design(module, Some(dir_submodules.clone())),
-            power_intent(work_dir, &sky130_cadence_power_spec(module, dec!(1.8))),
-            syn_generic(),
-            syn_map(),
-            add_tieoffs("sky130_fd_sc_hd__conb_1", "sky130_fd_sc_hd__conb_1"),
-            syn_write_design(module, ss_100c_1v60.clone(), is_hierarchical),
-        ],
+        substeps,
         matches!(pin_info, FlatPinInfo::PinSyn(_)),
         deps,
     )
 }
 
-pub fn sky130_scl_cadence_par(config: SclParConfig<'_>) -> InnovusStep {
-    let SclParConfig {
-        pdk_root,
+pub fn sky130_cadence_par(config: Sky130ParConfig<'_>, pdk: &Sky130PdkConfig) -> InnovusStep {
+    let Sky130ParConfig {
         work_dir,
         module,
         constraints,
@@ -416,15 +505,44 @@ pub fn sky130_scl_cadence_par(config: SclParConfig<'_>) -> InnovusStep {
         syn_step,
         sdc,
     } = config;
-    let filler_cells = vec![
-        "FILL0".into(),
-        "FILL1".into(),
-        "FILL4".into(),
-        "FILL9".into(),
-        "FILL16".into(),
-        "FILL25".into(),
-        "FILL36".into(),
-    ];
+
+    let ss_100c_1v60 = MmmcCorner {
+        name: "ss_100c_1v60".to_string(),
+        corner_type: "setup".to_string(),
+        libs: vec![pdk.lib_ss.clone()],
+        temperature: dec!(100.0),
+    };
+    let ff_n40c_1v95 = MmmcCorner {
+        name: "ff_n40c_1v95".to_string(),
+        corner_type: "hold".to_string(),
+        libs: vec![pdk.lib_ff.clone()],
+        temperature: dec!(-40.0),
+    };
+    let tt_025c_1v80 = MmmcCorner {
+        name: "tt_025c_1v80".to_string(),
+        corner_type: "extra".to_string(),
+        libs: vec![pdk.lib_tt.clone()],
+        temperature: dec!(25.0),
+    };
+
+    let par_con = MmmcConfig {
+        sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
+        corners: vec![
+            ss_100c_1v60.clone(),
+            ff_n40c_1v95.clone(),
+            tt_025c_1v80.clone(),
+        ],
+        setup: vec![ss_100c_1v60.clone()],
+        hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
+        dynamic: tt_025c_1v80.clone(),
+        leakage: tt_025c_1v80.clone(),
+    };
+
+    fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
+
+    let tlef = setup_techlef(work_dir, &pdk.tlef);
+    let par_constraints = constraints.clone();
+    let layers = pdk.power_strap_layers.clone();
 
     let assignment = PinAssignment {
         pins: "*".into(),
@@ -439,144 +557,70 @@ pub fn sky130_scl_cadence_par(config: SclParConfig<'_>) -> InnovusStep {
         depth: "".into(),
     };
 
-    let layers = vec![
-        Layer {
-            top: "met1".into(),
-            bot: "met1".into(),
-            spacing: dec!(4.000),
-            trim_antenna: false,
-            add_stripes_command: r#"add_stripes -nets {VDD VSS} -layer met1 -direction horizontal -start_offset -.2 -width .4 -spacing 3.74 -set_to_set_distance 8.28 -start_from bottom -switch_layer_over_obs false -max_same_layer_jog_length 2 -pad_core_ring_top_layer_limit met5 -pad_core_ring_bottom_layer_limit met1 -block_ring_top_layer_limit met5 -block_ring_bottom_layer_limit met1 -use_wire_group 0 -snap_wire_center_to_grid none"#.to_string(),
-        },
-
-        Layer {
-            top: "met4".to_string(),
-            bot: "met1".to_string(),
-            spacing: dec!(2.000),
-            trim_antenna: true,
-            add_stripes_command: r#"add_stripes -create_pins 0 -block_ring_bottom_layer_limit met4 -block_ring_top_layer_limit met1 -direction vertical -layer met4 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met1 -set_to_set_distance 75.90 -spacing 3.66 -switch_layer_over_obs 0 -width 1.86 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 0] + 7.35]"#.to_string(),
-        },
-        Layer {
-            top: "met5".to_string(),
-            bot: "met4".to_string(),
-            spacing: dec!(2.000),
-            trim_antenna: true,
-            add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
-        }
+    let mut substeps = vec![
+        set_default_process(130),
+        sky130_par_read_design_files(
+            InnovusDesignFiles {
+                work_dir,
+                module,
+                netlist_path: netlist,
+                mmmc_conf: par_con,
+                tlef: &tlef,
+                pdk_lef: &pdk.pdk_lef,
+                submodules: Some(submodules),
+                hard_macros: &[],
+                sdc_content: sdc,
+            },
+            srams,
+        ),
+        par_init_design(),
+        innovus_settings(2, 6),
+        sky130_innovus_settings(),
     ];
-
-    let ss_100c_1v60 = MmmcCorner {
-        name: "ss_100c_1v60".to_string(),
-        corner_type: "setup".to_string(),
-        libs: vec![
-            pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ss_1.62_125_nldm.lib"),
-        ],
-        temperature: dec!(100.0),
-    };
-    let ff_n40c_1v95 = MmmcCorner {
-        name: "ff_n40c_1v95".to_string(),
-        corner_type: "hold".to_string(),
-        libs: vec![
-            pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_ff_1.98_0_nldm.lib"),
-        ],
-        temperature: dec!(-40.0),
-    };
-
-    let tt_025c_1v80 = MmmcCorner {
-        name: "tt_025c_1v80".to_string(),
-        corner_type: "extra".to_string(),
-        libs: vec![
-            pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lib/sky130_tt_1.8_25_nldm.lib"),
-        ],
-        temperature: dec!(25.0),
-    };
-
-    let par_con = MmmcConfig {
-        sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
-
-        corners: vec![
-            ss_100c_1v60.clone(),
-            ff_n40c_1v95.clone(),
-            tt_025c_1v80.clone(),
-        ],
-
-        setup: vec![ss_100c_1v60.clone()],
-
-        hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
-
-        dynamic: tt_025c_1v80.clone(),
-
-        leakage: tt_025c_1v80.clone(),
-    };
-
-    fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
-
-    let tlef = setup_techlef(
-        work_dir,
-        &pdk_root.join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.tlef"),
-    );
-
-    let par_constraints = constraints.clone();
+    substeps.extend(pdk.extra_par_steps.iter().cloned());
+    substeps.extend([
+        floorplan_design(
+            work_dir,
+            &sky130_cadence_power_spec(module, dec!(1.8)),
+            par_constraints,
+            "unithd",
+        ),
+        sky130_connect_nets(),
+        power_straps(layers.clone()),
+        place_pins("5", "1", vec![assignment]),
+        place_opt_design(None),
+        add_fillers(pdk.filler_cells.clone()),
+        route_design(),
+        opt_design(),
+        write_regs(),
+        sky130_connect_nets(),
+        sky130_cadence_par_write_design(
+            &pdk.pdk_gds,
+            work_dir,
+            module,
+            srams,
+            vec![
+                ss_100c_1v60.clone(),
+                ff_n40c_1v95.clone(),
+                tt_025c_1v80.clone(),
+            ],
+        ),
+        write_ilm(
+            work_dir,
+            module,
+            &layers[0],
+            vec![
+                ss_100c_1v60.clone(),
+                ff_n40c_1v95.clone(),
+                tt_025c_1v80.clone(),
+            ],
+        ),
+    ]);
 
     InnovusStep::new(
         work_dir,
         module,
-        vec![
-            set_default_process(130),
-            sky130_par_read_design_files(
-                InnovusDesignFiles {
-                    work_dir,
-                    module,
-                    netlist_path: netlist,
-                    mmmc_conf: par_con,
-                    tlef: &tlef,
-                    pdk_lef: &pdk_root
-                        .join("sky130/sky130_cds/sky130_scl_9T_0.0.5/lef/sky130_scl_9T.lef"),
-                    submodules: Some(submodules),
-                    hard_macros: &[],
-                    sdc_content: sdc,
-                },
-                srams,
-            ),
-            par_init_design(),
-            innovus_settings(2, 6),
-            sky130_innovus_settings(),
-            floorplan_design(
-                work_dir,
-                &sky130_cadence_power_spec(module, dec!(1.8)),
-                par_constraints,
-                "unithd",
-            ),
-            sky130_connect_nets(),
-            power_straps(layers.clone()),
-            place_pins("5", "1", vec![assignment]),
-            place_opt_design(None),
-            add_fillers(filler_cells),
-            route_design(),
-            opt_design(),
-            write_regs(),
-            sky130_connect_nets(),
-            sky130_scl_cadence_par_write_design(
-                pdk_root,
-                work_dir,
-                module,
-                srams,
-                vec![
-                    ss_100c_1v60.clone(),
-                    ff_n40c_1v95.clone(),
-                    tt_025c_1v80.clone(),
-                ],
-            ),
-            write_ilm(
-                work_dir,
-                module,
-                &layers[0],
-                vec![
-                    ss_100c_1v60.clone(),
-                    ff_n40c_1v95.clone(),
-                    tt_025c_1v80.clone(),
-                ],
-            ),
-        ],
+        substeps,
         matches!(pin_info, FlatPinInfo::PinPar(_)),
         vec![Arc::new(syn_step) as Arc<dyn Step>],
         false,
@@ -692,8 +736,8 @@ pub fn sky130_cadence_power_spec(module: &str, voltage: Decimal) -> String {
     }
 }
 
-fn sky130_scl_cadence_flat_flow(
-    pdk_root: &Path,
+fn sky130_cadence_flat_flow(
+    pdk: &Sky130PdkConfig,
     work_dir: &Path,
     module: &ModuleInfo,
     dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
@@ -717,18 +761,20 @@ fn sky130_scl_cadence_flat_flow(
     }
 
     let syn_work_dir = work_dir.join("syn-rundir");
-    let syn = sky130_scl_cadence_syn(SclSynConfig {
-        pdk_root,
-        work_dir: &syn_work_dir,
-        module: &module.module_name,
-        verilog_paths: &module.verilog,
-        srams: &module.srams,
-        sram_work_dir: &sram_work_dir,
-        dep_info,
-        submodules: all_submodules.clone(),
-        pin_info: &module.pin_info,
-        sdc: &module.sdc,
-    });
+    let syn = sky130_cadence_syn(
+        Sky130SynConfig {
+            work_dir: &syn_work_dir,
+            module: &module.module_name,
+            verilog_paths: &module.verilog,
+            srams: &module.srams,
+            sram_work_dir: &sram_work_dir,
+            dep_info,
+            submodules: all_submodules.clone(),
+            pin_info: &module.pin_info,
+            sdc: &module.sdc,
+        },
+        pdk,
+    );
     let syn_pointer = StepRef::new(syn);
     let par_work_dir = work_dir.join("par-rundir");
     let output_netlist_path = if !dep_info.is_empty() {
@@ -738,482 +784,20 @@ fn sky130_scl_cadence_flat_flow(
     };
 
     let final_constraints = module.placement_constraints.clone();
-    let par = sky130_scl_cadence_par(SclParConfig {
-        pdk_root,
-        work_dir: &par_work_dir,
-        module: &module.module_name,
-        constraints: &final_constraints,
-        netlist: &output_netlist_path,
-        srams: &module.srams,
-        submodules: all_submodules.clone(),
-        pin_info: &module.pin_info,
-        syn_step: syn_pointer.clone(),
-        sdc: &module.sdc,
-    });
-    let par_pointer = StepRef::new(par);
-    Sky130FlatFlow {
-        module: module.module_name.to_string(),
-        syn: syn_pointer,
-        par: par_pointer,
-        submodules: all_submodules.clone(),
-    }
-}
-
-pub fn sky130_scl_cadence_reference_flow(
-    pdk_root: PathBuf,
-    work_dir: PathBuf,
-    hierarchy: Dag<ModuleInfo>,
-) -> Dag<Sky130FlatFlow> {
-    hierarchical(&hierarchy, &|block: &ModuleInfo,
-                               sub_blocks: Vec<(
-        &ModuleInfo,
-        &Sky130FlatFlow,
-    )>|
-     -> Sky130FlatFlow {
-        sky130_scl_cadence_flat_flow(
-            &pdk_root,
-            &work_dir.join(format!("build-{}", &block.module_name)),
-            block,
-            &sub_blocks,
-        )
-    })
-}
-
-fn sky130_os_cadence_par_write_design(
-    pdk_root: &Path,
-    work_dir: &Path,
-    module: &str,
-    srams: &[Sram22],
-    corners: Vec<MmmcCorner>,
-) -> Substep {
-    let par_rundir = work_dir.display().to_string();
-    let module = module.to_owned();
-    let setup = corners
-        .iter()
-        .find(|p| p.corner_type == "setup")
-        .unwrap()
-        .name
-        .clone();
-    let hold = corners
-        .iter()
-        .find(|p| p.corner_type == "hold")
-        .unwrap()
-        .name
-        .clone();
-    let typical = corners
-        .iter()
-        .find(|p| p.corner_type == "extra")
-        .unwrap()
-        .name
-        .clone();
-
-    let sram_work_dir = work_dir.parent().unwrap().join("sram");
-    let pdk_gds = pdk_root
-        .join("libs.ref/sky130_fd_sc_hd/gds/sky130_fd_sc_hd.gds")
-        .display()
-        .to_string();
-    let mut merge_gds = vec![pdk_gds];
-    merge_gds.extend(
-        srams
-            .iter()
-            .map(|s| s.gds(&sram_work_dir).display().to_string()),
-    );
-    let merge_str = merge_gds.join(" ");
-
-    let lefpin_map = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../pdks/sky130/src/sky130_lefpin.map"
-    );
-    Substep {
-        checkpoint: true,
-        command: formatdoc!(
-            r#"
-            set_db timing_enable_simultaneous_setup_hold_mode true
-            write_db {module}_FINAL -def -verilog
-            set_db timing_enable_simultaneous_setup_hold_mode false
-            set_db write_stream_virtual_connection false
-            write_netlist {par_rundir}/{module}.lvs.v -top_module_first -top_module {module} -exclude_leaf_cells -phys -flat -exclude_insts_of_cells {{}}
-            write_netlist {par_rundir}/{module}.sim.v -top_module_first -top_module {module} -exclude_leaf_cells -exclude_insts_of_cells {{}}
-            write_stream -mode ALL -format stream -map_file {lefpin_map} -uniquify_cell_names -merge {{ {merge_str} }} {par_rundir}/{module}.gds
-            write_sdf -max_view {setup}.setup_view -min_view {hold}.hold_view -typical_view {typical}.extra_view {par_rundir}/{module}.par.sdf
-            set_db extract_rc_coupled true
-            extract_rc
-            write_parasitics -spef_file {par_rundir}/{module}.{setup}.par.spef -rc_corner {setup}.setup_rc
-            write_parasitics -spef_file {par_rundir}/{module}.{hold}.par.spef -rc_corner {hold}.hold_rc
-            write_parasitics -spef_file {par_rundir}/{module}.{typical}.par.spef -rc_corner {typical}.extra_rc
-            write_db post_write_design
-            ln -sfn post_write_design latest
-            "#
-        ),
-        name: "write_design".into(),
-    }
-}
-
-pub struct OsSynConfig<'a> {
-    pub pdk_root: &'a Path,
-    pub work_dir: &'a PathBuf,
-    pub module: &'a String,
-    pub verilog_paths: &'a [PathBuf],
-    pub srams: &'a [Sram22],
-    pub sram_work_dir: &'a Path,
-    pub dep_info: &'a [(&'a ModuleInfo, &'a Sky130FlatFlow)],
-    pub submodules: Vec<SubmoduleInfo>,
-    pub pin_info: &'a FlatPinInfo,
-    pub sdc: &'a str,
-}
-
-pub struct OsParConfig<'a> {
-    pub pdk_root: &'a Path,
-    pub work_dir: &'a PathBuf,
-    pub module: &'a String,
-    pub constraints: &'a Floorplan,
-    pub netlist: &'a Path,
-    pub srams: &'a [Sram22],
-    pub submodules: Vec<SubmoduleInfo>,
-    pub pin_info: &'a FlatPinInfo,
-    pub syn_step: StepRef<GenusStep>,
-    pub sdc: &'a str,
-}
-
-pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
-    let OsSynConfig {
-        pdk_root,
-        work_dir,
-        module,
-        verilog_paths,
-        srams,
-        sram_work_dir,
-        dep_info,
-        submodules,
-        pin_info,
-        sdc,
-    } = config;
-    let ss_100c_1v60 = MmmcCorner {
-        name: "ss_100c_1v60".to_string(),
-        corner_type: "setup".to_string(),
-        libs: vec![pdk_root.join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__ss_100C_1v60.lib")],
-        temperature: dec!(100.0),
-    };
-    let ff_n40c_1v95 = MmmcCorner {
-        name: "ff_n40c_1v95".to_string(),
-        corner_type: "hold".to_string(),
-        libs: vec![
-            pdk_root
-                .join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__ff_n40C_1v95_ccsnoise.lib"),
-        ],
-        temperature: dec!(-40.0),
-    };
-    let tt_025c_1v80 = MmmcCorner {
-        name: "tt_025c_1v80".to_string(),
-        corner_type: "extra".to_string(),
-        libs: vec![pdk_root.join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib")],
-        temperature: dec!(25.0),
-    };
-
-    let syn_con = MmmcConfig {
-        sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
-        corners: vec![
-            ss_100c_1v60.clone(),
-            ff_n40c_1v95.clone(),
-            tt_025c_1v80.clone(),
-        ],
-        setup: vec![ss_100c_1v60.clone()],
-        hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
-        dynamic: tt_025c_1v80.clone(),
-        leakage: tt_025c_1v80.clone(),
-    };
-    fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
-
-    let tlef = setup_techlef(
-        work_dir,
-        &pdk_root.join("libs.ref/sky130_fd_sc_hd/techlef/sky130_fd_sc_hd__nom.tlef"),
-    );
-    let dir_submodules: Vec<SubmoduleInfo> = dep_info
-        .iter()
-        .map(|(module, _)| {
-            submodules
-                .iter()
-                .find(|s| s.name == module.module_name)
-                .cloned()
-                .expect("Submodule info should already be present in submodules list")
-        })
-        .collect();
-
-    let mut deps: Vec<Arc<dyn Step>> = dep_info
-        .iter()
-        .map(|(_module, flow)| Arc::new(flow.par.clone()) as Arc<dyn Step>)
-        .collect();
-
-    let is_hierarchical = !submodules.is_empty();
-
-    let missing_srams: Vec<Sram22> = srams
-        .iter()
-        .filter(|s| !s.ensure_generated(sram_work_dir))
-        .cloned()
-        .collect();
-
-    if !missing_srams.is_empty() {
-        fs::create_dir_all(sram_work_dir).expect("Failed to create sram directory");
-        generate_compiler_script(&missing_srams, sram_work_dir)
-            .expect("Failed to generate SRAM compiler script");
-        let sram_compiler = Arc::new(BashStep::new(
-            sram_work_dir.to_path_buf(),
-            "generate_sram",
-            module.as_str(),
-            vec![],
-        ));
-        deps.push(sram_compiler);
-    }
-
-    GenusStep::new(
-        work_dir,
-        module,
-        vec![
-            set_default_options(),
-            sky130_syn_read_design_files(
-                GenusDesignFiles {
-                    work_dir,
-                    verilog_paths,
-                    mmmc_conf: syn_con,
-                    tlef: &tlef,
-                    pdk_lef: &pdk_root.join("libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef"),
-                    submodules: Some(submodules.clone()),
-                    is_hierarchical,
-                    hard_macros: &[],
-                    sdc_content: sdc,
-                },
-                srams,
-            ),
-            elaborate(module),
-            syn_init_design(module, Some(dir_submodules.clone())),
-            power_intent(work_dir, &sky130_cadence_power_spec(module, dec!(1.8))),
-            syn_generic(),
-            syn_map(),
-            add_tieoffs("sky130_fd_sc_hd__conb_1", "sky130_fd_sc_hd__conb_1"),
-            syn_write_design(module, ss_100c_1v60.clone(), is_hierarchical),
-        ],
-        matches!(pin_info, FlatPinInfo::PinSyn(_)),
-        deps,
-    )
-}
-
-pub fn sky130_os_cadence_par(config: OsParConfig<'_>) -> InnovusStep {
-    let OsParConfig {
-        pdk_root,
-        work_dir,
-        module,
-        constraints,
-        netlist,
-        srams,
-        submodules,
-        pin_info,
-        syn_step,
-        sdc,
-    } = config;
-    let filler_cells = vec![
-        "sky130_fd_sc_hd__fill_1".into(),
-        "sky130_fd_sc_hd__fill_2".into(),
-        "sky130_fd_sc_hd__fill_4".into(),
-        "sky130_fd_sc_hd__fill_8".into(),
-    ];
-
-    let assignment = PinAssignment {
-        pins: "*".into(),
-        module: module.into(),
-        patterns: "-spread_type range".into(),
-        layer: "-layer {met4}".into(),
-        side: "-side bottom".into(),
-        start: "-start {30 0}".into(),
-        end: "-end {0 0}".into(),
-        assign: "".into(),
-        width: "".into(),
-        depth: "".into(),
-    };
-
-    let layers = vec![
-        Layer {
-            top: "met4".to_string(),
-            bot: "met1".to_string(),
-            spacing: dec!(2.000),
-            trim_antenna: true,
-            add_stripes_command: r#"add_stripes -create_pins 0 -block_ring_bottom_layer_limit met4 -block_ring_top_layer_limit met1 -direction vertical -layer met4 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met1 -set_to_set_distance 75.90 -spacing 3.66 -switch_layer_over_obs 0 -width 1.86 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 0] + 7.35]"#.to_string(),
+    let par = sky130_cadence_par(
+        Sky130ParConfig {
+            work_dir: &par_work_dir,
+            module: &module.module_name,
+            constraints: &final_constraints,
+            netlist: &output_netlist_path,
+            srams: &module.srams,
+            submodules: all_submodules.clone(),
+            pin_info: &module.pin_info,
+            syn_step: syn_pointer.clone(),
+            sdc: &module.sdc,
         },
-        Layer {
-            top: "met5".to_string(),
-            bot: "met4".to_string(),
-            spacing: dec!(2.000),
-            trim_antenna: true,
-            add_stripes_command: r#"add_stripes -create_pins 1 -block_ring_bottom_layer_limit met5 -block_ring_top_layer_limit met4 -direction horizontal -layer met5 -nets {VSS VDD} -pad_core_ring_bottom_layer_limit met4 -set_to_set_distance 225.40 -spacing 17.68 -switch_layer_over_obs 0 -width 1.64 -area [get_db designs .core_bbox] -start [expr [lindex [lindex [get_db designs .core_bbox] 0] 1] + 5.62]"#.to_string(),
-        },
-    ];
-
-    let ss_100c_1v60 = MmmcCorner {
-        name: "ss_100c_1v60".to_string(),
-        corner_type: "setup".to_string(),
-        libs: vec![pdk_root.join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__ss_100C_1v60.lib")],
-        temperature: dec!(100.0),
-    };
-    let ff_n40c_1v95 = MmmcCorner {
-        name: "ff_n40c_1v95".to_string(),
-        corner_type: "hold".to_string(),
-        libs: vec![
-            pdk_root
-                .join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__ff_n40C_1v95_ccsnoise.lib"),
-        ],
-        temperature: dec!(-40.0),
-    };
-    let tt_025c_1v80 = MmmcCorner {
-        name: "tt_025c_1v80".to_string(),
-        corner_type: "extra".to_string(),
-        libs: vec![pdk_root.join("libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib")],
-        temperature: dec!(25.0),
-    };
-
-    let par_con = MmmcConfig {
-        sdc_files: vec![work_dir.join("clock_pin_constraints.sdc")],
-        corners: vec![
-            ss_100c_1v60.clone(),
-            ff_n40c_1v95.clone(),
-            tt_025c_1v80.clone(),
-        ],
-        setup: vec![ss_100c_1v60.clone()],
-        hold: vec![ff_n40c_1v95.clone(), tt_025c_1v80.clone()],
-        dynamic: tt_025c_1v80.clone(),
-        leakage: tt_025c_1v80.clone(),
-    };
-
-    fs::create_dir_all(work_dir.join("checkpoints/")).expect("Failed to create directory");
-
-    let tlef = setup_techlef(
-        work_dir,
-        &pdk_root.join("libs.ref/sky130_fd_sc_hd/techlef/sky130_fd_sc_hd__nom.tlef"),
+        pdk,
     );
-
-    let par_constraints = constraints.clone();
-
-    InnovusStep::new(
-        work_dir,
-        module,
-        vec![
-            set_default_process(130),
-            sky130_par_read_design_files(
-                InnovusDesignFiles {
-                    work_dir,
-                    module,
-                    netlist_path: netlist,
-                    mmmc_conf: par_con,
-                    tlef: &tlef,
-                    pdk_lef: &pdk_root.join("libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef"),
-                    submodules: Some(submodules),
-                    hard_macros: &[],
-                    sdc_content: sdc,
-                },
-                srams,
-            ),
-            par_init_design(),
-            innovus_settings(2, 6),
-            sky130_innovus_settings(),
-            sky130_os_innovus_settings(),
-            floorplan_design(
-                work_dir,
-                &sky130_cadence_power_spec(module, dec!(1.8)),
-                par_constraints,
-                "unithd",
-            ),
-            sky130_connect_nets(),
-            power_straps(layers.clone()),
-            place_pins("5", "1", vec![assignment]),
-            place_opt_design(None),
-            add_fillers(filler_cells),
-            route_design(),
-            opt_design(),
-            write_regs(),
-            sky130_connect_nets(),
-            sky130_os_cadence_par_write_design(
-                pdk_root,
-                work_dir,
-                module,
-                srams,
-                vec![
-                    ss_100c_1v60.clone(),
-                    ff_n40c_1v95.clone(),
-                    tt_025c_1v80.clone(),
-                ],
-            ),
-            write_ilm(
-                work_dir,
-                module,
-                &layers[0],
-                vec![
-                    ss_100c_1v60.clone(),
-                    ff_n40c_1v95.clone(),
-                    tt_025c_1v80.clone(),
-                ],
-            ),
-        ],
-        matches!(pin_info, FlatPinInfo::PinPar(_)),
-        vec![Arc::new(syn_step) as Arc<dyn Step>],
-        false,
-    )
-}
-
-fn sky130_os_cadence_flat_flow(
-    pdk_root: &Path,
-    work_dir: &Path,
-    module: &ModuleInfo,
-    dep_info: &[(&ModuleInfo, &Sky130FlatFlow)],
-) -> Sky130FlatFlow {
-    let sram_work_dir = work_dir.join("sram");
-
-    let mut all_submodules: Vec<SubmoduleInfo> = Vec::new();
-    for (child_module, child_flow) in dep_info {
-        let (ilm, lef, gds) = child_flow
-            .par
-            .get(|par| (par.ilm_path(), par.lef_path(), par.gds_path()));
-        all_submodules.push(SubmoduleInfo {
-            name: child_module.module_name.clone(),
-            verilog_paths: child_module.verilog.clone(),
-            gds,
-            ilm,
-            lef,
-        });
-        all_submodules.extend(child_flow.submodules.clone());
-    }
-
-    let syn_work_dir = work_dir.join("syn-rundir");
-    let syn = sky130_os_cadence_syn(OsSynConfig {
-        pdk_root,
-        work_dir: &syn_work_dir,
-        module: &module.module_name,
-        verilog_paths: &module.verilog,
-        srams: &module.srams,
-        sram_work_dir: &sram_work_dir,
-        dep_info,
-        submodules: all_submodules.clone(),
-        pin_info: &module.pin_info,
-        sdc: &module.sdc,
-    });
-    let syn_pointer = StepRef::new(syn);
-    let par_work_dir = work_dir.join("par-rundir");
-    let output_netlist_path = if !dep_info.is_empty() {
-        syn_work_dir.join(format!("{}_noilm.mapped.v", module.module_name))
-    } else {
-        syn_work_dir.join(format!("{}.mapped.v", module.module_name))
-    };
-
-    let final_constraints = module.placement_constraints.clone();
-    let par = sky130_os_cadence_par(OsParConfig {
-        pdk_root,
-        work_dir: &par_work_dir,
-        module: &module.module_name,
-        constraints: &final_constraints,
-        netlist: &output_netlist_path,
-        srams: &module.srams,
-        submodules: all_submodules.clone(),
-        pin_info: &module.pin_info,
-        syn_step: syn_pointer.clone(),
-        sdc: &module.sdc,
-    });
     let par_pointer = StepRef::new(par);
     Sky130FlatFlow {
         module: module.module_name.to_string(),
@@ -1223,32 +807,30 @@ fn sky130_os_cadence_flat_flow(
     }
 }
 
-pub fn sky130_os_cadence_reference_flow(
-    pdk_root: PathBuf,
+pub fn sky130_cadence_reference_flow(
+    pdk: Sky130PdkConfig,
     work_dir: PathBuf,
     hierarchy: Dag<ModuleInfo>,
 ) -> Dag<Sky130FlatFlow> {
-    hierarchical(&hierarchy, &|block: &ModuleInfo,
-                               sub_blocks: Vec<(
-        &ModuleInfo,
-        &Sky130FlatFlow,
-    )>|
-     -> Sky130FlatFlow {
-        sky130_os_cadence_flat_flow(
-            &pdk_root,
-            &work_dir.join(format!("build-{}", &block.module_name)),
-            block,
-            &sub_blocks,
-        )
-    })
+    hierarchical(
+        &hierarchy,
+        &|block: &ModuleInfo, sub_blocks: Vec<(&ModuleInfo, &Sky130FlatFlow)>| -> Sky130FlatFlow {
+            sky130_cadence_flat_flow(
+                &pdk,
+                &work_dir.join(format!("build-{}", &block.module_name)),
+                block,
+                &sub_blocks,
+            )
+        },
+    )
 }
 
 pub fn decoder_flow() -> anyhow::Result<()> {
     let work_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/decoder");
     let pdk_root = PathBuf::from(std::env::var("SKY130PDK_OS_INSTALL_PATH")?);
 
-    let flow = sky130_scl_cadence_reference_flow(
-        pdk_root,
+    let flow = sky130_cadence_reference_flow(
+        Sky130PdkConfig::scl(&pdk_root),
         work_dir,
         Dag {
             node: ModuleInfo {
@@ -1297,8 +879,8 @@ pub fn hierarchical_flow() -> anyhow::Result<()> {
         ]
     };
 
-    let flow = sky130_scl_cadence_reference_flow(
-        pdk_root,
+    let flow = sky130_cadence_reference_flow(
+        Sky130PdkConfig::scl(&pdk_root),
         work_dir,
         Dag {
             node: ModuleInfo {

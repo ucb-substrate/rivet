@@ -56,9 +56,8 @@ impl ExecuteConfig {
 
     /// Maximum number of steps to run at once. Values below 1 are treated as 1.
     ///
-    /// Defaults to `RIVET_JOBS` if it is set, otherwise to the number of
-    /// available cores. Tools that hold licences or saturate a machine on their
-    /// own are usually worth capping explicitly.
+    /// Defaults to the number of available cores. Tools that hold licences or
+    /// saturate a machine on their own are usually worth capping explicitly.
     pub fn concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency.max(1);
         self
@@ -248,12 +247,6 @@ pub fn execute<T: Step>(target: StepRef<T>) {
 }
 
 fn default_concurrency() -> usize {
-    if let Some(jobs) = std::env::var("RIVET_JOBS")
-        .ok()
-        .and_then(|j| j.parse::<usize>().ok())
-    {
-        return jobs.max(1);
-    }
     thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)

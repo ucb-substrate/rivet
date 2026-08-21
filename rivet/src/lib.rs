@@ -1,10 +1,16 @@
 use by_address::ByAddress;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub mod bash;
+pub mod exec;
+pub mod executor;
+pub mod progress;
 pub mod rust;
+
+pub use executor::{execute, ExecuteConfig, ExecuteError, StepFailure, Summary};
+pub use progress::OutputMode;
 
 #[derive(Debug)]
 pub struct Dag<F> {
@@ -64,41 +70,16 @@ pub trait Step: Debug + Send + Sync {
     fn deps(&self) -> Vec<Arc<dyn Step>>;
     fn pinned(&self) -> bool;
     fn execute(&self);
-}
 
-pub fn execute(target: impl Step + 'static) {
-    let target = Arc::new(target) as Arc<dyn Step>;
-
-    let mut executed = HashMap::<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>::new();
-    execute_inner(target, &mut executed);
-}
-
-fn execute_inner(
-    step: Arc<dyn Step>,
-    executed: &mut HashMap<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>,
-) {
-    println!("Checking status of step {step:?}");
-    let step_addr = ByAddress(step.clone());
-    if executed.contains_key(&step_addr) {
-        println!("Step has already been executed, skipping");
-        return;
+    /// Short name for this step in progress output.
+    ///
+    /// Defaults to the step's type name; implementations that know what they
+    /// are working on should say so instead (`"decoder par"` beats
+    /// `"InnovusStep"`).
+    fn label(&self) -> String {
+        let name = std::any::type_name::<Self>();
+        name.rsplit("::").next().unwrap_or(name).to_string()
     }
-
-    if step.pinned() {
-        println!("Step is pinned, skipping");
-        executed.insert(step_addr, Arc::clone(&step));
-        return;
-    }
-
-    println!("Executing step dependencies: {:?}", step.deps());
-    for dependency in step.deps() {
-        execute_inner(dependency, executed);
-    }
-
-    println!("Executing step {step:?}");
-    step.execute();
-
-    executed.insert(ByAddress(step.clone()), Arc::clone(&step));
 }
 
 pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)>) -> F) -> Dag<F> {
@@ -160,5 +141,9 @@ impl<T: Step> Step for StepRef<T> {
 
     fn pinned(&self) -> bool {
         self.lock().pinned()
+    }
+
+    fn label(&self) -> String {
+        self.lock().label()
     }
 }

@@ -7,6 +7,7 @@ pub struct RustStep<F> {
     pub rust_fn: F,
     pub dependencies: Vec<Arc<dyn Step>>,
     pub pinned: bool,
+    pub name: Option<String>,
 }
 
 impl<F> Debug for RustStep<F> {
@@ -25,7 +26,14 @@ impl<F> RustStep<F> {
             rust_fn,
             dependencies: deps,
             pinned: false,
+            name: None,
         }
+    }
+
+    /// Set the name this step is displayed under while the flow runs.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     pub fn pin(&mut self) {
@@ -44,5 +52,9 @@ impl<F: Fn() + Send + Sync> Step for RustStep<F> {
 
     fn pinned(&self) -> bool {
         self.pinned
+    }
+
+    fn label(&self) -> String {
+        self.name.clone().unwrap_or_else(|| "RustStep".to_string())
     }
 }

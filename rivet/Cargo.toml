@@ -15,4 +15,5 @@ indoc = "2"
 rust_decimal = "1"
 rust_decimal_macros = "1"
 by_address = "1.2.1"
+indicatif = "0.17"
 

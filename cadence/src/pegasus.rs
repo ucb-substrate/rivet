@@ -7,6 +7,7 @@ use std::{fs, io};
 use crate::Substep;
 use fs::File;
 use rivet::Step;
+use rivet::exec;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -84,71 +85,84 @@ impl Step for PegasusStep {
         let layout = format!("./{}.gds", self.module);
 
         if self.func == "lvs" {
-            let status = Command::new("pegasus")
-                .args(["-f", ctl_path.to_str().unwrap()])
-                .current_dir(self.work_dir.clone())
-                .status()
-                .expect("Failed to execute pegasus");
-            assert!(status.success(), "Pegasus command failed with status: {}", status);
+            let mut ctl = Command::new("pegasus");
+            ctl.args(["-f", ctl_path.to_str().unwrap()])
+                .current_dir(self.work_dir.clone());
+            let status = exec::run_logged_in(
+                &mut ctl,
+                &self.work_dir,
+                &format!("{}.lvs.ctl", self.module),
+            )
+            .expect("Failed to execute pegasus");
+            assert!(
+                status.success(),
+                "Pegasus command failed with status: {}",
+                status
+            );
 
-            let lvs_status = Command::new("pegasus")
-                .args([
-                    "-lvs",
-                    "-dp",
-                    "12",
-                    "-license_dp_continue",
-                    "-automatch",
-                    "-check_schematic",
-                    "-rc_data",
-                    "-ui_data",
-                    "-source_cdl",
-                    &schematic,
-                    "-gds",
-                    &layout,
-                    "-source_top_cell",
-                    &self.module,
-                    "-layout_top_cell",
-                    &self.module,
-                    "/home/ff/eecs251b/sky130/sky130_cds/sky130_release_0.0.4/Sky130_LVS/sky130.lvs.pvl",
-                ])
-                .current_dir(self.work_dir.clone())
-                .status()
-                .expect("Failed to execute pegasus for LVS");
+            let mut lvs = Command::new("pegasus");
+            lvs.args([
+                "-lvs",
+                "-dp",
+                "12",
+                "-license_dp_continue",
+                "-automatch",
+                "-check_schematic",
+                "-rc_data",
+                "-ui_data",
+                "-source_cdl",
+                &schematic,
+                "-gds",
+                &layout,
+                "-source_top_cell",
+                &self.module,
+                "-layout_top_cell",
+                &self.module,
+                "/home/ff/eecs251b/sky130/sky130_cds/sky130_release_0.0.4/Sky130_LVS/sky130.lvs.pvl",
+            ])
+            .current_dir(self.work_dir.clone());
+
+            let lvs_status =
+                exec::run_logged_in(&mut lvs, &self.work_dir, &format!("{}.lvs", self.module))
+                    .expect("Failed to execute pegasus for LVS");
 
             if !lvs_status.success() {
-                eprintln!("Pegasus LVS command failed with status: {}", lvs_status);
-                panic!("Stopped flow due to LVS failure");
-            } else {
-                println!("Pegasus LVS completed successfully.");
+                panic!("LVS failed for {} with status {lvs_status}", self.module);
             }
+            rivet::progress::status("LVS clean");
         }
 
         if self.func == "drc" {
-            let drc_status = Command::new("pegasus")
-                .args([
-                    "-drc",
-                    "-dp",
-                    "12",
-                    "-license_dp_continue",
-                    "-gds",
-                    &layout,
-                    "-top_cell",
-                    &self.module,
-                    "-ui_data",
-                    "/home/ff/eecs251b/sky130/sky130_cds/sky130_release_0.0.4/Sky130_DRC/sky130_rev_0.0_1.0.drc.pvl",
-                ])
-                .current_dir(self.work_dir.clone())
-                .status()
-                .expect("Failed to execute pegasus for DRC");
+            let mut drc = Command::new("pegasus");
+            drc.args([
+                "-drc",
+                "-dp",
+                "12",
+                "-license_dp_continue",
+                "-gds",
+                &layout,
+                "-top_cell",
+                &self.module,
+                "-ui_data",
+                "/home/ff/eecs251b/sky130/sky130_cds/sky130_release_0.0.4/Sky130_DRC/sky130_rev_0.0_1.0.drc.pvl",
+            ])
+            .current_dir(self.work_dir.clone());
+
+            let drc_status =
+                exec::run_logged_in(&mut drc, &self.work_dir, &format!("{}.drc", self.module))
+                    .expect("Failed to execute pegasus for DRC");
 
             if !drc_status.success() {
-                eprintln!("Pegasus DRC command failed with status: {}", drc_status);
-                panic!("Stopped flow due to DRC failure");
-            } else {
-                println!("Pegasus DRC completed successfully.");
+                panic!("DRC failed for {} with status {drc_status}", self.module);
             }
+            rivet::progress::status("DRC clean");
         }
     }
+
+    fn label(&self) -> String {
+        format!("{} {}", self.module, self.func)
+    }
+
     fn deps(&self) -> Vec<Arc<dyn Step>> {
         self.dependencies.clone()
     }

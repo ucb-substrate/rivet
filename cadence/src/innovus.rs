@@ -10,6 +10,7 @@ use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
+use rivet::exec;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
@@ -192,16 +193,23 @@ impl Step for InnovusStep {
             args.push("-synthesis");
         }
 
-        let status = Command::new("innovus")
-            .args(args)
-            .current_dir(self.work_dir.clone())
-            .status()
-            .expect("Failed to execute par.tcl");
+        let mut command = Command::new("innovus");
+        command.args(args).current_dir(self.work_dir.clone());
+
+        let status = exec::run_logged_in(
+            &mut command,
+            &self.work_dir,
+            &format!("{}.par", self.module),
+        )
+        .expect("Failed to execute par.tcl");
 
         if !status.success() {
-            eprintln!("Failed to execute par.tcl");
-            panic!("Stopped flow");
+            panic!("innovus failed for {} with status {status}", self.module);
         }
+    }
+
+    fn label(&self) -> String {
+        format!("{} par", self.module)
     }
 
     fn deps(&self) -> Vec<Arc<dyn Step>> {

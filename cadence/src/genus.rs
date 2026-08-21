@@ -10,6 +10,7 @@ use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
+use rivet::exec;
 use std::sync::Arc;
 
 /// Defines the Genus synthesis step subflow
@@ -165,21 +166,30 @@ impl Step for GenusStep {
         self.make_tcl_file(&self.work_dir, substeps)
             .expect("Failed to create syn.tcl");
 
-        let status = Command::new("genus")
+        let mut command = Command::new("genus");
+        command
             .args([
                 "-f",
                 self.work_dir.join("syn.tcl").to_str().unwrap(),
                 "-no_gui",
                 "-batch",
             ])
-            .current_dir(self.work_dir.clone())
-            .status()
-            .expect("Failed to execute syn.tcl");
+            .current_dir(self.work_dir.clone());
+
+        let status = exec::run_logged_in(
+            &mut command,
+            &self.work_dir,
+            &format!("{}.syn", self.module),
+        )
+        .expect("Failed to execute syn.tcl");
 
         if !status.success() {
-            eprintln!("Failed to execute syn.tcl");
-            panic!("Stopped flow");
+            panic!("genus failed for {} with status {status}", self.module);
         }
+    }
+
+    fn label(&self) -> String {
+        format!("{} syn", self.module)
     }
 
     fn deps(&self) -> Vec<Arc<dyn Step>> {

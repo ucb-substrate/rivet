@@ -24,8 +24,8 @@ concurrently.
 ```
 
 Here `drc` and `lvs` both wait for `par`, then run at the same time, and
-`signoff` waits for both. Steps are identified by the address of their `Arc`, so
-a step reached by several paths runs exactly once.
+`signoff` waits for both. Steps are identified by the address of their
+`StepRef`, so a step reached by several paths runs exactly once.
 
 ```rust
 rivet::execute(signoff);                          // panics if a step fails
@@ -33,6 +33,18 @@ rivet::execute(signoff);                          // panics if a step fails
 rivet::ExecuteConfig::new()                       // or handle failures yourself
     .concurrency(2)
     .run(signoff)?;
+```
+
+Several targets can be queued on an `Executor`. They are flattened into one
+graph, so work shared between them still happens once and independent branches
+of either still overlap:
+
+```rust
+rivet::Executor::new()
+    .concurrency(2)
+    .target(drc)
+    .target(lvs)
+    .run()?;
 ```
 
 Concurrency defaults to `RIVET_JOBS` if set, otherwise the core count. Tools

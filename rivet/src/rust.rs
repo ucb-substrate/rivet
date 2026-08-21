@@ -1,11 +1,10 @@
-use crate::Step;
+use crate::{Step, StepRef};
 use std::fmt::Debug;
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct RustStep<F> {
     pub rust_fn: F,
-    pub dependencies: Vec<Arc<dyn Step>>,
+    pub dependencies: Vec<StepRef<dyn Step>>,
     pub pinned: bool,
     pub name: Option<String>,
 }
@@ -21,7 +20,7 @@ impl<F> Debug for RustStep<F> {
 }
 
 impl<F> RustStep<F> {
-    pub fn new(rust_fn: F, deps: Vec<Arc<dyn Step>>) -> Self {
+    pub fn new(rust_fn: F, deps: Vec<StepRef<dyn Step>>) -> Self {
         RustStep {
             rust_fn,
             dependencies: deps,
@@ -41,12 +40,12 @@ impl<F> RustStep<F> {
     }
 }
 
-impl<F: Fn() + Send + Sync> Step for RustStep<F> {
+impl<F: Fn() + Send + Sync + 'static> Step for RustStep<F> {
     fn execute(&self) {
         (self.rust_fn)();
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.dependencies.clone()
     }
 

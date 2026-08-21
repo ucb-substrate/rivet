@@ -6,10 +6,9 @@ use std::{fs, io};
 
 use crate::Substep;
 use fs::File;
-use rivet::Step;
 use rivet::exec;
 use rivet::progress;
-use std::sync::Arc;
+use rivet::{Step, StepRef};
 
 #[derive(Debug)]
 pub struct PegasusStep {
@@ -17,7 +16,7 @@ pub struct PegasusStep {
     pub func: String,
     pub module: String,
     pub pinned: bool,
-    pub dependencies: Vec<Arc<dyn Step>>,
+    pub dependencies: Vec<StepRef<dyn Step>>,
 }
 
 impl PegasusStep {
@@ -26,7 +25,7 @@ impl PegasusStep {
         func: String,
         module: String,
         pinned: bool,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
         PegasusStep {
@@ -169,7 +168,7 @@ impl Step for PegasusStep {
         format!("{} {}", self.module, self.func)
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.dependencies.clone()
     }
 

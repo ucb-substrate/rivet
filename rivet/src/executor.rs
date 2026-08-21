@@ -21,13 +21,13 @@ use std::time::{Duration, Instant};
 use by_address::ByAddress;
 
 use crate::progress::{self, Outcome, OutputMode, Reporter};
-use crate::Step;
+use crate::{Step, StepRef};
 
 /// Settings for a run.
 ///
 /// ```no_run
-/// # use rivet::{ExecuteConfig, Step};
-/// # fn demo(target: impl Step + 'static) -> Result<(), rivet::ExecuteError> {
+/// # use rivet::{ExecuteConfig, Step, StepRef};
+/// # fn demo(target: StepRef<impl Step>) -> Result<(), rivet::ExecuteError> {
 /// ExecuteConfig::new().concurrency(2).run(target)?;
 /// # Ok(())
 /// # }
@@ -78,13 +78,83 @@ impl ExecuteConfig {
     }
 
     /// Execute `target` and everything it depends on.
-    pub fn run(&self, target: impl Step + 'static) -> Result<Summary, ExecuteError> {
-        self.run_arc(Arc::new(target) as Arc<dyn Step>)
+    pub fn run<T: Step>(&self, target: StepRef<T>) -> Result<Summary, ExecuteError> {
+        self.run_dyn(target.into_dyn())
     }
 
-    /// Execute an already-shared step.
-    pub fn run_arc(&self, target: Arc<dyn Step>) -> Result<Summary, ExecuteError> {
-        run(self, target)
+    /// [`ExecuteConfig::run`] for an already-erased step.
+    pub fn run_dyn(&self, target: StepRef<dyn Step>) -> Result<Summary, ExecuteError> {
+        run(self, vec![target])
+    }
+
+    /// Execute several targets, and everything they depend on, as one graph.
+    pub fn run_all(&self, targets: Vec<StepRef<dyn Step>>) -> Result<Summary, ExecuteError> {
+        run(self, targets)
+    }
+}
+
+/// Runs one or more target steps.
+///
+/// Targets are collected into a single graph, so work shared between them
+/// happens once and independent branches of either still run concurrently.
+///
+/// ```no_run
+/// # use rivet::{Executor, Step, StepRef};
+/// # fn demo(drc: StepRef<impl Step>, lvs: StepRef<impl Step>) -> Result<(), rivet::ExecuteError> {
+/// Executor::new().concurrency(2).target(drc).target(lvs).run()?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Default)]
+#[must_use = "an Executor does nothing until `run` is called"]
+pub struct Executor {
+    config: ExecuteConfig,
+    targets: Vec<StepRef<dyn Step>>,
+}
+
+impl Executor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the settings for this run.
+    pub fn config(mut self, config: ExecuteConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// See [`ExecuteConfig::concurrency`].
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.config = self.config.concurrency(concurrency);
+        self
+    }
+
+    /// See [`ExecuteConfig::output`].
+    pub fn output(mut self, output: OutputMode) -> Self {
+        self.config = self.config.output(output);
+        self
+    }
+
+    /// See [`ExecuteConfig::progress`].
+    pub fn progress(mut self, progress: bool) -> Self {
+        self.config = self.config.progress(progress);
+        self
+    }
+
+    /// Add a step to run. Nothing happens until [`Executor::run`] is called.
+    pub fn target<T: Step>(self, step: StepRef<T>) -> Self {
+        self.target_dyn(step.into_dyn())
+    }
+
+    /// [`Executor::target`] for an already-erased step.
+    pub fn target_dyn(mut self, step: StepRef<dyn Step>) -> Self {
+        self.targets.push(step);
+        self
+    }
+
+    /// Run every target that was added, and everything they depend on.
+    pub fn run(self) -> Result<Summary, ExecuteError> {
+        run(&self.config, self.targets)
     }
 }
 
@@ -146,8 +216,8 @@ impl std::error::Error for ExecuteError {}
 ///
 /// Panics if any step fails. Use [`ExecuteConfig::run`] to handle failures
 /// yourself.
-pub fn execute(target: impl Step + 'static) {
-    if let Err(error) = ExecuteConfig::new().run(target) {
+pub fn execute<T: Step>(target: StepRef<T>) {
+    if let Err(error) = Executor::new().target(target).run() {
         panic!("{error}");
     }
 }
@@ -169,7 +239,7 @@ fn default_concurrency() -> usize {
 // ---------------------------------------------------------------------------
 
 struct Node {
-    step: Arc<dyn Step>,
+    step: StepRef<dyn Step>,
     label: String,
     pinned: bool,
     deps: Vec<usize>,
@@ -186,32 +256,36 @@ impl Graph {
     /// A pinned step is treated as a leaf: it is assumed to be up to date, so
     /// its dependencies are neither collected nor run. That matches the
     /// semantics of pinning elsewhere in rivet.
-    fn flatten(root: Arc<dyn Step>) -> Self {
+    fn flatten(roots: Vec<StepRef<dyn Step>>) -> Self {
         struct Builder {
             nodes: Vec<Node>,
-            index: HashMap<ByAddress<Arc<dyn Step>>, usize>,
+            index: HashMap<ByAddress<StepRef<dyn Step>>, usize>,
         }
 
         impl Builder {
-            fn intern(&mut self, step: Arc<dyn Step>) -> usize {
-                let key = ByAddress(Arc::clone(&step));
+            fn intern(&mut self, step: StepRef<dyn Step>) -> usize {
+                let key = ByAddress(step.clone());
                 if let Some(&existing) = self.index.get(&key) {
                     return existing;
                 }
 
-                let pinned = step.pinned();
-                let label = step.label();
+                // Read the shape of the step once, up front, so the lock is
+                // not touched again until the step runs.
+                let (pinned, label, deps) = {
+                    let guard = step.read();
+                    (guard.pinned(), guard.label(), guard.deps())
+                };
                 let index = self.nodes.len();
                 self.index.insert(key, index);
                 self.nodes.push(Node {
-                    step: Arc::clone(&step),
+                    step: step.clone(),
                     label,
                     pinned,
                     deps: Vec::new(),
                     dependents: Vec::new(),
                 });
 
-                let deps = if pinned { Vec::new() } else { step.deps() };
+                let deps = if pinned { Vec::new() } else { deps };
                 let mut resolved: Vec<usize> = Vec::with_capacity(deps.len());
                 for dep in deps {
                     let dep_index = self.intern(dep);
@@ -234,7 +308,9 @@ impl Graph {
             nodes: Vec::new(),
             index: HashMap::new(),
         };
-        builder.intern(root);
+        for root in roots {
+            builder.intern(root);
+        }
         Graph {
             nodes: builder.nodes,
         }
@@ -288,8 +364,8 @@ impl Shared {
     }
 }
 
-fn run(config: &ExecuteConfig, root: Arc<dyn Step>) -> Result<Summary, ExecuteError> {
-    let graph = Graph::flatten(root);
+fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary, ExecuteError> {
+    let graph = Graph::flatten(roots);
     let total = graph.nodes.len();
 
     let label_width = graph
@@ -409,7 +485,7 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>) -> Result<(), StepFailure> {
     progress::set_current_step(Some(handle.clone()));
     take_panic_message();
 
-    let result = panic::catch_unwind(AssertUnwindSafe(|| node.step.execute()));
+    let result = panic::catch_unwind(AssertUnwindSafe(|| node.step.read().execute()));
 
     progress::set_current_step(None);
 
@@ -497,7 +573,7 @@ mod tests {
 
     struct TestStep {
         name: String,
-        deps: Mutex<Vec<Arc<dyn Step>>>,
+        deps: Mutex<Vec<StepRef<dyn Step>>>,
         pinned: bool,
         action: Box<dyn Fn() + Send + Sync>,
     }
@@ -511,7 +587,7 @@ mod tests {
     }
 
     impl Step for TestStep {
-        fn deps(&self) -> Vec<Arc<dyn Step>> {
+        fn deps(&self) -> Vec<StepRef<dyn Step>> {
             self.deps.lock().unwrap().clone()
         }
 
@@ -528,30 +604,32 @@ mod tests {
         }
     }
 
-    fn step(name: &str, deps: Vec<Arc<dyn Step>>) -> Arc<dyn Step> {
+    fn step(name: &str, deps: Vec<StepRef<dyn Step>>) -> StepRef<dyn Step> {
         acting(name, deps, || {})
     }
 
     fn acting(
         name: &str,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
         action: impl Fn() + Send + Sync + 'static,
-    ) -> Arc<dyn Step> {
-        Arc::new(TestStep {
+    ) -> StepRef<dyn Step> {
+        StepRef::new(TestStep {
             name: name.to_string(),
             deps: Mutex::new(deps),
             pinned: false,
             action: Box::new(action),
         })
+        .into_dyn()
     }
 
-    fn pinned(name: &str, deps: Vec<Arc<dyn Step>>) -> Arc<dyn Step> {
-        Arc::new(TestStep {
+    fn pinned(name: &str, deps: Vec<StepRef<dyn Step>>) -> StepRef<dyn Step> {
+        StepRef::new(TestStep {
             name: name.to_string(),
             deps: Mutex::new(deps),
             pinned: true,
             action: Box::new(|| panic!("a pinned step must not run")),
         })
+        .into_dyn()
     }
 
     fn config() -> ExecuteConfig {
@@ -567,11 +645,11 @@ mod tests {
         let par = acting("par", vec![], move || {
             counter.fetch_add(1, AtomicOrdering::SeqCst);
         });
-        let drc = step("drc", vec![Arc::clone(&par)]);
-        let lvs = step("lvs", vec![Arc::clone(&par)]);
+        let drc = step("drc", vec![par.clone()]);
+        let lvs = step("lvs", vec![par.clone()]);
         let signoff = step("signoff", vec![drc, lvs]);
 
-        let summary = config().run_arc(signoff).unwrap();
+        let summary = config().run_dyn(signoff).unwrap();
 
         assert_eq!(runs.load(AtomicOrdering::SeqCst), 1);
         assert_eq!(summary.total, 4);
@@ -586,11 +664,11 @@ mod tests {
         let overlaps = Arc::new(AtomicUsize::new(0));
 
         let par = step("par", vec![]);
-        let mut checks: Vec<Arc<dyn Step>> = Vec::new();
+        let mut checks: Vec<StepRef<dyn Step>> = Vec::new();
         for name in ["drc", "lvs"] {
             let gate = Arc::clone(&gate);
             let overlaps = Arc::clone(&overlaps);
-            checks.push(acting(name, vec![Arc::clone(&par)], move || {
+            checks.push(acting(name, vec![par.clone()], move || {
                 let (lock, condvar) = &*gate;
                 let mut started = lock.lock().unwrap();
                 *started += 1;
@@ -605,7 +683,7 @@ mod tests {
         }
         let signoff = step("signoff", checks);
 
-        config().concurrency(4).run_arc(signoff).unwrap();
+        config().concurrency(4).run_dyn(signoff).unwrap();
 
         assert_eq!(
             overlaps.load(AtomicOrdering::SeqCst),
@@ -623,12 +701,12 @@ mod tests {
         };
 
         let syn = acting("syn", vec![], record(&order, "syn"));
-        let par = acting("par", vec![Arc::clone(&syn)], record(&order, "par"));
-        let drc = acting("drc", vec![Arc::clone(&par)], record(&order, "drc"));
-        let lvs = acting("lvs", vec![Arc::clone(&par)], record(&order, "lvs"));
+        let par = acting("par", vec![syn.clone()], record(&order, "par"));
+        let drc = acting("drc", vec![par.clone()], record(&order, "drc"));
+        let lvs = acting("lvs", vec![par.clone()], record(&order, "lvs"));
         let signoff = acting("signoff", vec![drc, lvs], record(&order, "signoff"));
 
-        config().concurrency(4).run_arc(signoff).unwrap();
+        config().concurrency(4).run_dyn(signoff).unwrap();
 
         let order = order.lock().unwrap().clone();
         let position = |name| order.iter().position(|n| *n == name).unwrap();
@@ -645,7 +723,7 @@ mod tests {
         let par = pinned("par", vec![never]);
         let drc = step("drc", vec![par]);
 
-        let summary = config().run_arc(drc).unwrap();
+        let summary = config().run_dyn(drc).unwrap();
 
         // `never` is not even part of the graph: pinning truncates the walk.
         assert_eq!(summary.total, 2);
@@ -656,9 +734,9 @@ mod tests {
     #[test]
     fn duplicate_dependency_edges_do_not_stall() {
         let par = step("par", vec![]);
-        let drc = step("drc", vec![Arc::clone(&par), Arc::clone(&par)]);
+        let drc = step("drc", vec![par.clone(), par.clone()]);
 
-        let summary = config().run_arc(drc).unwrap();
+        let summary = config().run_dyn(drc).unwrap();
 
         assert_eq!(summary.total, 2);
         assert_eq!(summary.executed, 2);
@@ -666,22 +744,22 @@ mod tests {
 
     #[test]
     fn cycles_are_reported_instead_of_hanging() {
-        let a = Arc::new(TestStep {
+        let a = StepRef::new(TestStep {
             name: "a".into(),
             deps: Mutex::new(vec![]),
             pinned: false,
             action: Box::new(|| {}),
         });
-        let b = Arc::new(TestStep {
+        let b = StepRef::new(TestStep {
             name: "b".into(),
-            deps: Mutex::new(vec![Arc::clone(&a) as Arc<dyn Step>]),
+            deps: Mutex::new(vec![a.clone().into_dyn()]),
             pinned: false,
             action: Box::new(|| {}),
         });
         // Close the loop: a now depends on b.
-        a.deps.lock().unwrap().push(Arc::clone(&b) as Arc<dyn Step>);
+        a.read().deps.lock().unwrap().push(b.clone().into_dyn());
 
-        let error = config().run_arc(b).unwrap_err();
+        let error = config().run(b).unwrap_err();
 
         match error {
             ExecuteError::Cycle(labels) => {
@@ -702,7 +780,7 @@ mod tests {
             counter.fetch_add(1, AtomicOrdering::SeqCst);
         });
 
-        let error = config().run_arc(drc).unwrap_err();
+        let error = config().run_dyn(drc).unwrap_err();
 
         match error {
             ExecuteError::Failed(failures) => {
@@ -732,7 +810,7 @@ mod tests {
         #[derive(Debug)]
         struct Plain;
         impl Step for Plain {
-            fn deps(&self) -> Vec<Arc<dyn Step>> {
+            fn deps(&self) -> Vec<StepRef<dyn Step>> {
                 vec![]
             }
             fn pinned(&self) -> bool {
@@ -742,7 +820,7 @@ mod tests {
         }
         assert_eq!(step.label(), "x");
         assert_eq!(Plain.label(), "Plain");
-        let erased: Arc<dyn Step> = Arc::new(Plain);
-        assert_eq!(erased.label(), "Plain");
+        let erased: StepRef<dyn Step> = StepRef::new(Plain).into_dyn();
+        assert_eq!(erased.read().label(), "Plain");
     }
 }

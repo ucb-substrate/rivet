@@ -9,13 +9,12 @@ use crate::MmmcCorner;
 use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc};
 use fs::File;
 use indoc::formatdoc;
-use rivet::Step;
 use rivet::exec;
 use rivet::progress;
+use rivet::{Step, StepRef};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
-use std::sync::Arc;
 
 /// Defines the Innovus place and route step subflow
 #[derive(Debug, Clone)]
@@ -26,7 +25,7 @@ pub struct InnovusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
-    pub deps: Vec<Arc<dyn Step>>,
+    pub deps: Vec<StepRef<dyn Step>>,
     pub synthesis: bool,
 }
 
@@ -36,7 +35,7 @@ impl InnovusStep {
         module: impl Into<String>,
         substeps: Vec<Substep>,
         pinned: bool,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
         synthesis: bool,
     ) -> Self {
         let dir = work_dir.into();
@@ -220,7 +219,7 @@ impl Step for InnovusStep {
         format!("{} par", self.module)
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.deps.clone()
     }
 

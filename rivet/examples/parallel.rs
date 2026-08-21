@@ -14,9 +14,8 @@
 //! ```
 
 use std::process::Command;
-use std::sync::Arc;
 
-use rivet::{exec, progress, ExecuteConfig, Step};
+use rivet::{exec, progress, Executor, Step, StepRef};
 
 #[derive(Debug)]
 struct DemoStep {
@@ -27,43 +26,46 @@ struct DemoStep {
     /// Seconds of pretend work.
     duration: f64,
     pinned: bool,
-    deps: Vec<Arc<dyn Step>>,
+    deps: Vec<StepRef<dyn Step>>,
 }
 
 impl DemoStep {
-    fn step(name: &str, duration: f64, deps: Vec<Arc<dyn Step>>) -> Arc<dyn Step> {
-        Arc::new(Self {
+    fn step(name: &str, duration: f64, deps: Vec<StepRef<dyn Step>>) -> StepRef<dyn Step> {
+        StepRef::new(Self {
             name: name.to_string(),
             substeps: Vec::new(),
             duration,
             pinned: false,
             deps,
-        }) as Arc<dyn Step>
+        })
+        .into_dyn()
     }
 
     fn with_substeps(
         name: &str,
         duration: f64,
         substeps: Vec<&'static str>,
-        deps: Vec<Arc<dyn Step>>,
-    ) -> Arc<dyn Step> {
-        Arc::new(Self {
+        deps: Vec<StepRef<dyn Step>>,
+    ) -> StepRef<dyn Step> {
+        StepRef::new(Self {
             name: name.to_string(),
             substeps,
             duration,
             pinned: false,
             deps,
-        }) as Arc<dyn Step>
+        })
+        .into_dyn()
     }
 
-    fn pinned(name: &str, deps: Vec<Arc<dyn Step>>) -> Arc<dyn Step> {
-        Arc::new(Self {
+    fn pinned(name: &str, deps: Vec<StepRef<dyn Step>>) -> StepRef<dyn Step> {
+        StepRef::new(Self {
             name: name.to_string(),
             substeps: Vec::new(),
             duration: 0.0,
             pinned: true,
             deps,
-        }) as Arc<dyn Step>
+        })
+        .into_dyn()
     }
 
     /// A shell script that behaves like a tool: chatter on stdout, and a
@@ -107,7 +109,7 @@ impl Step for DemoStep {
         assert!(status.success(), "{} failed", self.name);
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.deps.clone()
     }
 
@@ -141,11 +143,13 @@ fn main() {
         vec![syn],
     );
     // No substeps: these keep a spinner and show the tail of their output.
-    let drc = DemoStep::step("decoder drc", 2.4, vec![Arc::clone(&par)]);
-    let lvs = DemoStep::step("decoder lvs", 1.8, vec![Arc::clone(&par)]);
+    let drc = DemoStep::step("decoder drc", 2.4, vec![par.clone()]);
+    let lvs = DemoStep::step("decoder lvs", 1.8, vec![par.clone()]);
     let signoff = DemoStep::step("decoder signoff", 0.6, vec![drc, lvs]);
 
-    match ExecuteConfig::new().concurrency(4).run_arc(signoff) {
+    // Several targets can be queued; they are run as one graph, so shared work
+    // happens once and independent branches still overlap.
+    match Executor::new().concurrency(4).target_dyn(signoff).run() {
         Ok(summary) => println!(
             "\n{} of {} steps ran in {:.1}s",
             summary.executed,

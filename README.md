@@ -47,9 +47,9 @@ rivet::Executor::new()
     .run()?;
 ```
 
-Concurrency defaults to `RIVET_JOBS` if set, otherwise the core count. Tools
-that hold licences or saturate a machine on their own are usually worth capping
-explicitly.
+Concurrency defaults to the core count and is set in code, not by the
+environment. Tools that hold licences or saturate a machine on their own are
+usually worth capping explicitly.
 
 A pinned step is treated as up to date: it is skipped, and its dependencies are
 neither walked nor run.

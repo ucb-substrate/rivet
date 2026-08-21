@@ -71,7 +71,7 @@ impl Reporter {
         mode: OutputMode,
         progress: bool,
     ) -> Arc<Self> {
-        let ui = if progress && live_display_available() {
+        let ui = if progress && std::io::stderr().is_terminal() {
             let multi = MultiProgress::new();
             let overall = multi.add(ProgressBar::new(total as u64));
             overall.set_style(overall_style());
@@ -608,12 +608,6 @@ pub fn clear_substep() {
     if let Some(handle) = current_step() {
         handle.clear_substep();
     }
-}
-
-fn live_display_available() -> bool {
-    // The forcing hook exists so the display can be exercised when stderr is a
-    // pipe (tests, recorded demos).
-    std::io::stderr().is_terminal() || std::env::var_os("RIVET_FORCE_PROGRESS").is_some()
 }
 
 fn step_style() -> ProgressStyle {

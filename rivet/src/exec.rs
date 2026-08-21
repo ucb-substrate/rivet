@@ -2,8 +2,18 @@
 //!
 //! Steps should not let a child process write straight to the terminal: with
 //! several steps running at once the output interleaves and corrupts the live
-//! progress display. These helpers capture the child's output instead, tee it
-//! to log files, and hand each line to the reporter for the running step.
+//! progress display. These helpers capture the child's output instead and write
+//! it to log files.
+//!
+//! Nothing a child prints is shown on screen. Each line is offered to the
+//! running step, which takes it only if it carries a substep banner; see
+//! [`crate::progress`]. stdout and stderr are treated the same way — plenty of
+//! tools put all their chatter on stderr — and differ only in which file they
+//! land in.
+//!
+//! Any `Command` a step runs some other way must have its stdio piped or
+//! redirected for the same reason; if it genuinely needs the terminal, wrap it
+//! in [`crate::progress::suspend`].
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -37,8 +47,8 @@ pub fn run_logged(
     let stdout_handle = handle.clone();
     let stderr_handle = handle.clone();
 
-    let out_thread = thread::spawn(move || pump(stdout, stdout_file, stdout_handle, false));
-    let err_thread = thread::spawn(move || pump(stderr, stderr_file, stderr_handle, true));
+    let out_thread = thread::spawn(move || pump(stdout, stdout_file, stdout_handle));
+    let err_thread = thread::spawn(move || pump(stderr, stderr_file, stderr_handle));
 
     let _ = out_thread.join();
     let _ = err_thread.join();
@@ -71,7 +81,7 @@ pub fn run_logged_in(
     )
 }
 
-fn pump<R: BufRead>(reader: R, mut file: File, handle: Option<StepHandle>, is_stderr: bool) {
+fn pump<R: BufRead>(reader: R, mut file: File, handle: Option<StepHandle>) {
     // Split on bytes rather than using `lines()`: EDA tools are not reliably
     // UTF-8 clean, and a stray byte should not kill the step.
     for chunk in reader.split(b'\n') {
@@ -79,11 +89,12 @@ fn pump<R: BufRead>(reader: R, mut file: File, handle: Option<StepHandle>, is_st
         let _ = file.write_all(&bytes);
         let _ = file.write_all(b"\n");
 
-        let text = String::from_utf8_lossy(&bytes);
-        match &handle {
-            Some(handle) => handle.output_line(&text),
-            None if is_stderr => eprintln!("{text}"),
-            None => println!("{text}"),
+        // The log file has the line either way. Offering it to the step is
+        // only how a substep banner gets picked out of it, so with no step to
+        // offer it to — `run_logged` called off a worker thread, or outside a
+        // run — there is nothing left to do with it.
+        if let Some(handle) = &handle {
+            handle.output_line(&String::from_utf8_lossy(&bytes));
         }
     }
     let _ = file.flush();

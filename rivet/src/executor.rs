@@ -8,6 +8,7 @@
 //!
 //! Steps are identified by the address of their `Arc`, so a step shared by
 //! several dependents is run exactly once no matter how many paths reach it.
+//! Two separately constructed steps are two steps, however identical they look.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -18,9 +19,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use by_address::ByAddress;
+use by_address::ByThinAddress;
 
-use crate::progress::{self, Outcome, OutputMode, Reporter};
+use crate::progress::{self, Outcome, Reporter};
 use crate::{Step, StepRef};
 
 /// Settings for a run.
@@ -35,7 +36,6 @@ use crate::{Step, StepRef};
 #[derive(Debug, Clone)]
 pub struct ExecuteConfig {
     concurrency: usize,
-    output: OutputMode,
     progress: bool,
 }
 
@@ -43,7 +43,6 @@ impl Default for ExecuteConfig {
     fn default() -> Self {
         Self {
             concurrency: default_concurrency(),
-            output: OutputMode::default(),
             progress: true,
         }
     }
@@ -60,12 +59,6 @@ impl ExecuteConfig {
     /// saturate a machine on their own are usually worth capping explicitly.
     pub fn concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency.max(1);
-        self
-    }
-
-    /// How output from running steps is displayed.
-    pub fn output(mut self, output: OutputMode) -> Self {
-        self.output = output;
         self
     }
 
@@ -125,12 +118,6 @@ impl Executor {
     /// See [`ExecuteConfig::concurrency`].
     pub fn concurrency(mut self, concurrency: usize) -> Self {
         self.config = self.config.concurrency(concurrency);
-        self
-    }
-
-    /// See [`ExecuteConfig::output`].
-    pub fn output(mut self, output: OutputMode) -> Self {
-        self.config = self.config.output(output);
         self
     }
 
@@ -277,12 +264,18 @@ impl Graph {
     fn flatten(roots: Vec<StepRef<dyn Step>>) -> Self {
         struct Builder {
             nodes: Vec<Node>,
-            index: HashMap<ByAddress<StepRef<dyn Step>>, usize>,
+            // Keyed on the data address alone. `ByAddress` would compare the
+            // whole fat pointer, vtable included, and Rust does not promise one
+            // vtable per (type, trait) — two `into_dyn` calls in different
+            // codegen units can produce two for the same step, which would
+            // intern it twice and run it twice, concurrently, under one label.
+            // See https://github.com/rust-lang/rust/issues/46139.
+            index: HashMap<ByThinAddress<StepRef<dyn Step>>, usize>,
         }
 
         impl Builder {
             fn intern(&mut self, step: StepRef<dyn Step>) -> usize {
-                let key = ByAddress(step.clone());
+                let key = ByThinAddress(step.clone());
                 if let Some(&existing) = self.index.get(&key) {
                     return existing;
                 }
@@ -392,7 +385,7 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
         .map(|node| node.label.chars().count())
         .max()
         .unwrap_or(0);
-    let reporter = Reporter::new(total, label_width, config.output, config.progress);
+    let reporter = Reporter::new(total, label_width, config.progress);
     progress::set_active_reporter(Some(Arc::clone(&reporter)));
 
     let unfinished_deps: Vec<usize> = graph.nodes.iter().map(|node| node.deps.len()).collect();
@@ -475,6 +468,9 @@ fn worker(graph: &Graph, shared: &Mutex<Shared>, condvar: &Condvar, reporter: &A
         let mut guard = shared.lock().unwrap();
         guard.in_flight -= 1;
         guard.remaining -= 1;
+        // Reported after the lock is dropped: `Reporter` draws, and drawing
+        // under the scheduler lock would stall every other worker.
+        let mut announce_abort = None;
         match outcome {
             Ok(()) => {
                 for &dependent in &node.dependents {
@@ -485,11 +481,21 @@ fn worker(graph: &Graph, shared: &Mutex<Shared>, condvar: &Condvar, reporter: &A
                 }
             }
             Err(failure) => {
+                // Only the first failure announces the abort; the rest are
+                // steps that were already in flight when it happened.
+                if guard.failures.is_empty() {
+                    announce_abort = Some(guard.in_flight);
+                }
                 guard.failures.push(failure);
                 guard.aborted = true;
             }
         }
         condvar.notify_all();
+        drop(guard);
+
+        if let Some(in_flight) = announce_abort {
+            reporter.aborting(in_flight);
+        }
     }
 }
 
@@ -664,9 +670,7 @@ mod tests {
     }
 
     fn config() -> ExecuteConfig {
-        ExecuteConfig::new()
-            .progress(false)
-            .output(OutputMode::Quiet)
+        ExecuteConfig::new().progress(false)
     }
 
     #[test]
@@ -833,6 +837,53 @@ mod tests {
             other => panic!("expected a failure, got {other:?}"),
         }
         assert_eq!(ran_after.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn steps_already_in_flight_finish_after_a_failure() {
+        // A failure stops the executor scheduling anything new, but steps
+        // already running are allowed to finish — which is why a run carries on
+        // after the first `✖`. Their failures are reported too.
+        let gate = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let started_late = Arc::new(AtomicUsize::new(0));
+
+        // Both fail, but only once each has seen the other start, so the second
+        // failure is guaranteed to arrive after the run is already aborting.
+        let mut roots: Vec<StepRef<dyn Step>> = Vec::new();
+        for name in ["lvs", "drc"] {
+            let gate = Arc::clone(&gate);
+            roots.push(acting(name, vec![], move || {
+                let (lock, condvar) = &*gate;
+                let mut started = lock.lock().unwrap();
+                *started += 1;
+                condvar.notify_all();
+                while *started < 2 {
+                    started = condvar.wait(started).unwrap();
+                }
+                Err("did not match".into())
+            }));
+        }
+        let counter = Arc::clone(&started_late);
+        roots.push(acting("signoff", vec![], move || {
+            counter.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        }));
+
+        // Two slots for three roots: `signoff` can only start once one of the
+        // failing steps has freed a worker, by which point the run has aborted.
+        let error = config().concurrency(2).run_all(roots).unwrap_err();
+
+        match error {
+            ExecuteError::Failed(failures) => {
+                assert_eq!(failures.len(), 2, "both in-flight steps should report");
+            }
+            other => panic!("expected two failures, got {other:?}"),
+        }
+        assert_eq!(
+            started_late.load(AtomicOrdering::SeqCst),
+            0,
+            "no step may start after a failure"
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ use fs::File;
 use indoc::formatdoc;
 use rivet::exec;
 use rivet::progress;
-use rivet::{Step, StepRef};
+use rivet::{Step, StepRef, StepResult};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
@@ -165,30 +165,28 @@ impl InnovusStep {
 }
 
 impl Step for InnovusStep {
-    fn execute(&self) {
+    fn execute(&self) -> StepResult {
         let mut substeps = self.substeps.clone();
         if let Some(checkpoint) = &self.start_checkpoint {
             let slice_index = self
                 .substeps
                 .iter()
                 .position(|s| s.name == checkpoint.name)
-                .expect("Failed to find checkpoint name");
+                .ok_or_else(|| format!("no substep named '{}' to start from", checkpoint.name))?;
             substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
         if let Some(endpoint_name) = &self.endpoint {
             let slice_index = substeps
                 .iter()
                 .position(|s| s.name == *endpoint_name)
-                .expect("Failed to find endpoint name");
+                .ok_or_else(|| format!("no substep named '{endpoint_name}' to stop at"))?;
             substeps = substeps[..=slice_index].to_vec();
         }
 
         progress::status("writing par.tcl");
-        self.make_tcl_file(&self.work_dir, substeps)
-            .expect("Failed to create par.tcl");
+        self.make_tcl_file(&self.work_dir, substeps)?;
 
         let tcl_file = self.work_dir.join("catch_fatal.tcl");
-
         let mut args = vec![
             "-file",
             tcl_file.to_str().unwrap(),
@@ -207,12 +205,18 @@ impl Step for InnovusStep {
             &mut command,
             &self.work_dir,
             &format!("{}.par", self.module),
-        )
-        .expect("Failed to execute par.tcl");
+        )?;
 
         if !status.success() {
-            panic!("innovus failed for {} with status {status}", self.module);
+            return Err(format!(
+                "innovus exited with {status}; see {}",
+                self.work_dir
+                    .join(format!("{}.par.err", self.module))
+                    .display()
+            )
+            .into());
         }
+        Ok(())
     }
 
     fn label(&self) -> String {

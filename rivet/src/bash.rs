@@ -1,5 +1,5 @@
 use crate::exec;
-use crate::{Step, StepRef};
+use crate::{Step, StepRef, StepResult};
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::process::Command;
@@ -38,7 +38,7 @@ impl BashStep {
 }
 
 impl Step for BashStep {
-    fn execute(&self) {
+    fn execute(&self) -> StepResult {
         // TODO: Make this similar to a TCL tool where a bash script is composed of several
         // substeps and templated here, rather than running a hardcoded script path.
         let mut command = Command::new("/bin/bash");
@@ -50,17 +50,17 @@ impl Step for BashStep {
             &mut command,
             &self.work_dir,
             &format!("{}.{}", self.block, self.name),
-        )
-        .expect("Failed to execute BashStep");
+        )?;
 
         if !status.success() {
-            panic!(
-                "BashStep '{}.{}' failed in directory: {}",
-                self.block,
+            return Err(format!(
+                "run_{}.sh exited with {status} in {}",
                 self.name,
                 self.work_dir.display()
-            );
+            )
+            .into());
         }
+        Ok(())
     }
 
     fn deps(&self) -> Vec<StepRef<dyn Step>> {

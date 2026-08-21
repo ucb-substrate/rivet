@@ -68,10 +68,36 @@ impl<F: NamedNode> Dag<F> {
     }
 }
 
+/// Why a step failed.
+///
+/// Any error type converts with `?`, and a message can be turned into one with
+/// `.into()`:
+///
+/// ```
+/// # use rivet::StepResult;
+/// fn check(clean: bool) -> StepResult {
+///     if !clean {
+///         return Err("LVS mismatch: 3 unmatched nets".into());
+///     }
+///     Ok(())
+/// }
+/// # assert!(check(false).is_err());
+/// ```
+pub type StepError = Box<dyn std::error::Error + Send + Sync>;
+
+/// What [`Step::execute`] returns.
+pub type StepResult = Result<(), StepError>;
+
 pub trait Step: Debug + Any + Send + Sync {
     fn deps(&self) -> Vec<StepRef<dyn Step>>;
     fn pinned(&self) -> bool;
-    fn execute(&self);
+
+    /// Do the step's work.
+    ///
+    /// Return `Err` for an expected failure — a tool exiting non-zero, LVS not
+    /// matching, a missing input. Panicking is for bugs; the executor catches
+    /// panics so they do not take down the run, but reports them as such.
+    fn execute(&self) -> StepResult;
 
     /// Short name for this step in progress output.
     ///

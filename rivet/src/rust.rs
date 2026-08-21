@@ -1,4 +1,4 @@
-use crate::{Step, StepRef};
+use crate::{Step, StepRef, StepResult};
 use std::fmt::Debug;
 
 #[derive(Clone)]
@@ -40,9 +40,9 @@ impl<F> RustStep<F> {
     }
 }
 
-impl<F: Fn() + Send + Sync + 'static> Step for RustStep<F> {
-    fn execute(&self) {
-        (self.rust_fn)();
+impl<F: Fn() -> StepResult + Send + Sync + 'static> Step for RustStep<F> {
+    fn execute(&self) -> StepResult {
+        (self.rust_fn)()
     }
 
     fn deps(&self) -> Vec<StepRef<dyn Step>> {

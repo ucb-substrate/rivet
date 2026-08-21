@@ -171,11 +171,30 @@ pub struct Summary {
     pub elapsed: Duration,
 }
 
-/// A step that panicked.
+/// A step that did not succeed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepFailure {
     pub label: String,
     pub message: String,
+    /// The step panicked instead of returning an error, which usually means a
+    /// bug rather than an expected failure.
+    pub panicked: bool,
+    /// The substep it last reported, if any.
+    pub substep: Option<String>,
+}
+
+impl fmt::Display for StepFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.label)?;
+        if let Some(substep) = &self.substep {
+            write!(f, " (during {substep})")?;
+        }
+        write!(f, ": ")?;
+        if self.panicked {
+            write!(f, "panicked: ")?;
+        }
+        write!(f, "{}", self.message)
+    }
 }
 
 /// Why a run did not finish.
@@ -195,7 +214,7 @@ impl fmt::Display for ExecuteError {
             Self::Failed(failures) => {
                 write!(f, "{} step(s) failed:", failures.len())?;
                 for failure in failures {
-                    write!(f, "\n  {}: {}", failure.label, failure.message)?;
+                    write!(f, "\n  {failure}")?;
                 }
                 Ok(())
             }
@@ -489,20 +508,31 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>) -> Result<(), StepFailure> {
 
     progress::set_current_step(None);
 
-    match result {
-        Ok(()) => {
+    let (message, panicked) = match result {
+        Ok(Ok(())) => {
             reporter.finish(&handle, Outcome::Completed, None);
-            Ok(())
+            return Ok(());
         }
-        Err(payload) => {
-            let message = take_panic_message().unwrap_or_else(|| payload_message(&*payload));
-            reporter.finish(&handle, Outcome::Failed, Some(&message));
-            Err(StepFailure {
-                label: node.label.clone(),
-                message,
-            })
-        }
-    }
+        Ok(Err(error)) => (error.to_string(), false),
+        Err(payload) => (
+            take_panic_message().unwrap_or_else(|| payload_message(&*payload)),
+            true,
+        ),
+    };
+
+    let detail = if panicked {
+        format!("panicked: {message}")
+    } else {
+        message.clone()
+    };
+    reporter.finish(&handle, Outcome::Failed, Some(&detail));
+
+    Err(StepFailure {
+        label: node.label.clone(),
+        message,
+        panicked,
+        substep: handle.substep().map(|banner| banner.describe()),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -569,13 +599,14 @@ fn payload_message(payload: &(dyn Any + Send)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StepResult;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     struct TestStep {
         name: String,
         deps: Mutex<Vec<StepRef<dyn Step>>>,
         pinned: bool,
-        action: Box<dyn Fn() + Send + Sync>,
+        action: Box<dyn Fn() -> StepResult + Send + Sync>,
     }
 
     impl fmt::Debug for TestStep {
@@ -595,8 +626,8 @@ mod tests {
             self.pinned
         }
 
-        fn execute(&self) {
-            (self.action)();
+        fn execute(&self) -> StepResult {
+            (self.action)()
         }
 
         fn label(&self) -> String {
@@ -605,13 +636,13 @@ mod tests {
     }
 
     fn step(name: &str, deps: Vec<StepRef<dyn Step>>) -> StepRef<dyn Step> {
-        acting(name, deps, || {})
+        acting(name, deps, || Ok(()))
     }
 
     fn acting(
         name: &str,
         deps: Vec<StepRef<dyn Step>>,
-        action: impl Fn() + Send + Sync + 'static,
+        action: impl Fn() -> StepResult + Send + Sync + 'static,
     ) -> StepRef<dyn Step> {
         StepRef::new(TestStep {
             name: name.to_string(),
@@ -627,7 +658,7 @@ mod tests {
             name: name.to_string(),
             deps: Mutex::new(deps),
             pinned: true,
-            action: Box::new(|| panic!("a pinned step must not run")),
+            action: Box::new(|| Err("a pinned step must not run".into())),
         })
         .into_dyn()
     }
@@ -644,6 +675,7 @@ mod tests {
         let counter = Arc::clone(&runs);
         let par = acting("par", vec![], move || {
             counter.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
         });
         let drc = step("drc", vec![par.clone()]);
         let lvs = step("lvs", vec![par.clone()]);
@@ -679,6 +711,7 @@ mod tests {
                 if !timeout.timed_out() {
                     overlaps.fetch_add(1, AtomicOrdering::SeqCst);
                 }
+                Ok(())
             }));
         }
         let signoff = step("signoff", checks);
@@ -697,7 +730,10 @@ mod tests {
         let order = Arc::new(Mutex::new(Vec::new()));
         let record = |order: &Arc<Mutex<Vec<&'static str>>>, name: &'static str| {
             let order = Arc::clone(order);
-            move || order.lock().unwrap().push(name)
+            move || {
+                order.lock().unwrap().push(name);
+                Ok(())
+            }
         };
 
         let syn = acting("syn", vec![], record(&order, "syn"));
@@ -719,7 +755,9 @@ mod tests {
 
     #[test]
     fn pinned_steps_are_skipped_along_with_their_dependencies() {
-        let never = acting("never", vec![], || panic!("upstream of a pin must not run"));
+        let never = acting("never", vec![], || {
+            Err("upstream of a pin must not run".into())
+        });
         let par = pinned("par", vec![never]);
         let drc = step("drc", vec![par]);
 
@@ -748,13 +786,13 @@ mod tests {
             name: "a".into(),
             deps: Mutex::new(vec![]),
             pinned: false,
-            action: Box::new(|| {}),
+            action: Box::new(|| Ok(())),
         });
         let b = StepRef::new(TestStep {
             name: "b".into(),
             deps: Mutex::new(vec![a.clone().into_dyn()]),
             pinned: false,
-            action: Box::new(|| {}),
+            action: Box::new(|| Ok(())),
         });
         // Close the loop: a now depends on b.
         a.read().deps.lock().unwrap().push(b.clone().into_dyn());
@@ -775,9 +813,12 @@ mod tests {
         let ran_after = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&ran_after);
 
-        let par = acting("par", vec![], || panic!("boom"));
+        let par = acting("par", vec![], || {
+            Err("LVS mismatch: 3 unmatched nets".into())
+        });
         let drc = acting("drc", vec![par], move || {
             counter.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
         });
 
         let error = config().run_dyn(drc).unwrap_err();
@@ -786,15 +827,56 @@ mod tests {
             ExecuteError::Failed(failures) => {
                 assert_eq!(failures.len(), 1);
                 assert_eq!(failures[0].label, "par");
+                assert_eq!(failures[0].message, "LVS mismatch: 3 unmatched nets");
+                assert!(!failures[0].panicked, "an Err is not a panic");
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+        assert_eq!(ran_after.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_panicking_step_is_caught_and_flagged() {
+        let par = acting("par", vec![], || panic!("index out of bounds"));
+
+        let error = config().run_dyn(par).unwrap_err();
+
+        match error {
+            ExecuteError::Failed(failures) => {
+                assert_eq!(failures.len(), 1);
+                assert!(failures[0].panicked, "a panic should be flagged as one");
                 assert!(
-                    failures[0].message.contains("boom"),
+                    failures[0].message.contains("index out of bounds"),
                     "got {:?}",
                     failures[0]
                 );
             }
             other => panic!("expected a failure, got {other:?}"),
         }
-        assert_eq!(ran_after.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_failure_reports_the_substep_it_died_in() {
+        let par = acting("par", vec![], || {
+            progress::substep(3, 5, "place_opt_design");
+            Err("router gave up".into())
+        });
+
+        let error = config().run_dyn(par).unwrap_err();
+
+        match error {
+            ExecuteError::Failed(failures) => {
+                assert_eq!(
+                    failures[0].substep.as_deref(),
+                    Some("place_opt_design (3/5)")
+                );
+                assert_eq!(
+                    failures[0].to_string(),
+                    "par (during place_opt_design (3/5)): router gave up"
+                );
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
     }
 
     #[test]
@@ -803,7 +885,7 @@ mod tests {
             name: "x".into(),
             deps: Mutex::new(vec![]),
             pinned: false,
-            action: Box::new(|| {}),
+            action: Box::new(|| Ok(())),
         };
         // `TestStep` overrides `label`, so check the default via a type that
         // does not.
@@ -816,7 +898,9 @@ mod tests {
             fn pinned(&self) -> bool {
                 false
             }
-            fn execute(&self) {}
+            fn execute(&self) -> StepResult {
+                Ok(())
+            }
         }
         assert_eq!(step.label(), "x");
         assert_eq!(Plain.label(), "Plain");

@@ -52,9 +52,40 @@ that hold licences or saturate a machine on their own are usually worth capping
 explicitly.
 
 A pinned step is treated as up to date: it is skipped, and its dependencies are
-neither walked nor run. If a step panics, steps already in flight are allowed to
-finish, nothing new is started, and the run reports which steps failed. A
-dependency cycle is reported rather than hanging.
+neither walked nor run.
+
+### Failure
+
+`Step::execute` returns `StepResult`. A step reports an expected failure — a
+tool exiting non-zero, LVS not matching, a missing input — by returning `Err`;
+`?` converts any error type, and a message becomes one with `.into()`:
+
+```rust
+fn execute(&self) -> StepResult {
+    let status = exec::run_logged_in(&mut command, &self.work_dir, "lvs")?;
+    if !status.success() {
+        return Err(format!("LVS did not match for {}", self.module).into());
+    }
+    Ok(())
+}
+```
+
+Panicking is for bugs. The executor catches panics so one cannot take down the
+run, but reports them separately (`StepFailure::panicked`) because a panic means
+something is wrong with the step itself rather than with the design.
+
+Either way the rule is *stop starting, don't stop running*: steps already in
+flight are allowed to finish, nothing new is dispatched, dependents of the
+failed step never run, and the run ends with `ExecuteError::Failed` listing
+every step that failed and the substep it died in.
+
+```text
+  ✖ decoder lvs      0.3s  during place_opt_design (3/5)  LVS mismatch: 3 unmatched nets
+  ✔ decoder drc      0.9s
+  ✖ 2 executed · 1 failed · 0.9s
+```
+
+A dependency cycle is reported as `ExecuteError::Cycle` rather than hanging.
 
 While a flow runs, each executing step gets a line with a spinner, its elapsed
 time, and the most recent line of output from the tool it is driving; finished

@@ -8,7 +8,7 @@ use crate::Substep;
 use fs::File;
 use rivet::exec;
 use rivet::progress;
-use rivet::{Step, StepRef};
+use rivet::{Step, StepRef, StepResult};
 
 #[derive(Debug)]
 pub struct PegasusStep {
@@ -45,7 +45,7 @@ impl PegasusStep {
         checkpoint_dir: Option<PathBuf>,
         work_dir: PathBuf,
     ) -> io::Result<()> {
-        let mut ctl_file = File::create(path).expect("failed to create pegasus{self.func}ctl file");
+        let mut ctl_file = File::create(path)?;
 
         if let Some(actual_checkpt_dir) = checkpoint_dir {
             progress::status("reading checkpoint");
@@ -84,7 +84,7 @@ impl PegasusStep {
 }
 
 impl Step for PegasusStep {
-    fn execute(&self) {
+    fn execute(&self) -> StepResult {
         let ctl_path = self.work_dir.clone().join("{}.ctl");
         let schematic = format!("./{}.spice", self.module);
         let layout = format!("./{}.gds", self.module);
@@ -97,13 +97,10 @@ impl Step for PegasusStep {
                 &mut ctl,
                 &self.work_dir,
                 &format!("{}.lvs.ctl", self.module),
-            )
-            .expect("Failed to execute pegasus");
-            assert!(
-                status.success(),
-                "Pegasus command failed with status: {}",
-                status
-            );
+            )?;
+            if !status.success() {
+                return Err(format!("pegasus ctl run exited with {status}").into());
+            }
 
             let mut lvs = Command::new("pegasus");
             lvs.args([
@@ -128,13 +125,20 @@ impl Step for PegasusStep {
             .current_dir(self.work_dir.clone());
 
             let lvs_status =
-                exec::run_logged_in(&mut lvs, &self.work_dir, &format!("{}.lvs", self.module))
-                    .expect("Failed to execute pegasus for LVS");
+                exec::run_logged_in(&mut lvs, &self.work_dir, &format!("{}.lvs", self.module))?;
 
             if !lvs_status.success() {
-                panic!("LVS failed for {} with status {lvs_status}", self.module);
+                // An LVS mismatch is an ordinary result, not a bug.
+                return Err(format!(
+                    "LVS did not match for {} (pegasus exited with {lvs_status}); see {}",
+                    self.module,
+                    self.work_dir
+                        .join(format!("{}.lvs.out", self.module))
+                        .display()
+                )
+                .into());
             }
-            rivet::progress::status("LVS clean");
+            progress::status("LVS clean");
         }
 
         if self.func == "drc" {
@@ -154,14 +158,22 @@ impl Step for PegasusStep {
             .current_dir(self.work_dir.clone());
 
             let drc_status =
-                exec::run_logged_in(&mut drc, &self.work_dir, &format!("{}.drc", self.module))
-                    .expect("Failed to execute pegasus for DRC");
+                exec::run_logged_in(&mut drc, &self.work_dir, &format!("{}.drc", self.module))?;
 
             if !drc_status.success() {
-                panic!("DRC failed for {} with status {drc_status}", self.module);
+                return Err(format!(
+                    "DRC violations in {} (pegasus exited with {drc_status}); see {}",
+                    self.module,
+                    self.work_dir
+                        .join(format!("{}.drc.out", self.module))
+                        .display()
+                )
+                .into());
             }
-            rivet::progress::status("DRC clean");
+            progress::status("DRC clean");
         }
+
+        Ok(())
     }
 
     fn label(&self) -> String {

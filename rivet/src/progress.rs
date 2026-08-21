@@ -162,6 +162,14 @@ impl Reporter {
                     padded.red().bold(),
                     elapsed.dimmed()
                 );
+                // Say where it died, not just that it did.
+                if let Some(substep) = handle.substep() {
+                    let _ = write!(
+                        line,
+                        "  {}",
+                        format!("during {}", substep.describe()).yellow()
+                    );
+                }
                 if let Some(detail) = detail {
                     let _ = write!(line, "  {}", truncate(&one_line(detail), 160).red());
                 }

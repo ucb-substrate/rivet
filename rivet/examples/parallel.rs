@@ -15,7 +15,7 @@
 
 use std::process::Command;
 
-use rivet::{exec, progress, Executor, Step, StepRef};
+use rivet::{exec, progress, Executor, Step, StepRef, StepResult};
 
 #[derive(Debug)]
 struct DemoStep {
@@ -97,16 +97,18 @@ impl DemoStep {
 }
 
 impl Step for DemoStep {
-    fn execute(&self) {
+    fn execute(&self) -> StepResult {
         let work_dir = std::env::temp_dir().join("rivet-example");
-        std::fs::create_dir_all(&work_dir).expect("failed to create work dir");
+        std::fs::create_dir_all(&work_dir)?;
 
         let mut command = Command::new("/bin/bash");
         command.args(["-c", &self.script()]).current_dir(&work_dir);
 
-        let status = exec::run_logged_in(&mut command, &work_dir, &self.name.replace(' ', "_"))
-            .expect("failed to run demo step");
-        assert!(status.success(), "{} failed", self.name);
+        let status = exec::run_logged_in(&mut command, &work_dir, &self.name.replace(' ', "_"))?;
+        if !status.success() {
+            return Err(format!("{} exited with {status}", self.name).into());
+        }
+        Ok(())
     }
 
     fn deps(&self) -> Vec<StepRef<dyn Step>> {

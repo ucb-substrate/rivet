@@ -88,12 +88,12 @@ every step that failed and the substep it died in.
 A dependency cycle is reported as `ExecuteError::Cycle` rather than hanging.
 
 While a flow runs, each executing step gets a line with a spinner, its elapsed
-time, and the most recent line of output from the tool it is driving; finished
-steps scroll off as `✔` (executed), `⏭` (pinned) or `✖` (failed). Full tool
-output always goes to `{step}.out` and `{step}.err` in the step's work directory.
-`ExecuteConfig::output(OutputMode::Stream)` shows every line instead of just
-the tail. When stderr is not a terminal the display degrades to plain
-one-line-per-event logging.
+time, and whatever progress it reports (see below); finished steps scroll off as
+`✔` (executed), `⏭` (pinned) or `✖` (failed). Raw tool output is not shown — it
+goes to `{step}.out` and `{step}.err` in the step's work directory, and
+`ExecuteConfig::output(OutputMode::Stream)` prints every line above the display
+when you want to watch it. When stderr is not a terminal the display degrades to
+plain one-line-per-event logging.
 
 ### Substep banners
 
@@ -112,18 +112,42 @@ Build one with `progress::banner(current, total, name)`. `GenusStep`,
 puts {<<rivet:substep 3/5 place_opt_design>>}
 ```
 
-Once a step reports a substep with a position, its spinner gains a bar over the
-substeps:
-
-```text
-  ⠹ decoder par     12s ━━━━━╸──── 3/5 place_opt_design · <last line of output>
-  ⠸ decoder drc      4s route check 2 of 9
-```
-
 The marker is matched anywhere in a line, so tools that prefix output with a
 severity or timestamp still work, and banner lines never show up as output.
 `progress::banner_named` omits the counts for tools that do not know how many
-substeps they will run, and `progress::substep(current, total, name)` reports
-one directly from a Rust step that is not shelling out at all.
+substeps they will run.
+
+Banners are the only way to fill this half of the line: it is reached by parsing
+the tool's output and nothing else, so what it shows always reflects what the
+tool actually said. Progress the Rust side knows about goes in the status
+instead.
+
+### The step's line
+
+A running step has two independent halves, either of which can carry its own
+bar:
+
+```text
+  ⠹ decoder par  12s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+                     └──────── status ────────┘   └──────── banner ────────┘
+```
+
+The **left** half is the step's own status, and the only half Rust writes. Set
+it with `progress::status(msg)` or `progress::status_progress(current, total,
+msg)` — useful for work a step does itself, where there is no tool output to
+parse:
+
+```rust
+for (index, file) in gds_files.iter().enumerate() {
+    progress::status_progress(index + 1, gds_files.len(), format!("merging {file}"));
+    merge(file)?;
+}
+```
+
+The **right** half is the substep banner picked out of the tool's output, and
+only ever comes from there.
+
+The two never interfere: a banner cannot clear the status, and a status cannot
+clear the banner. Each half is omitted entirely until something fills it.
 
 Run `cargo run -p rivet --example parallel` to see it against a mock flow.

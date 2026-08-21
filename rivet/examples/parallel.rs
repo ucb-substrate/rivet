@@ -21,7 +21,7 @@ use rivet::{exec, progress, Executor, Step, StepRef, StepResult};
 struct DemoStep {
     name: String,
     /// Substeps the pretend tool announces as it runs. A step with none of
-    /// these keeps a plain spinner and shows the tail of its output instead.
+    /// these keeps a plain spinner.
     substeps: Vec<&'static str>,
     /// Seconds of pretend work.
     duration: f64,
@@ -124,6 +124,35 @@ impl Step for DemoStep {
     }
 }
 
+/// Work done in Rust, reporting progress without a subprocess to parse.
+#[derive(Debug)]
+struct MergeStep {
+    files: Vec<&'static str>,
+    deps: Vec<StepRef<dyn Step>>,
+}
+
+impl Step for MergeStep {
+    fn execute(&self) -> StepResult {
+        for (index, file) in self.files.iter().enumerate() {
+            progress::status_progress(index + 1, self.files.len(), format!("merging {file}"));
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        Ok(())
+    }
+
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
+        self.deps.clone()
+    }
+
+    fn pinned(&self) -> bool {
+        false
+    }
+
+    fn label(&self) -> String {
+        "decoder merge".into()
+    }
+}
+
 fn main() {
     let sram = DemoStep::pinned("sram compile", vec![]);
     let syn = DemoStep::with_substeps(
@@ -144,10 +173,15 @@ fn main() {
         ],
         vec![syn],
     );
-    // No substeps: these keep a spinner and show the tail of their output.
+    // No substeps: these keep a plain spinner.
     let drc = DemoStep::step("decoder drc", 2.4, vec![par.clone()]);
     let lvs = DemoStep::step("decoder lvs", 1.8, vec![par.clone()]);
-    let signoff = DemoStep::step("decoder signoff", 0.6, vec![drc, lvs]);
+    let merge = StepRef::new(MergeStep {
+        files: vec!["decoder.gds", "sram22.gds", "sky130_fd_sc_hd.gds"],
+        deps: vec![par],
+    })
+    .into_dyn();
+    let signoff = DemoStep::step("decoder signoff", 0.6, vec![drc, lvs, merge]);
 
     // Several targets can be queued; they are run as one graph, so shared work
     // happens once and independent branches still overlap.

@@ -531,7 +531,10 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>) -> Result<(), StepFailure> {
         label: node.label.clone(),
         message,
         panicked,
-        substep: handle.substep().map(|banner| banner.describe()),
+        substep: handle
+            .substep()
+            .or_else(|| handle.status())
+            .map(|where_| where_.describe()),
     })
 }
 
@@ -858,7 +861,8 @@ mod tests {
     #[test]
     fn a_failure_reports_the_substep_it_died_in() {
         let par = acting("par", vec![], || {
-            progress::substep(3, 5, "place_opt_design");
+            // As a tool would report it: a banner in the output stream.
+            progress::log_line(progress::banner(3, 5, "place_opt_design"));
             Err("router gave up".into())
         });
 

@@ -16,11 +16,14 @@
 use std::process::Command;
 use std::sync::Arc;
 
-use rivet::{exec, ExecuteConfig, Step};
+use rivet::{exec, progress, ExecuteConfig, Step};
 
 #[derive(Debug)]
 struct DemoStep {
     name: String,
+    /// Substeps the pretend tool announces as it runs. A step with none of
+    /// these keeps a plain spinner and shows the tail of its output instead.
+    substeps: Vec<&'static str>,
     /// Seconds of pretend work.
     duration: f64,
     pinned: bool,
@@ -31,6 +34,22 @@ impl DemoStep {
     fn step(name: &str, duration: f64, deps: Vec<Arc<dyn Step>>) -> Arc<dyn Step> {
         Arc::new(Self {
             name: name.to_string(),
+            substeps: Vec::new(),
+            duration,
+            pinned: false,
+            deps,
+        }) as Arc<dyn Step>
+    }
+
+    fn with_substeps(
+        name: &str,
+        duration: f64,
+        substeps: Vec<&'static str>,
+        deps: Vec<Arc<dyn Step>>,
+    ) -> Arc<dyn Step> {
+        Arc::new(Self {
+            name: name.to_string(),
+            substeps,
             duration,
             pinned: false,
             deps,
@@ -40,10 +59,38 @@ impl DemoStep {
     fn pinned(name: &str, deps: Vec<Arc<dyn Step>>) -> Arc<dyn Step> {
         Arc::new(Self {
             name: name.to_string(),
+            substeps: Vec::new(),
             duration: 0.0,
             pinned: true,
             deps,
         }) as Arc<dyn Step>
+    }
+
+    /// A shell script that behaves like a tool: chatter on stdout, and a
+    /// banner whenever it starts a new substep.
+    fn script(&self) -> String {
+        let ticks = (self.duration / 0.15).round().max(1.0) as u32;
+        if self.substeps.is_empty() {
+            return format!(
+                r#"for i in $(seq 1 {ticks}); do echo "{} working ($i/{ticks})"; sleep 0.15; done"#,
+                self.name
+            );
+        }
+
+        let total = self.substeps.len();
+        let per_substep = (ticks as usize).div_ceil(total).max(1);
+        let mut script = String::new();
+        for (index, substep) in self.substeps.iter().enumerate() {
+            script.push_str(&format!(
+                "echo '{}'\n",
+                progress::banner(index + 1, total, substep)
+            ));
+            script.push_str(&format!(
+                r#"for i in $(seq 1 {per_substep}); do echo "{substep}: iteration $i"; sleep 0.15; done"#
+            ));
+            script.push('\n');
+        }
+        script
     }
 }
 
@@ -52,15 +99,8 @@ impl Step for DemoStep {
         let work_dir = std::env::temp_dir().join("rivet-example");
         std::fs::create_dir_all(&work_dir).expect("failed to create work dir");
 
-        // Stand in for a real tool: emit progress on stdout for a while.
-        let ticks = (self.duration / 0.15).round().max(1.0) as u32;
-        let script = format!(
-            r#"for i in $(seq 1 {ticks}); do echo "{} phase $i/{ticks}"; sleep 0.15; done"#,
-            self.name
-        );
-
         let mut command = Command::new("/bin/bash");
-        command.args(["-c", &script]).current_dir(&work_dir);
+        command.args(["-c", &self.script()]).current_dir(&work_dir);
 
         let status = exec::run_logged_in(&mut command, &work_dir, &self.name.replace(' ', "_"))
             .expect("failed to run demo step");
@@ -82,8 +122,25 @@ impl Step for DemoStep {
 
 fn main() {
     let sram = DemoStep::pinned("sram compile", vec![]);
-    let syn = DemoStep::step("decoder syn", 1.2, vec![sram]);
-    let par = DemoStep::step("decoder par", 1.5, vec![syn]);
+    let syn = DemoStep::with_substeps(
+        "decoder syn",
+        1.5,
+        vec!["read_design", "elaborate", "syn_generic", "syn_map"],
+        vec![sram],
+    );
+    let par = DemoStep::with_substeps(
+        "decoder par",
+        2.4,
+        vec![
+            "init_design",
+            "floorplan_design",
+            "place_opt_design",
+            "route_design",
+            "add_fillers",
+        ],
+        vec![syn],
+    );
+    // No substeps: these keep a spinner and show the tail of their output.
     let drc = DemoStep::step("decoder drc", 2.4, vec![Arc::clone(&par)]);
     let lvs = DemoStep::step("decoder lvs", 1.8, vec![Arc::clone(&par)]);
     let signoff = DemoStep::step("decoder signoff", 0.6, vec![drc, lvs]);

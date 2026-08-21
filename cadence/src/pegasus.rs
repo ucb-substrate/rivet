@@ -8,6 +8,7 @@ use crate::Substep;
 use fs::File;
 use rivet::Step;
 use rivet::exec;
+use rivet::progress;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -48,7 +49,7 @@ impl PegasusStep {
         let mut ctl_file = File::create(path).expect("failed to create pegasus{self.func}ctl file");
 
         if let Some(actual_checkpt_dir) = checkpoint_dir {
-            println!("\nCheckpoint specified, reading from it...\n");
+            progress::status("reading checkpoint");
             let complete_checkpoint_path = work_dir.join(actual_checkpt_dir);
             let _ = writeln!(
                 ctl_file,
@@ -60,8 +61,14 @@ impl PegasusStep {
             );
         }
 
-        for step in steps.into_iter() {
-            println!("\n--> Parsing step: {}\n", step.name);
+        let total = steps.len();
+        for (index, step) in steps.into_iter().enumerate() {
+            // Braces rather than quotes: TCL performs no substitution inside them.
+            writeln!(
+                ctl_file,
+                "puts {{{}}}",
+                progress::banner(index + 1, total, &step.name)
+            )?;
 
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("pre_{}", step.name.clone()));
@@ -73,7 +80,6 @@ impl PegasusStep {
         }
         writeln!(ctl_file, "quit")?;
 
-        println!("\nFinished creating ctl file\n");
         Ok(())
     }
 }

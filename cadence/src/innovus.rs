@@ -11,6 +11,7 @@ use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
 use rivet::exec;
+use rivet::progress;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
@@ -61,7 +62,14 @@ impl InnovusStep {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display())?;
         }
 
-        for step in substeps.into_iter() {
+        let total = substeps.len();
+        for (index, step) in substeps.into_iter().enumerate() {
+            // Braces rather than quotes: TCL performs no substitution inside them.
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner(index + 1, total, &step.name)
+            )?;
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
@@ -79,7 +87,6 @@ impl InnovusStep {
         writeln!(catch_fatal, "}}")?;
         writeln!(catch_fatal, "exit")?;
 
-        println!("\nFinished creating tcl file\n");
         Ok(())
     }
 
@@ -177,6 +184,7 @@ impl Step for InnovusStep {
             substeps = substeps[..=slice_index].to_vec();
         }
 
+        progress::status("writing par.tcl");
         self.make_tcl_file(&self.work_dir, substeps)
             .expect("Failed to create par.tcl");
 

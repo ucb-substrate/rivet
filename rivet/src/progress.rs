@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
@@ -32,7 +32,7 @@ pub enum OutputMode {
     Tail,
     /// Print every line above the live display, prefixed with the step label.
     Stream,
-    /// Show nothing.
+    /// Show substep banners only. Raw tool output goes to the log files.
     Quiet,
 }
 
@@ -120,6 +120,7 @@ impl Reporter {
             bar,
             reporter: Arc::clone(self),
             started: Instant::now(),
+            state: Arc::new(Mutex::new(StepState::default())),
         }
     }
 
@@ -249,6 +250,96 @@ impl Reporter {
     }
 }
 
+/// A substep banner emitted by a tool part-way through a step.
+///
+/// A step such as P&R is one node to the scheduler but a long sequence of
+/// substeps to the tool driving it. A tool can announce which substep it is on
+/// by printing a marker line; rivet picks it out of the output stream and shows
+/// it on the step's progress line instead of the raw tail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Banner {
+    /// Name of the substep, e.g. `place_opt_design`.
+    pub name: String,
+    /// 1-based index and total, when the tool knows how many substeps there are.
+    pub position: Option<(usize, usize)>,
+}
+
+impl Banner {
+    /// Render as `place_opt_design (4/9)`.
+    pub fn describe(&self) -> String {
+        match self.position {
+            Some((current, total)) => format!("{} ({current}/{total})", self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
+const BANNER_PREFIX: &str = "<<rivet:substep ";
+const BANNER_SUFFIX: &str = ">>";
+
+/// Build a banner line for a tool to print, e.g. from a generated TCL script:
+///
+/// ```
+/// # let (index, total, name) = (4, 9, "place_opt_design");
+/// let tcl = format!("puts {{{}}}", rivet::progress::banner(index, total, name));
+/// assert_eq!(tcl, "puts {<<rivet:substep 4/9 place_opt_design>>}");
+/// ```
+///
+/// `current` is 1-based. The marker is recognised anywhere in a line, so tools
+/// that prefix their output with a severity or timestamp still work.
+pub fn banner(current: usize, total: usize, name: &str) -> String {
+    format!("{BANNER_PREFIX}{current}/{total} {name}{BANNER_SUFFIX}")
+}
+
+/// A banner for a tool that does not know how many substeps it will run.
+pub fn banner_named(name: &str) -> String {
+    format!("{BANNER_PREFIX}{name}{BANNER_SUFFIX}")
+}
+
+/// Pick a banner out of a line of tool output.
+pub fn parse_banner(line: &str) -> Option<Banner> {
+    let start = line.find(BANNER_PREFIX)? + BANNER_PREFIX.len();
+    let rest = &line[start..];
+    let body = rest[..rest.find(BANNER_SUFFIX)?].trim();
+    if body.is_empty() {
+        return None;
+    }
+
+    let (position, name) = match body.split_once(' ') {
+        Some((head, tail)) => match parse_position(head) {
+            Some(position) => (Some(position), tail.trim()),
+            None => (None, body),
+        },
+        None => match parse_position(body) {
+            Some(position) => (Some(position), ""),
+            None => (None, body),
+        },
+    };
+
+    Some(Banner {
+        name: name.to_string(),
+        position,
+    })
+}
+
+fn parse_position(text: &str) -> Option<(usize, usize)> {
+    let (current, total) = text.split_once('/')?;
+    let current: usize = current.parse().ok()?;
+    let total: usize = total.parse().ok()?;
+    (total > 0).then_some((current, total))
+}
+
+/// Report a substep from Rust, for steps that do their own work rather than
+/// shelling out to a tool.
+pub fn substep(current: usize, total: usize, name: impl Into<String>) {
+    if let Some(handle) = current_step() {
+        handle.enter_substep(Banner {
+            name: name.into(),
+            position: Some((current, total)),
+        });
+    }
+}
+
 /// A handle to the step running on the current thread.
 ///
 /// Steps use this (usually indirectly, via [`crate::exec`]) to surface tool
@@ -259,6 +350,16 @@ pub struct StepHandle {
     bar: Option<ProgressBar>,
     reporter: Arc<Reporter>,
     started: Instant,
+    state: Arc<Mutex<StepState>>,
+}
+
+/// What the step's progress line is currently showing.
+#[derive(Default)]
+struct StepState {
+    banner: Option<Banner>,
+    tail: Option<String>,
+    /// Set once the spinner has been swapped for a substep progress bar.
+    counted: bool,
 }
 
 impl StepHandle {
@@ -273,7 +374,15 @@ impl StepHandle {
     }
 
     /// Report one line of output produced by the step.
+    ///
+    /// Lines carrying a substep banner are consumed as progress rather than
+    /// shown as output; see [`banner`].
     pub fn output_line(&self, line: &str) {
+        if let Some(banner) = parse_banner(line) {
+            self.enter_substep(banner);
+            return;
+        }
+
         let line = clean(line);
         match self.reporter.mode() {
             OutputMode::Quiet => {}
@@ -288,11 +397,68 @@ impl StepHandle {
         }
     }
 
-    /// Replace the status shown next to this step's spinner.
-    pub fn set_status(&self, status: impl Into<String>) {
-        if let Some(bar) = &self.bar {
-            bar.set_message(clean(&status.into()));
+    /// Record that the step has moved on to a new substep.
+    ///
+    /// Once a step reports a substep with a position, its spinner is replaced
+    /// by a progress bar over the substeps.
+    pub fn enter_substep(&self, banner: Banner) {
+        {
+            let mut state = self.state.lock().unwrap();
+            // Whatever the previous substep last printed is stale now.
+            state.tail = None;
+            if let (Some(bar), Some((current, total))) = (&self.bar, banner.position) {
+                // Position first: the spinner template ignores it, so swapping
+                // the style last avoids drawing one empty frame at 0/n.
+                bar.set_length(total as u64);
+                bar.set_position(current.min(total) as u64);
+                if !state.counted {
+                    bar.set_style(substep_style());
+                    state.counted = true;
+                }
+            }
+            state.banner = Some(banner.clone());
         }
+        self.render();
+
+        // With no live bar there is nowhere to put the substep, so log it.
+        if self.bar.is_none() || self.reporter.mode() == OutputMode::Stream {
+            self.reporter.print_above(&format!(
+                "  {} {}  {}",
+                "→".cyan(),
+                self.label.dimmed(),
+                banner.describe()
+            ));
+        }
+    }
+
+    /// The substep this step last reported.
+    pub fn substep(&self) -> Option<Banner> {
+        self.state.lock().unwrap().banner.clone()
+    }
+
+    /// Replace the status shown next to this step's spinner.
+    ///
+    /// Shown after the current substep name, if there is one.
+    pub fn set_status(&self, status: impl Into<String>) {
+        self.state.lock().unwrap().tail = Some(clean(&status.into()));
+        self.render();
+    }
+
+    fn render(&self) {
+        let Some(bar) = &self.bar else { return };
+        let state = self.state.lock().unwrap();
+
+        let mut message = String::new();
+        if let Some(banner) = &state.banner {
+            message.push_str(&banner.name);
+        }
+        if let Some(tail) = &state.tail {
+            if !message.is_empty() {
+                message.push_str(" · ");
+            }
+            message.push_str(tail);
+        }
+        bar.set_message(message);
     }
 }
 
@@ -351,6 +517,17 @@ fn step_style() -> ProgressStyle {
         .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
 }
 
+/// Used once a step reports how many substeps it has: the spinner keeps its
+/// place, and a bar over the substeps is added.
+fn substep_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "  {spinner:.cyan} {prefix:.bold} {elapsed:>5} {bar:10.cyan/blue} {pos}/{len} {wide_msg}",
+    )
+    .expect("valid substep template")
+    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
+    .progress_chars("━╸─")
+}
+
 fn overall_style() -> ProgressStyle {
     ProgressStyle::with_template(
         "  {bar:24.green/blue} {pos}/{len} steps · {elapsed_precise} {msg}",
@@ -399,6 +576,7 @@ mod tests {
         // These templates are only built when a terminal is attached, so parse
         // them here to keep the unwraps honest.
         step_style();
+        substep_style();
         overall_style();
     }
 
@@ -408,6 +586,91 @@ mod tests {
         assert_eq!(fmt_duration(Duration::from_secs(42)), "42s");
         assert_eq!(fmt_duration(Duration::from_secs(64)), "1m04s");
         assert_eq!(fmt_duration(Duration::from_secs(3725)), "1h02m");
+    }
+
+    #[test]
+    fn banners_round_trip() {
+        let line = banner(4, 9, "place_opt_design");
+        assert_eq!(line, "<<rivet:substep 4/9 place_opt_design>>");
+        assert_eq!(
+            parse_banner(&line),
+            Some(Banner {
+                name: "place_opt_design".into(),
+                position: Some((4, 9)),
+            })
+        );
+
+        assert_eq!(
+            parse_banner(&banner_named("route_design")),
+            Some(Banner {
+                name: "route_design".into(),
+                position: None,
+            })
+        );
+    }
+
+    #[test]
+    fn banners_are_found_inside_decorated_tool_output() {
+        // Tools prefix their output with all sorts of things.
+        let banner = parse_banner("INFO [12:04:11] <<rivet:substep 2/9 floorplan design>> ok");
+        assert_eq!(
+            banner,
+            Some(Banner {
+                name: "floorplan design".into(),
+                position: Some((2, 9)),
+            })
+        );
+    }
+
+    #[test]
+    fn non_banner_output_is_left_alone() {
+        assert_eq!(parse_banner("routing layer 4/6"), None);
+        assert_eq!(parse_banner("<<rivet:substep >>"), None);
+        // An unterminated marker is not a banner.
+        assert_eq!(parse_banner("<<rivet:substep 1/2 place"), None);
+    }
+
+    #[test]
+    fn a_bare_name_is_a_banner_without_a_position() {
+        assert_eq!(
+            parse_banner("<<rivet:substep 3 of 9>>"),
+            Some(Banner {
+                name: "3 of 9".into(),
+                position: None,
+            })
+        );
+    }
+
+    #[test]
+    fn banner_lines_become_substeps_not_output() {
+        let reporter = Reporter::new(1, 8, OutputMode::Quiet, false);
+        let handle = reporter.start("decoder par");
+
+        handle.output_line("starting up");
+        assert_eq!(handle.substep(), None);
+
+        handle.output_line(&format!("INFO: {}", banner(4, 9, "place_opt_design")));
+        let substep = handle.substep().expect("banner was not picked up");
+        assert_eq!(substep.name, "place_opt_design");
+        assert_eq!(substep.position, Some((4, 9)));
+        assert_eq!(substep.describe(), "place_opt_design (4/9)");
+    }
+
+    #[test]
+    fn a_new_substep_drops_the_previous_tail() {
+        let reporter = Reporter::new(1, 8, OutputMode::Tail, false);
+        let handle = reporter.start("decoder par");
+
+        handle.output_line(&banner(1, 2, "place"));
+        handle.set_status("placing row 40");
+        assert_eq!(
+            handle.state.lock().unwrap().tail.as_deref(),
+            Some("placing row 40")
+        );
+
+        handle.output_line(&banner(2, 2, "route"));
+        assert_eq!(handle.state.lock().unwrap().tail, None);
+        assert_eq!(handle.substep().unwrap().name, "route");
     }
 
     #[test]

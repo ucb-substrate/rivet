@@ -11,6 +11,7 @@ use fs::File;
 use indoc::formatdoc;
 use rivet::Step;
 use rivet::exec;
+use rivet::progress;
 use std::sync::Arc;
 
 /// Defines the Genus synthesis step subflow
@@ -65,9 +66,14 @@ impl GenusStep {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
         }
 
-        for step in steps.into_iter() {
-            println!("\n--> Parsing step: {}\n", step.name);
-
+        let total = steps.len();
+        for (index, step) in steps.into_iter().enumerate() {
+            // Braces rather than quotes: TCL performs no substitution inside them.
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner(index + 1, total, &step.name)
+            )?;
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
@@ -77,7 +83,6 @@ impl GenusStep {
         }
         writeln!(tcl_file, "quit")?;
 
-        println!("\nFinished creating tcl file\n");
         Ok(())
     }
 
@@ -163,6 +168,7 @@ impl Step for GenusStep {
             substeps = substeps[..=slice_index].to_vec();
         }
 
+        progress::status("writing syn.tcl");
         self.make_tcl_file(&self.work_dir, substeps)
             .expect("Failed to create syn.tcl");
 

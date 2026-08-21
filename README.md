@@ -52,4 +52,35 @@ output always goes to `{step}.out` and `{step}.err` in the step's work directory
 the tail. When stderr is not a terminal the display degrades to plain
 one-line-per-event logging.
 
+### Substep banners
+
+A step such as P&R is one node to the scheduler but a long sequence of substeps
+to the tool driving it. A tool can say which substep it is on by printing a
+marker line, which rivet picks out of the output stream:
+
+```text
+<<rivet:substep 3/5 place_opt_design>>
+```
+
+Build one with `progress::banner(current, total, name)`. `GenusStep`,
+`InnovusStep` and `PegasusStep` emit one per substep into the TCL they generate:
+
+```tcl
+puts {<<rivet:substep 3/5 place_opt_design>>}
+```
+
+Once a step reports a substep with a position, its spinner gains a bar over the
+substeps:
+
+```text
+  ⠹ decoder par     12s ━━━━━╸──── 3/5 place_opt_design · <last line of output>
+  ⠸ decoder drc      4s route check 2 of 9
+```
+
+The marker is matched anywhere in a line, so tools that prefix output with a
+severity or timestamp still work, and banner lines never show up as output.
+`progress::banner_named` omits the counts for tools that do not know how many
+substeps they will run, and `progress::substep(current, total, name)` reports
+one directly from a Rust step that is not shelling out at all.
+
 Run `cargo run -p rivet --example parallel` to see it against a mock flow.

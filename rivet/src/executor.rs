@@ -179,15 +179,21 @@ pub struct StepFailure {
     /// The step panicked instead of returning an error, which usually means a
     /// bug rather than an expected failure.
     pub panicked: bool,
-    /// The substep it last reported, if any.
+    /// The status the step had set, if any.
+    pub status: Option<String>,
+    /// The substep parsed from its output, if any.
     pub substep: Option<String>,
 }
 
 impl fmt::Display for StepFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.label)?;
-        if let Some(substep) = &self.substep {
-            write!(f, " (during {substep})")?;
+        let location: Vec<&str> = [self.status.as_deref(), self.substep.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        if !location.is_empty() {
+            write!(f, " (during {})", location.join(progress::REGION_SEP))?;
         }
         write!(f, ": ")?;
         if self.panicked {
@@ -531,10 +537,8 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>) -> Result<(), StepFailure> {
         label: node.label.clone(),
         message,
         panicked,
-        substep: handle
-            .substep()
-            .or_else(|| handle.status())
-            .map(|where_| where_.describe()),
+        status: handle.status().map(|status| status.describe()),
+        substep: handle.substep().map(|substep| substep.describe()),
     })
 }
 
@@ -870,6 +874,7 @@ mod tests {
 
         match error {
             ExecuteError::Failed(failures) => {
+                assert_eq!(failures[0].status, None);
                 assert_eq!(
                     failures[0].substep.as_deref(),
                     Some("place_opt_design (3/5)")
@@ -877,6 +882,60 @@ mod tests {
                 assert_eq!(
                     failures[0].to_string(),
                     "par (during place_opt_design (3/5)): router gave up"
+                );
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failure_reports_both_halves_when_both_are_known() {
+        let par = acting("par", vec![], || {
+            progress::status_progress(7, 12, "merging gds");
+            progress::log_line(progress::banner(3, 5, "place_opt_design"));
+            Err("router gave up".into())
+        });
+
+        let error = config().run_dyn(par).unwrap_err();
+
+        match error {
+            ExecuteError::Failed(failures) => {
+                // Which half caused it is exactly what is not known, so both
+                // are kept.
+                assert_eq!(failures[0].status.as_deref(), Some("merging gds (7/12)"));
+                assert_eq!(
+                    failures[0].substep.as_deref(),
+                    Some("place_opt_design (3/5)")
+                );
+                assert_eq!(
+                    failures[0].to_string(),
+                    "par (during merging gds (7/12) │ place_opt_design (3/5)): router gave up"
+                );
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_clean_tool_run_stops_being_the_failure_location() {
+        let par = acting("par", vec![], || {
+            // A tool reports substeps, exits cleanly, and the step then fails
+            // doing its own work. The finished substep must not be blamed.
+            progress::log_line(progress::banner(5, 5, "add_fillers"));
+            progress::clear_substep();
+            progress::status("checking gds");
+            Err("gds is missing a top cell".into())
+        });
+
+        let error = config().run_dyn(par).unwrap_err();
+
+        match error {
+            ExecuteError::Failed(failures) => {
+                assert_eq!(failures[0].substep, None);
+                assert_eq!(failures[0].status.as_deref(), Some("checking gds"));
+                assert_eq!(
+                    failures[0].to_string(),
+                    "par (during checking gds): gds is missing a top cell"
                 );
             }
             other => panic!("expected a failure, got {other:?}"),

@@ -77,13 +77,24 @@ something is wrong with the step itself rather than with the design.
 Either way the rule is *stop starting, don't stop running*: steps already in
 flight are allowed to finish, nothing new is dispatched, dependents of the
 failed step never run, and the run ends with `ExecuteError::Failed` listing
-every step that failed and the substep it died in.
+every step that failed and where it was when it failed.
 
 ```text
   ✖ decoder lvs      0.3s  during place_opt_design (3/5)  LVS mismatch: 3 unmatched nets
   ✔ decoder drc      0.9s
   ✖ 2 executed · 1 failed · 0.9s
 ```
+
+"Where" is both halves of the step's line when both are set — which of them
+caused the failure is exactly what is not known at that point:
+
+```text
+  ✖ decoder par  2m14s  during merging gds (7/12) │ add_fillers (5/5)  innovus exited with 1
+```
+
+A tool that exits cleanly has its substep cleared, so a step that then fails in
+its own post-processing is not blamed on a substep that finished fine. A tool
+that exits non-zero keeps it, because that is the substep you want named.
 
 A dependency cycle is reported as `ExecuteError::Cycle` rather than hanging.
 

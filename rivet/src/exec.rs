@@ -35,14 +35,25 @@ pub fn run_logged(
     // handle up themselves.
     let handle = progress::current_step();
     let stdout_handle = handle.clone();
+    let stderr_handle = handle.clone();
 
     let out_thread = thread::spawn(move || pump(stdout, stdout_file, stdout_handle, false));
-    let err_thread = thread::spawn(move || pump(stderr, stderr_file, handle, true));
+    let err_thread = thread::spawn(move || pump(stderr, stderr_file, stderr_handle, true));
 
     let _ = out_thread.join();
     let _ = err_thread.join();
 
-    child.wait()
+    let status = child.wait()?;
+
+    // Only on success. If the tool failed, the substep it failed in is the
+    // whole point, and the caller is about to turn that into an error.
+    if status.success() {
+        if let Some(handle) = &handle {
+            handle.clear_substep();
+        }
+    }
+
+    Ok(status)
 }
 
 /// [`run_logged`] with log files named `{basename}.out` and `{basename}.err`

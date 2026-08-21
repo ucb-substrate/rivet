@@ -163,13 +163,11 @@ impl Reporter {
                     padded.red().bold(),
                     elapsed.dimmed()
                 );
-                // Say where it died, not just that it did.
-                if let Some(where_) = handle.substep().or_else(|| handle.status()) {
-                    let _ = write!(
-                        line,
-                        "  {}",
-                        format!("during {}", where_.describe()).yellow()
-                    );
+                // Say where it died, not just that it did. Both halves are
+                // reported: which of them caused the failure is exactly what is
+                // not known here.
+                if let Some(location) = handle.location() {
+                    let _ = write!(line, "  {}", format!("during {location}").yellow());
                 }
                 if let Some(detail) = detail {
                     let _ = write!(line, "  {}", truncate(&one_line(detail), 160).red());
@@ -314,6 +312,10 @@ impl Progress {
 
 /// Width of each inline progress bar, in characters.
 const BAR_WIDTH: usize = 10;
+
+/// Separates the two halves of a step's line, and the two halves of the
+/// location reported when a step fails.
+pub(crate) const REGION_SEP: &str = " │ ";
 
 /// Draw a bar without indicatif, so a step can show two independent ones.
 fn bar_glyphs(current: usize, total: usize, width: usize) -> String {
@@ -463,6 +465,29 @@ impl StepHandle {
         self.state.lock().unwrap().banner.clone()
     }
 
+    /// Clear the substep, for when the tool reporting it has exited.
+    ///
+    /// Clearing is allowed from Rust even though writing is not: a finished
+    /// tool's last substep is not where the step is any more, and leaving it up
+    /// would misattribute anything that happens next.
+    pub fn clear_substep(&self) {
+        self.state.lock().unwrap().banner = None;
+        self.render();
+    }
+
+    /// Where the step is: its status, its substep, or both when both are known.
+    ///
+    /// Used to say where a failure happened.
+    pub fn location(&self) -> Option<String> {
+        let state = self.state.lock().unwrap();
+        let parts: Vec<String> = [state.status.as_ref(), state.banner.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(Progress::describe)
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(REGION_SEP))
+    }
+
     /// The status this step last set.
     pub fn status(&self) -> Option<Progress> {
         self.state.lock().unwrap().status.clone()
@@ -504,7 +529,7 @@ impl StepHandle {
             .map(Progress::render)
             .collect();
 
-        bar.set_message(regions.join(&format!(" {} ", "│".dimmed())));
+        bar.set_message(regions.join(&REGION_SEP.dimmed()));
     }
 }
 
@@ -575,6 +600,13 @@ pub fn status_progress(current: usize, total: usize, message: impl Into<String>)
 pub fn clear_status() {
     if let Some(handle) = current_step() {
         handle.clear_status();
+    }
+}
+
+/// Clear the current step's substep. See [`StepHandle::clear_substep`].
+pub fn clear_substep() {
+    if let Some(handle) = current_step() {
+        handle.clear_substep();
     }
 }
 
@@ -736,6 +768,33 @@ mod tests {
         let substep = handle.substep().expect("substep was cleared by the status");
         assert_eq!(substep.name, "route_design");
         assert_eq!(substep.position, Some((2, 5)));
+    }
+
+    #[test]
+    fn location_reports_whichever_halves_are_set() {
+        let reporter = Reporter::new(1, 8, OutputMode::Quiet, false);
+
+        let handle = reporter.start("a");
+        assert_eq!(handle.location(), None);
+
+        let handle = reporter.start("b");
+        handle.set_status("merging");
+        assert_eq!(handle.location().as_deref(), Some("merging"));
+
+        let handle = reporter.start("c");
+        handle.output_line(&banner(2, 5, "route"));
+        assert_eq!(handle.location().as_deref(), Some("route (2/5)"));
+
+        let handle = reporter.start("d");
+        handle.set_status_progress(7, 12, "merging");
+        handle.output_line(&banner(2, 5, "route"));
+        assert_eq!(
+            handle.location().as_deref(),
+            Some("merging (7/12) │ route (2/5)")
+        );
+
+        handle.clear_substep();
+        assert_eq!(handle.location().as_deref(), Some("merging (7/12)"));
     }
 
     #[test]

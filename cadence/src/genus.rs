@@ -9,8 +9,9 @@ use std::{fs, io};
 use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc};
 use fs::File;
 use indoc::formatdoc;
-use rivet::Step;
-use std::sync::Arc;
+use rivet::exec;
+use rivet::progress;
+use rivet::{Step, StepRef, StepResult};
 
 /// Defines the Genus synthesis step subflow
 #[derive(Debug, Clone)]
@@ -21,7 +22,7 @@ pub struct GenusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
-    pub dependencies: Vec<Arc<dyn Step>>,
+    pub dependencies: Vec<StepRef<dyn Step>>,
 }
 
 impl GenusStep {
@@ -30,7 +31,7 @@ impl GenusStep {
         module: impl Into<String>,
         steps: Vec<Substep>,
         pinned: bool,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
@@ -48,25 +49,29 @@ impl GenusStep {
     /// Generates the tcl file for synthesis
     fn make_tcl_file(&self, path: &Path, steps: Vec<Substep>) -> io::Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create syn.tcl parent directory");
+            std::fs::create_dir_all(parent)?;
         }
 
-        let mut tcl_file =
-            File::create(path.join("syn.tcl")).expect("failed to create syn.tcl file");
+        let mut tcl_file = File::create(path.join("syn.tcl"))?;
 
-        File::create(path.join("rivet_error.log")).expect("failed to create par.tcl file");
+        File::create(path.join("rivet_error.log"))?;
         writeln!(
             tcl_file,
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
         if let Some(checkpoint) = &self.start_checkpoint {
-            writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
+            writeln!(tcl_file, "read_db {}", checkpoint.path.display())?;
         }
 
-        for step in steps.into_iter() {
-            println!("\n--> Parsing step: {}\n", step.name);
-
+        let total = steps.len();
+        for (index, step) in steps.into_iter().enumerate() {
+            // Braces rather than quotes: TCL performs no substitution inside them.
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner(index + 1, total, &step.name)
+            )?;
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
@@ -76,7 +81,6 @@ impl GenusStep {
         }
         writeln!(tcl_file, "quit")?;
 
-        println!("\nFinished creating tcl file\n");
         Ok(())
     }
 
@@ -144,45 +148,60 @@ impl GenusStep {
 }
 
 impl Step for GenusStep {
-    fn execute(&self) {
+    fn execute(&self) -> StepResult {
         let mut substeps = self.substeps.clone();
         if let Some(checkpoint) = &self.start_checkpoint {
             let slice_index = self
                 .substeps
                 .iter()
                 .position(|s| s.name == checkpoint.name)
-                .expect("Failed to find checkpoint name");
+                .ok_or_else(|| format!("no substep named '{}' to start from", checkpoint.name))?;
             substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
         if let Some(endpoint_name) = &self.endpoint {
             let slice_index = substeps
                 .iter()
                 .position(|s| s.name == *endpoint_name)
-                .expect("Failed to find endpoint name");
+                .ok_or_else(|| format!("no substep named '{endpoint_name}' to stop at"))?;
             substeps = substeps[..=slice_index].to_vec();
         }
 
-        self.make_tcl_file(&self.work_dir, substeps)
-            .expect("Failed to create syn.tcl");
+        progress::status("writing syn.tcl");
+        self.make_tcl_file(&self.work_dir, substeps)?;
 
-        let status = Command::new("genus")
+        let mut command = Command::new("genus");
+        command
             .args([
                 "-f",
                 self.work_dir.join("syn.tcl").to_str().unwrap(),
                 "-no_gui",
                 "-batch",
             ])
-            .current_dir(self.work_dir.clone())
-            .status()
-            .expect("Failed to execute syn.tcl");
+            .current_dir(self.work_dir.clone());
+
+        let status = exec::run_logged_in(
+            &mut command,
+            &self.work_dir,
+            &format!("{}.syn", self.module),
+        )?;
 
         if !status.success() {
-            eprintln!("Failed to execute syn.tcl");
-            panic!("Stopped flow");
+            return Err(format!(
+                "genus exited with {status}; see {}",
+                self.work_dir
+                    .join(format!("{}.syn.err", self.module))
+                    .display()
+            )
+            .into());
         }
+        Ok(())
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn label(&self) -> String {
+        format!("{} syn", self.module)
+    }
+
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.dependencies.clone()
     }
 

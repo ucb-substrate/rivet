@@ -1,18 +1,15 @@
-use crate::Step;
+use crate::exec;
+use crate::{Step, StepRef, StepResult};
 use std::fmt::Debug;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::thread;
+use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct BashStep {
     pub work_dir: PathBuf,
     pub name: String,
     pub block: String,
-    pub deps: Vec<Arc<dyn Step>>,
+    pub deps: Vec<StepRef<dyn Step>>,
     pub pinned: bool,
 }
 
@@ -21,7 +18,7 @@ impl BashStep {
         work_dir: impl Into<PathBuf>,
         name: impl Into<String>,
         block: impl Into<String>,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
         let file = name.into();
@@ -41,65 +38,40 @@ impl BashStep {
 }
 
 impl Step for BashStep {
-    fn execute(&self) {
-        let out_path = self
-            .work_dir
-            .join(format!("{}.{}.out", self.block, self.name));
-        let err_path = self
-            .work_dir
-            .join(format!("{}.{}.err", self.block, self.name));
-
+    fn execute(&self) -> StepResult {
         // TODO: Make this similar to a TCL tool where a bash script is composed of several
         // substeps and templated here, rather than running a hardcoded script path.
-        let mut child = Command::new("/bin/bash")
+        let mut command = Command::new("/bin/bash");
+        command
             .args([format!("run_{}.sh", self.name)])
-            .current_dir(&self.work_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("Failed to execute BashStep");
+            .current_dir(&self.work_dir);
 
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let stderr = BufReader::new(child.stderr.take().unwrap());
-
-        let stdout_thread = thread::spawn(move || {
-            let mut file = File::create(out_path).expect("Failed to create stdout file");
-            for line in stdout.lines() {
-                let line = line.unwrap();
-                println!("{}", line);
-                writeln!(file, "{}", line).unwrap();
-            }
-        });
-
-        let stderr_thread = thread::spawn(move || {
-            let mut file = File::create(err_path).expect("Failed to create stderr file");
-            for line in stderr.lines() {
-                let line = line.unwrap();
-                eprintln!("{}", line);
-                writeln!(file, "{}", line).unwrap();
-            }
-        });
-
-        stdout_thread.join().unwrap();
-        stderr_thread.join().unwrap();
-
-        let status = child.wait().expect("Failed to wait on BashStep");
+        let status = exec::run_logged_in(
+            &mut command,
+            &self.work_dir,
+            &format!("{}.{}", self.block, self.name),
+        )?;
 
         if !status.success() {
-            panic!(
-                "BashStep '{}.{}' failed in directory: {}",
-                self.block,
+            return Err(format!(
+                "run_{}.sh exited with {status} in {}",
                 self.name,
                 self.work_dir.display()
-            );
+            )
+            .into());
         }
+        Ok(())
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.deps.clone()
     }
 
     fn pinned(&self) -> bool {
         self.pinned
+    }
+
+    fn label(&self) -> String {
+        format!("{} {}", self.block, self.name)
     }
 }

@@ -9,11 +9,12 @@ use crate::MmmcCorner;
 use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc};
 use fs::File;
 use indoc::formatdoc;
-use rivet::Step;
+use rivet::exec;
+use rivet::progress;
+use rivet::{Step, StepRef, StepResult};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
-use std::sync::Arc;
 
 /// Defines the Innovus place and route step subflow
 #[derive(Debug, Clone)]
@@ -24,7 +25,7 @@ pub struct InnovusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
-    pub deps: Vec<Arc<dyn Step>>,
+    pub deps: Vec<StepRef<dyn Step>>,
     pub synthesis: bool,
 }
 
@@ -34,7 +35,7 @@ impl InnovusStep {
         module: impl Into<String>,
         substeps: Vec<Substep>,
         pinned: bool,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
         synthesis: bool,
     ) -> Self {
         let dir = work_dir.into();
@@ -60,7 +61,14 @@ impl InnovusStep {
             writeln!(tcl_file, "read_db {}", checkpoint.path.display())?;
         }
 
-        for step in substeps.into_iter() {
+        let total = substeps.len();
+        for (index, step) in substeps.into_iter().enumerate() {
+            // Braces rather than quotes: TCL performs no substitution inside them.
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner(index + 1, total, &step.name)
+            )?;
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
@@ -78,7 +86,6 @@ impl InnovusStep {
         writeln!(catch_fatal, "}}")?;
         writeln!(catch_fatal, "exit")?;
 
-        println!("\nFinished creating tcl file\n");
         Ok(())
     }
 
@@ -158,29 +165,28 @@ impl InnovusStep {
 }
 
 impl Step for InnovusStep {
-    fn execute(&self) {
+    fn execute(&self) -> StepResult {
         let mut substeps = self.substeps.clone();
         if let Some(checkpoint) = &self.start_checkpoint {
             let slice_index = self
                 .substeps
                 .iter()
                 .position(|s| s.name == checkpoint.name)
-                .expect("Failed to find checkpoint name");
+                .ok_or_else(|| format!("no substep named '{}' to start from", checkpoint.name))?;
             substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
         if let Some(endpoint_name) = &self.endpoint {
             let slice_index = substeps
                 .iter()
                 .position(|s| s.name == *endpoint_name)
-                .expect("Failed to find endpoint name");
+                .ok_or_else(|| format!("no substep named '{endpoint_name}' to stop at"))?;
             substeps = substeps[..=slice_index].to_vec();
         }
 
-        self.make_tcl_file(&self.work_dir, substeps)
-            .expect("Failed to create par.tcl");
+        progress::status("writing par.tcl");
+        self.make_tcl_file(&self.work_dir, substeps)?;
 
         let tcl_file = self.work_dir.join("catch_fatal.tcl");
-
         let mut args = vec![
             "-file",
             tcl_file.to_str().unwrap(),
@@ -192,19 +198,32 @@ impl Step for InnovusStep {
             args.push("-synthesis");
         }
 
-        let status = Command::new("innovus")
-            .args(args)
-            .current_dir(self.work_dir.clone())
-            .status()
-            .expect("Failed to execute par.tcl");
+        let mut command = Command::new("innovus");
+        command.args(args).current_dir(self.work_dir.clone());
+
+        let status = exec::run_logged_in(
+            &mut command,
+            &self.work_dir,
+            &format!("{}.par", self.module),
+        )?;
 
         if !status.success() {
-            eprintln!("Failed to execute par.tcl");
-            panic!("Stopped flow");
+            return Err(format!(
+                "innovus exited with {status}; see {}",
+                self.work_dir
+                    .join(format!("{}.par.err", self.module))
+                    .display()
+            )
+            .into());
         }
+        Ok(())
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn label(&self) -> String {
+        format!("{} par", self.module)
+    }
+
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.deps.clone()
     }
 

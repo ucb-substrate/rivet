@@ -1,18 +1,40 @@
 //! Live terminal reporting for flow execution.
 //!
 //! While a flow is running, every step that is currently executing gets a line
-//! with a spinner, its elapsed time, and the most recent line of output from
-//! the tool it is driving. Finished steps scroll off into normal terminal
-//! output as `✔` (executed), `⏭` (skipped because it was pinned) or `✖`
-//! (failed), and a summary bar at the bottom tracks overall progress.
+//! with a spinner, its elapsed time, and where the step says it has got to.
+//! Finished steps scroll off into normal terminal output as `✔` (executed),
+//! `⏭` (skipped because it was pinned) or `✖` (failed), and a summary bar at
+//! the bottom tracks overall progress.
 //!
 //! When stderr is not a terminal (CI, redirected logs) the display degrades to
 //! plain, one-line-per-event logging instead of drawing escape sequences.
+//!
+//! # The display is not a log
+//!
+//! Two things reach it, and nothing else: [`status`], which a step sets from
+//! Rust, and the substep [`banner`]s a tool is told to print, picked out of its
+//! output by [`parse_banner`]. Raw tool output goes to the step's log files and
+//! stops there — it is not shown, not summarised, and not distinguished by
+//! stream. A tool writing to stderr means nothing in particular; plenty write
+//! all their chatter there.
+//!
+//! # Nothing else may write to the terminal
+//!
+//! The display works by counting the rows it drew and moving the cursor back up
+//! over them. Anything that reaches the terminal without going through it — a
+//! bare `println!` in flow code, a child process with inherited stdio, a panic
+//! message from a thread the executor does not know about — scrolls the screen
+//! out from under that count, and from then on every redraw lands a row lower
+//! than the last: the bars march down the screen leaving copies behind.
+//!
+//! So while a flow is running, print with [`note`], run subprocesses through
+//! [`crate::exec`] so their output is captured to file, and wrap anything that
+//! insists on the terminal for itself in [`suspend`].
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -21,21 +43,6 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 /// Longest step label rendered before it is truncated.
 const MAX_LABEL_WIDTH: usize = 44;
-
-/// How output produced by a running step is surfaced in the terminal.
-///
-/// In every mode the full output is written to the step's log files, and
-/// substep banners are picked out of it either way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OutputMode {
-    /// Keep raw output in the log files. The display shows only what the step
-    /// reports: its status and its substeps.
-    #[default]
-    Quiet,
-    /// Also print every line above the live display, prefixed with the step
-    /// label.
-    Stream,
-}
 
 /// How a step ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,12 +57,12 @@ pub enum Outcome {
 
 /// Renders the state of a run to the terminal.
 pub(crate) struct Reporter {
-    mode: OutputMode,
     label_width: usize,
     finished: AtomicUsize,
     running: AtomicUsize,
     skipped: AtomicUsize,
     failed: AtomicUsize,
+    aborting: AtomicBool,
     ui: Option<Ui>,
 }
 
@@ -65,12 +72,7 @@ struct Ui {
 }
 
 impl Reporter {
-    pub(crate) fn new(
-        total: usize,
-        label_width: usize,
-        mode: OutputMode,
-        progress: bool,
-    ) -> Arc<Self> {
+    pub(crate) fn new(total: usize, label_width: usize, progress: bool) -> Arc<Self> {
         let ui = if progress && std::io::stderr().is_terminal() {
             let multi = MultiProgress::new();
             let overall = multi.add(ProgressBar::new(total as u64));
@@ -82,20 +84,16 @@ impl Reporter {
         };
 
         let reporter = Arc::new(Self {
-            mode,
             label_width: label_width.min(MAX_LABEL_WIDTH),
             finished: AtomicUsize::new(0),
             running: AtomicUsize::new(0),
             skipped: AtomicUsize::new(0),
             failed: AtomicUsize::new(0),
+            aborting: AtomicBool::new(false),
             ui,
         });
         reporter.refresh();
         reporter
-    }
-
-    pub(crate) fn mode(&self) -> OutputMode {
-        self.mode
     }
 
     /// Announce that `label` has started running, returning a handle the step
@@ -170,7 +168,7 @@ impl Reporter {
                     let _ = write!(line, "  {}", format!("during {location}").yellow());
                 }
                 if let Some(detail) = detail {
-                    let _ = write!(line, "  {}", truncate(&one_line(detail), 160).red());
+                    let _ = write!(line, "  {}", truncate(&clean(detail), 160).red());
                 }
                 line
             }
@@ -181,6 +179,25 @@ impl Reporter {
             ui.multi.remove(bar);
         }
         self.print_above(&line);
+        self.refresh();
+    }
+
+    /// Announce that the run is winding down after a failure.
+    ///
+    /// A failure stops the executor scheduling anything new, but steps already
+    /// running are allowed to finish. Without saying so, the display looks like
+    /// it reported an error and then carried on regardless.
+    pub(crate) fn aborting(&self, in_flight: usize) {
+        self.aborting.store(true, Ordering::Relaxed);
+        let mut notice = String::from("aborting: no further steps will start");
+        match in_flight {
+            0 => {}
+            1 => notice.push_str("; waiting for 1 step still running"),
+            n => {
+                let _ = write!(notice, "; waiting for {n} steps still running");
+            }
+        }
+        self.print_above(&format!("  {} {}", "⚠".yellow(), notice.yellow()));
         self.refresh();
     }
 
@@ -246,6 +263,12 @@ impl Reporter {
                 msg.push_str(" · ");
             }
             let _ = write!(msg, "{}", format!("{failed} failed").red());
+        }
+        if self.aborting.load(Ordering::Relaxed) {
+            if !msg.is_empty() {
+                msg.push_str(" · ");
+            }
+            let _ = write!(msg, "{}", "aborting".yellow());
         }
         ui.overall.set_message(msg);
     }
@@ -374,7 +397,7 @@ pub fn parse_banner(line: &str) -> Option<Progress> {
     };
 
     Some(Progress {
-        name: name.to_string(),
+        name: clean(name),
         position,
     })
 }
@@ -422,20 +445,14 @@ impl StepHandle {
         self.started.elapsed()
     }
 
-    /// Report one line of output produced by the step.
+    /// Offer one line of the step's output to the display.
     ///
-    /// Lines carrying a substep banner are consumed as progress rather than
-    /// shown as output; see [`banner`].
+    /// A line carrying a substep banner moves the step on; see [`banner`].
+    /// Everything else is ignored — raw output belongs in the step's log files,
+    /// not on screen, whichever stream it arrived on.
     pub fn output_line(&self, line: &str) {
         if let Some(banner) = parse_banner(line) {
             self.enter_substep(banner);
-            return;
-        }
-
-        if self.reporter.mode() == OutputMode::Stream {
-            let line = clean(line);
-            self.reporter
-                .print_above(&format!("  {} {line}", format!("{}:", self.label).dimmed()));
         }
     }
 
@@ -450,7 +467,7 @@ impl StepHandle {
         self.render();
 
         // With no live bar there is nowhere to put the substep, so log it.
-        if self.bar.is_none() || self.reporter.mode() == OutputMode::Stream {
+        if self.bar.is_none() {
             self.reporter.print_above(&format!(
                 "  {} {}  {}",
                 "→".cyan(),
@@ -553,7 +570,12 @@ pub(crate) fn set_active_reporter(reporter: Option<Arc<Reporter>>) {
 }
 
 /// Print a line above the live display, or to stdout if no flow is running.
+///
+/// Use this instead of `println!` anywhere that might run inside a flow: see
+/// [the module docs](self#nothing-else-may-write-to-the-terminal).
 pub fn note(message: impl AsRef<str>) {
+    // Cloned out so the lock is not held while drawing, which would block the
+    // end of the run.
     let active = ACTIVE.read().unwrap().clone();
     match active {
         Some(reporter) => reporter.print_above(message.as_ref()),
@@ -561,11 +583,31 @@ pub fn note(message: impl AsRef<str>) {
     }
 }
 
-/// Report one line of output from the step running on this thread.
+/// Run `f` with the live display taken down, then redraw it.
+///
+/// For the rare thing that has to have the terminal to itself: a subprocess
+/// with inherited stdio, an interactive prompt, a library that prints its own
+/// progress. Writing to the terminal any other way while a flow is running
+/// corrupts the display; see
+/// [the module docs](self#nothing-else-may-write-to-the-terminal).
+///
+/// Prefer [`note`] for plain output. `f` must not call back into this module —
+/// the display's lock is held while it runs.
+pub fn suspend<R>(f: impl FnOnce() -> R) -> R {
+    let active = ACTIVE.read().unwrap().clone();
+    match active.as_ref().and_then(|reporter| reporter.ui.as_ref()) {
+        Some(ui) => ui.multi.suspend(f),
+        None => f(),
+    }
+}
+
+/// Offer one line of the current step's output to the display.
+///
+/// Only a substep [`banner`] does anything; see [`StepHandle::output_line`].
+/// Use [`note`] for something you want on screen.
 pub fn log_line(line: impl AsRef<str>) {
-    match current_step() {
-        Some(handle) => handle.output_line(line.as_ref()),
-        None => note(line),
+    if let Some(handle) = current_step() {
+        handle.output_line(line.as_ref());
     }
 }
 
@@ -624,15 +666,66 @@ fn overall_style() -> ProgressStyle {
     .progress_chars("━╸─")
 }
 
-/// Collapse a line of tool output into something safe to draw on one row.
+/// Collapse text into something safe to draw on one row.
+///
+/// A banner name is tool output, and a step's status is often built from one, so
+/// neither is plain text: EDA tools animate their own progress with carriage
+/// returns and cursor-movement escapes, ring the bell, and colour what they
+/// print. Drawn as-is, a single `ESC[1A` moves the cursor out from under the
+/// live display and every redraw after it lands a row lower.
+///
+/// Escape sequences and control characters are dropped, colour included. The
+/// display owns its own styling, and indicatif truncates a bar message to the
+/// terminal width, which would cut a kept sequence in half.
 fn clean(line: &str) -> String {
-    line.trim_end()
-        .replace(['\r', '\n'], " ")
-        .replace('\t', "    ")
-}
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.trim_end().chars().peekable();
 
-fn one_line(text: &str) -> String {
-    text.replace(['\r', '\n'], " ")
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.peek() {
+                // A CSI sequence runs until its final byte: colour, cursor
+                // movement, erasing, scrolling, screen switching.
+                Some('[') => {
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // A string escape (window title and friends) runs until a
+                // bell or a string terminator.
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Anything else is intermediate bytes followed by one final
+                // byte: `ESC ( B` to pick a charset, `ESC 7` to save the
+                // cursor, and so on.
+                _ => {
+                    while let Some(&c) = chars.peek() {
+                        chars.next();
+                        if !('\u{20}'..='\u{2f}').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+            },
+            '\t' => out.push_str("    "),
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -729,8 +822,8 @@ mod tests {
     }
 
     #[test]
-    fn banner_lines_become_substeps_not_output() {
-        let reporter = Reporter::new(1, 8, OutputMode::Quiet, false);
+    fn only_banners_reach_the_display() {
+        let reporter = Reporter::new(1, 8, false);
         let handle = reporter.start("decoder par");
 
         handle.output_line("starting up");
@@ -745,7 +838,7 @@ mod tests {
 
     #[test]
     fn status_and_banners_do_not_disturb_each_other() {
-        let reporter = Reporter::new(1, 8, OutputMode::Quiet, false);
+        let reporter = Reporter::new(1, 8, false);
         let handle = reporter.start("decoder par");
 
         handle.set_status_progress(3, 12, "merging gds");
@@ -766,7 +859,7 @@ mod tests {
 
     #[test]
     fn location_reports_whichever_halves_are_set() {
-        let reporter = Reporter::new(1, 8, OutputMode::Quiet, false);
+        let reporter = Reporter::new(1, 8, false);
 
         let handle = reporter.start("a");
         assert_eq!(handle.location(), None);
@@ -793,7 +886,7 @@ mod tests {
 
     #[test]
     fn status_can_be_cleared_on_its_own() {
-        let reporter = Reporter::new(1, 8, OutputMode::Quiet, false);
+        let reporter = Reporter::new(1, 8, false);
         let handle = reporter.start("decoder par");
 
         handle.output_line(&banner(1, 2, "place"));
@@ -829,6 +922,37 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn cursor_movement_is_stripped_from_tool_text() {
+        // A tool animating its own progress. Drawn as-is, the `ESC[1A` walks
+        // the cursor out from under the live display. A stray control character
+        // becomes a space rather than vanishing, so it cannot glue two words
+        // together.
+        let line = "route\u{1b}[1A\u{1b}[2K 42%\u{7}done\r";
+        assert_eq!(clean(line), "route 42% done");
+
+        // Colour goes too: the display owns its own styling, and indicatif
+        // truncates a bar message to the terminal width, which would cut a kept
+        // sequence in half.
+        assert_eq!(
+            clean("\u{1b}[1;31m**ERROR: net VDD has no driver\u{1b}[0m"),
+            "**ERROR: net VDD has no driver"
+        );
+
+        // Window-title and charset escapes go too.
+        assert_eq!(clean("a\u{1b}]0;innovus\u{7}b"), "ab");
+        assert_eq!(clean("a\u{1b}(Bb"), "ab");
+        assert_eq!(clean("a\tb"), "a    b");
+    }
+
+    #[test]
+    fn banner_names_cannot_move_the_cursor() {
+        // The name is tool output, and it is drawn on the step's bar.
+        let banner = parse_banner("<<rivet:substep 2/9 \u{1b}[2Jfloorplan\u{1b}[1A>>").unwrap();
+        assert_eq!(banner.name, "floorplan");
+        assert_eq!(banner.position, Some((2, 9)));
     }
 
     #[test]

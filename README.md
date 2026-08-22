@@ -100,11 +100,12 @@ A dependency cycle is reported as `ExecuteError::Cycle` rather than hanging.
 
 While a flow runs, each executing step gets a line with a spinner, its elapsed
 time, and whatever progress it reports (see below); finished steps scroll off as
-`✔` (executed), `⏭` (pinned) or `✖` (failed). Raw tool output is not shown — it
-goes to `{step}.out` and `{step}.err` in the step's work directory, and
-`ExecuteConfig::output(OutputMode::Stream)` prints every line above the display
-when you want to watch it. When stderr is not a terminal the display degrades to
-plain one-line-per-event logging.
+`✔` (executed), `⏭` (pinned) or `✖` (failed). Raw tool output is never shown: it
+goes to `{step}.out` and `{step}.err` in the step's work directory and stops
+there. Two things reach the display, and nothing else — a step's `status`, set
+from Rust, and the substep banners a tool is told to print. Which stream a tool
+chose means nothing; plenty put all their chatter on stderr. When stderr is not a
+terminal the display degrades to plain one-line-per-event logging.
 
 ### Substep banners
 

@@ -58,6 +58,19 @@ impl InnovusStep {
         let mut catch_fatal = File::create(path.join("catch_fatal.tcl"))?;
 
         if let Some(checkpoint) = &self.start_checkpoint {
+            // Restoring a large db takes minutes; without a banner the display
+            // shows nothing for all of it. Un-numbered so the substep counts
+            // still cover exactly the substeps.
+            let db = checkpoint
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| checkpoint.name.clone());
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner_named(&format!("read_db {db}"))
+            )?;
             writeln!(tcl_file, "read_db {}", checkpoint.path.display())?;
         }
 

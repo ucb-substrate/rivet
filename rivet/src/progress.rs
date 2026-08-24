@@ -74,6 +74,11 @@ struct Ui {
 impl Reporter {
     pub(crate) fn new(total: usize, label_width: usize, progress: bool) -> Arc<Self> {
         let ui = if progress && std::io::stderr().is_terminal() {
+            // `colored` keys its tty check to stdout, but the display draws on
+            // stderr: with stdout redirected (`cargo test ... > /dev/null`) it
+            // would strip every color. stderr is what matters here, and it was
+            // just checked.
+            colored::control::set_override(true);
             let multi = MultiProgress::new();
             let overall = multi.add(ProgressBar::new(total as u64));
             overall.set_style(overall_style());

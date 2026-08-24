@@ -201,6 +201,7 @@ impl Step for InnovusStep {
         let mut command = Command::new("innovus");
         command.args(args).current_dir(self.work_dir.clone());
 
+        progress::status(format!("running innovus (log: {}.par.out)", self.module));
         let status = exec::run_logged_in(
             &mut command,
             &self.work_dir,

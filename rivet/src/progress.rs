@@ -74,11 +74,13 @@ struct Ui {
 impl Reporter {
     pub(crate) fn new(total: usize, label_width: usize, progress: bool) -> Arc<Self> {
         let ui = if progress && std::io::stderr().is_terminal() {
-            // `colored` keys its tty check to stdout, but the display draws on
-            // stderr: with stdout redirected (`cargo test ... > /dev/null`) it
-            // would strip every color. stderr is what matters here, and it was
-            // just checked.
+            // `colored` and `console` (indicatif's template styles, e.g. the
+            // spinner's cyan) both key their tty checks to stdout, but the
+            // display draws on stderr: with stdout redirected (`cargo test ...
+            // > /dev/null`) they would strip every color. stderr is what
+            // matters here, and it was just checked.
             colored::control::set_override(true);
+            console::set_colors_enabled(true);
             let multi = MultiProgress::new();
             let overall = multi.add(ProgressBar::new(total as u64));
             overall.set_style(overall_style());
@@ -551,7 +553,9 @@ impl StepHandle {
             .map(Progress::render)
             .collect();
 
-        bar.set_message(regions.join(&REGION_SEP.dimmed()));
+        // `.to_string()` matters: `join` takes `&str`, and a bare
+        // `&ColoredString` deref-coerces to the unstyled inner string.
+        bar.set_message(regions.join(&REGION_SEP.dimmed().to_string()));
     }
 }
 

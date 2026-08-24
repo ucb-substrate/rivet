@@ -179,6 +179,7 @@ impl Step for GenusStep {
             ])
             .current_dir(self.work_dir.clone());
 
+        progress::status(format!("running genus (log: {}.syn.out)", self.module));
         let status = exec::run_logged_in(
             &mut command,
             &self.work_dir,

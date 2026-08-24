@@ -23,6 +23,15 @@ pub struct GenusStep {
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
     pub dependencies: Vec<StepRef<dyn Step>>,
+    /// Session-level TCL emitted at the top of every generated script,
+    /// resumes included.
+    ///
+    /// A checkpoint db restores `set_db` state, but per-session settings such
+    /// as `set_multi_cpu_usage` are not stored in the db — and resuming from a
+    /// checkpoint slices off the substeps that set them, leaving the session
+    /// at the tool's default CPU count. Put those settings here, not in a
+    /// substep.
+    pub preamble: Option<String>,
 }
 
 impl GenusStep {
@@ -43,7 +52,14 @@ impl GenusStep {
             start_checkpoint: None,
             endpoint: None,
             dependencies: deps,
+            preamble: None,
         }
+    }
+
+    /// Sets the session-level TCL prepended to every generated script; see
+    /// [`GenusStep::preamble`].
+    pub fn set_preamble(&mut self, tcl: impl Into<String>) {
+        self.preamble = Some(tcl.into());
     }
 
     /// Generates the tcl file for synthesis
@@ -55,6 +71,9 @@ impl GenusStep {
         let mut tcl_file = File::create(path.join("syn.tcl"))?;
 
         File::create(path.join("rivet_error.log"))?;
+        if let Some(preamble) = &self.preamble {
+            writeln!(tcl_file, "{preamble}")?;
+        }
         writeln!(
             tcl_file,
             "set_db super_thread_debug_directory super_thread_debug"

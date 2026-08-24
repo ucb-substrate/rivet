@@ -27,6 +27,15 @@ pub struct InnovusStep {
     pub endpoint: Option<String>,
     pub deps: Vec<StepRef<dyn Step>>,
     pub synthesis: bool,
+    /// Session-level TCL emitted at the top of every generated script,
+    /// resumes included.
+    ///
+    /// A checkpoint db restores `set_db` state, but per-session settings such
+    /// as `set_multi_cpu_usage` are not stored in the db — and resuming from a
+    /// checkpoint slices off the substeps that set them, leaving the session
+    /// at the tool's default CPU count. Put those settings here, not in a
+    /// substep.
+    pub preamble: Option<String>,
 }
 
 impl InnovusStep {
@@ -49,13 +58,24 @@ impl InnovusStep {
             endpoint: None,
             deps,
             synthesis,
+            preamble: None,
         }
+    }
+
+    /// Sets the session-level TCL prepended to every generated script; see
+    /// [`InnovusStep::preamble`].
+    pub fn set_preamble(&mut self, tcl: impl Into<String>) {
+        self.preamble = Some(tcl.into());
     }
 
     /// Generates the tcl file for place and route
     fn make_tcl_file(&self, path: &Path, substeps: Vec<Substep>) -> io::Result<()> {
         let mut tcl_file = File::create(path.join("par.tcl"))?;
         let mut catch_fatal = File::create(path.join("catch_fatal.tcl"))?;
+
+        if let Some(preamble) = &self.preamble {
+            writeln!(tcl_file, "{preamble}")?;
+        }
 
         if let Some(checkpoint) = &self.start_checkpoint {
             // Restoring a large db takes minutes; without a banner the display

@@ -107,6 +107,17 @@ impl InnovusStep {
                 let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
 
                 writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
+                // Hammer-style pointer to the newest db: `latest` is repointed
+                // after every checkpoint write, so a viewer (open_chip.sh)
+                // always finds the most recent db no matter where the run
+                // stopped. `ln -sfn` replaces the old link rather than
+                // creating the new one inside the db directory it points to.
+                writeln!(
+                    tcl_file,
+                    "exec ln -sfn post_{} {}",
+                    step.name,
+                    self.work_dir.join("latest").display()
+                )?;
             }
         }
 
@@ -218,6 +229,10 @@ impl Step for InnovusStep {
 
         progress::status("writing par.tcl");
         self.make_tcl_file(&self.work_dir, substeps)?;
+        // Viewer for the run's dbs: `latest` is repointed at each checkpoint
+        // the run writes, so the script is valid as soon as the first
+        // checkpointed substep completes.
+        generate_open_chip_script(&self.work_dir, "latest", self.synthesis)?;
 
         let tcl_file = self.work_dir.join("catch_fatal.tcl");
         let mut args = vec![
@@ -925,12 +940,13 @@ pub struct Floorplan {
     pub obstructs: Vec<ObstructionConstraint>,
 }
 
-pub fn generate_open_chip_script(work_dir: &Path, db: &str) -> io::Result<()> {
+pub fn generate_open_chip_script(work_dir: &Path, db: &str, synthesis: bool) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let script_path = work_dir.join("open_chip.sh");
     let mut f = File::create(&script_path)?;
+    let flag = if synthesis { " -synthesis" } else { "" };
     writeln!(f, "#!/bin/bash")?;
-    writeln!(f, "innovus -db {db}")?;
+    writeln!(f, "innovus -stylus{flag} -db {db}")?;
     let mut perms = fs::metadata(&script_path)?.permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&script_path, perms)?;

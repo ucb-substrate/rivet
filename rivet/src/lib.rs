@@ -3,11 +3,13 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub mod bash;
 pub mod exec;
 pub mod executor;
+pub mod log;
 pub mod progress;
 pub mod rust;
 
@@ -108,6 +110,31 @@ pub trait Step: Debug + Any + Send + Sync {
     fn label(&self) -> String {
         let name = std::any::type_name::<Self>();
         name.rsplit("::").next().unwrap_or(name).to_string()
+    }
+
+    /// Directory this step's own log file goes in.
+    ///
+    /// Whatever the step logs with `tracing` while it runs is written to
+    /// `{label}.rivet.log` here, next to the `.out` and `.err` files of the
+    /// tools it drove. A step with a working directory should say so:
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # struct ParStep { work_dir: PathBuf }
+    /// # impl ParStep {
+    /// fn log_dir(&self) -> Option<PathBuf> {
+    ///     Some(self.work_dir.clone())
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// Returning `None`, the default, is not a way to turn logging off: the
+    /// step's events still reach the run-wide
+    /// [`rivet.log`](crate::log::RUN_LOG), they just have nowhere of their own
+    /// to go. Steps that do no work on disk have no reason to leave a file
+    /// somewhere.
+    fn log_dir(&self) -> Option<PathBuf> {
+        None
     }
 }
 

@@ -31,6 +31,9 @@
 //! So while a flow is running, print with [`note`], run subprocesses through
 //! [`crate::exec`] so their output is captured to file, and wrap anything that
 //! insists on the terminal for itself in [`suspend`].
+//!
+//! Anything worth recording rather than showing goes through `tracing`, which
+//! [`crate::log`] writes to files and never to a stream.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -610,13 +613,19 @@ pub(crate) fn set_active_reporter(reporter: Option<Arc<Reporter>>) {
 ///
 /// Use this instead of `println!` anywhere that might run inside a flow: see
 /// [the module docs](self#nothing-else-may-write-to-the-terminal).
+///
+/// The line is logged as well as shown, so a run's log holds everything the
+/// person watching it was told.
 pub fn note(message: impl AsRef<str>) {
+    let message = message.as_ref();
+    tracing::info!(target: "rivet::note", "{message}");
+
     // Cloned out so the lock is not held while drawing, which would block the
     // end of the run.
     let active = ACTIVE.read().unwrap().clone();
     match active {
-        Some(reporter) => reporter.print_above(message.as_ref()),
-        None => println!("{}", message.as_ref()),
+        Some(reporter) => reporter.print_above(message),
+        None => println!("{message}"),
     }
 }
 

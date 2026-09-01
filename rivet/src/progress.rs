@@ -7,6 +7,15 @@
 //! it depended on failed) or `✖` (failed), and a summary bar at the bottom
 //! tracks overall progress.
 //!
+//! # The cursor
+//!
+//! One of the running steps is under a cursor, which `↑`/`↓` (or `j`/`k`) move
+//! between them. `enter` copies a `tail` command for the log the step is
+//! writing, to be pasted into another terminal: the display shows where a step
+//! has got to and never what its tool is saying, so this is how to go and read
+//! that without disturbing the run. See [`crate::keys`] for how the keys are
+//! read, and [`StepHandle::set_output_files`] for what a step offers to follow.
+//!
 //! When stderr is not a terminal (CI, redirected logs) the display degrades to
 //! plain, one-line-per-event logging instead of drawing escape sequences.
 //!
@@ -38,15 +47,25 @@
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
+use crate::clipboard;
+use crate::keys::{Event, Flow, Key, Keyboard};
+
 /// Longest step label rendered before it is truncated.
 const MAX_LABEL_WIDTH: usize = 44;
+
+/// How long the hint line holds a message before going back to the keys.
+const FLASH_FOR: Duration = Duration::from_secs(4);
+
+/// How much of a step's log a copied command shows before it starts following.
+const TAIL_LINES: usize = 100;
 
 /// How a step ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,12 +107,43 @@ pub(crate) struct Reporter {
     skipped: AtomicUsize,
     blocked: AtomicUsize,
     failed: AtomicUsize,
+    /// Hands out the ids the cursor tracks steps by.
+    next_step: AtomicUsize,
     ui: Option<Ui>,
 }
 
 struct Ui {
     multi: MultiProgress,
     overall: ProgressBar,
+    /// The bottom line: what the keys do, or what one of them just did.
+    hint: ProgressBar,
+    /// The running steps, and which of them the cursor is on.
+    cursor: Mutex<Cursor>,
+    /// When the hint line goes back to showing the keys.
+    flash_until: Mutex<Option<Instant>>,
+    /// Reads the keys, for exactly as long as the run lasts.
+    keyboard: Mutex<Option<Keyboard>>,
+}
+
+impl Ui {
+    /// The keys being read, if any are.
+    ///
+    /// A panic while the terminal was borrowed — inside [`suspend`] — must not
+    /// leave the run unable to give it back, so a poisoned lock is taken
+    /// anyway.
+    fn keyboard(&self) -> MutexGuard<'_, Option<Keyboard>> {
+        self.keyboard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Run `f` with the terminal in the mode it was in before the run started.
+    fn cooked<R>(&self, f: impl FnOnce() -> R) -> R {
+        match self.keyboard().as_ref() {
+            Some(keyboard) => keyboard.cooked(f),
+            None => f(),
+        }
+    }
 }
 
 impl Reporter {
@@ -110,7 +160,17 @@ impl Reporter {
             let overall = multi.add(ProgressBar::new(total as u64));
             overall.set_style(overall_style());
             overall.enable_steady_tick(Duration::from_millis(120));
-            Some(Ui { multi, overall })
+            // Under the summary, so the steps and their total stay together.
+            let hint = multi.add(ProgressBar::new_spinner());
+            hint.set_style(hint_style());
+            Some(Ui {
+                multi,
+                overall,
+                hint,
+                cursor: Mutex::new(Cursor::default()),
+                flash_until: Mutex::new(None),
+                keyboard: Mutex::new(None),
+            })
         } else {
             None
         };
@@ -122,22 +182,77 @@ impl Reporter {
             skipped: AtomicUsize::new(0),
             blocked: AtomicUsize::new(0),
             failed: AtomicUsize::new(0),
+            next_step: AtomicUsize::new(0),
             ui,
         });
+        reporter.listen();
         reporter.refresh();
         reporter
     }
 
+    /// Start reading keys, giving the display a cursor.
+    ///
+    /// The reader holds the reporter weakly: it must not be the thing keeping a
+    /// finished run alive, because a run that has ended has to give the
+    /// terminal back.
+    fn listen(self: &Arc<Self>) {
+        let Some(ui) = &self.ui else { return };
+
+        let reporter = Arc::downgrade(self);
+        let keyboard = Keyboard::start(move |event| match reporter.upgrade() {
+            Some(reporter) => {
+                reporter.on_event(event);
+                Flow::Continue
+            }
+            // The run is over and nothing stopped the reader; stop anyway.
+            None => Flow::Stop,
+        });
+
+        match keyboard {
+            Some(keyboard) => {
+                // The lock is not held past here: drawing the hint takes the
+                // display's own lock, and `suspend` takes the two the other way
+                // round.
+                *ui.keyboard() = Some(keyboard);
+                ui.hint.set_message(hint_line());
+                ui.hint.tick();
+            }
+            // No keys to read, so nothing to tell anyone about.
+            None => ui.multi.remove(&ui.hint),
+        }
+    }
+
     /// Announce that `label` has started running, returning a handle the step
     /// can use to report its own output.
-    pub(crate) fn start(self: &Arc<Self>, label: &str) -> StepHandle {
+    ///
+    /// `log` is the step's own log file: both where what it logs is written,
+    /// and — until it starts a tool of its own — the file the cursor offers a
+    /// command to follow.
+    pub(crate) fn start(
+        self: &Arc<Self>,
+        label: &str,
+        log: Option<Arc<crate::log::LogFile>>,
+    ) -> StepHandle {
         self.running.fetch_add(1, Ordering::Relaxed);
+        let id = self.next_step.fetch_add(1, Ordering::Relaxed);
+        let label: Arc<str> = Arc::from(truncate(label, MAX_LABEL_WIDTH));
+        let state = Arc::new(Mutex::new(StepState::default()));
 
         let bar = self.ui.as_ref().map(|ui| {
             let bar = ui.multi.insert(0, ProgressBar::new_spinner());
-            bar.set_style(step_style());
-            bar.set_prefix(self.pad(label));
+            bar.set_style(step_style(false));
+            bar.set_prefix(self.pad(&label));
             bar.enable_steady_tick(Duration::from_millis(120));
+
+            let mut cursor = ui.cursor.lock().unwrap();
+            cursor.insert(Row {
+                id,
+                label: Arc::clone(&label),
+                bar: bar.clone(),
+                state: Arc::clone(&state),
+                log: log.as_ref().map(|log| log.path().to_path_buf()),
+            });
+            cursor.draw();
             bar
         });
 
@@ -147,12 +262,13 @@ impl Reporter {
         self.refresh();
 
         StepHandle {
-            label: Arc::from(truncate(label, MAX_LABEL_WIDTH)),
+            id,
+            label,
             bar,
             reporter: Arc::clone(self),
             started: Instant::now(),
-            state: Arc::new(Mutex::new(StepState::default())),
-            log: None,
+            state,
+            log,
         }
     }
 
@@ -228,6 +344,9 @@ impl Reporter {
         if let (Some(ui), Some(bar)) = (&self.ui, &handle.bar) {
             bar.finish_and_clear();
             ui.multi.remove(bar);
+            let mut cursor = ui.cursor.lock().unwrap();
+            cursor.remove(handle.id);
+            cursor.draw();
         }
         self.print_above(&line);
         self.refresh();
@@ -246,6 +365,16 @@ impl Reporter {
     /// Tear down the live display and print a closing summary.
     pub(crate) fn finish_all(&self, elapsed: Duration) {
         if let Some(ui) = &self.ui {
+            // First: the terminal has to be the shell's own again before the
+            // summary is printed and the run hands back control. Taken out of
+            // the lock before it is stopped, because stopping waits for the
+            // reader and the reader may be part-way through drawing.
+            let keyboard = ui.keyboard().take();
+            if let Some(keyboard) = keyboard {
+                keyboard.stop();
+            }
+            ui.hint.finish_and_clear();
+            ui.multi.remove(&ui.hint);
             ui.overall.finish_and_clear();
         }
 
@@ -316,6 +445,220 @@ impl Reporter {
         let label = truncate(label, MAX_LABEL_WIDTH);
         let width = self.label_width;
         format!("{label:<width$}")
+    }
+
+    // -- the cursor ---------------------------------------------------------
+
+    /// Act on a key, or on a moment having passed without one.
+    ///
+    /// Called from the reader thread, so it does its own locking and holds
+    /// nothing while it draws.
+    fn on_event(&self, event: Event) {
+        match event {
+            Event::Key(Key::Up) => self.move_cursor(-1),
+            Event::Key(Key::Down) => self.move_cursor(1),
+            Event::Key(Key::Enter) => self.copy_follow_command(),
+            Event::Tick => self.expire_flash(),
+        }
+    }
+
+    fn move_cursor(&self, delta: isize) {
+        let Some(ui) = &self.ui else { return };
+        let mut cursor = ui.cursor.lock().unwrap();
+        cursor.step(delta);
+        cursor.draw();
+    }
+
+    /// Copy a command for reading the selected step's log as it is written.
+    ///
+    /// What someone watching a step actually wants is the tool's own output,
+    /// which the display deliberately never shows — it is in a file, and this
+    /// hands over the command to follow that file somewhere else.
+    fn copy_follow_command(&self) {
+        let Some(ui) = &self.ui else { return };
+
+        // Read out from under the lock: the reader thread must not be holding
+        // the cursor while it holds the display still to copy.
+        let selected = {
+            let cursor = ui.cursor.lock().unwrap();
+            cursor
+                .selected()
+                .map(|row| (row.label.to_string(), row.follow_command()))
+        };
+        let Some((label, command)) = selected else {
+            return;
+        };
+
+        let Some(command) = command else {
+            self.flash(format!("{} {}", "no log yet for".yellow(), label.yellow()));
+            return;
+        };
+
+        tracing::info!(step = %label, %command, "copied a command to follow the log");
+        let copied = ui.multi.suspend(|| clipboard::copy(&command));
+        if copied {
+            self.flash(format!(
+                "{} {}",
+                "✔ copied".green().bold(),
+                command.dimmed()
+            ));
+        } else {
+            // Nowhere to copy it to, so put it somewhere it can be read.
+            self.print_above(&format!("  {} {command}", "⧉".cyan()));
+            self.flash(
+                "no clipboard to copy to; the command is above"
+                    .yellow()
+                    .to_string(),
+            );
+        }
+    }
+
+    /// Show something on the hint line for a few seconds.
+    fn flash(&self, message: String) {
+        let Some(ui) = &self.ui else { return };
+        *ui.flash_until.lock().unwrap() = Some(Instant::now() + FLASH_FOR);
+        ui.hint.set_message(message);
+        ui.hint.tick();
+    }
+
+    /// Put the keys back on the hint line once a message has had its moment.
+    fn expire_flash(&self) {
+        let Some(ui) = &self.ui else { return };
+        let mut flash = ui.flash_until.lock().unwrap();
+        if flash.is_some_and(|until| Instant::now() >= until) {
+            *flash = None;
+            ui.hint.set_message(hint_line());
+            ui.hint.tick();
+        }
+    }
+}
+
+/// Which running step the display's cursor is on.
+///
+/// The rows are in the order they are drawn, newest first: a step's line is put
+/// at the top when it starts, so every other row moves down under the cursor.
+/// That is why the selection is kept as a step and not as a position.
+#[derive(Default)]
+struct Cursor {
+    rows: Vec<Row>,
+    selected: Option<usize>,
+}
+
+/// A running step, as the cursor sees it.
+struct Row {
+    id: usize,
+    label: Arc<str>,
+    bar: ProgressBar,
+    state: Arc<Mutex<StepState>>,
+    /// The step's own log file, if it has one.
+    log: Option<PathBuf>,
+}
+
+impl Cursor {
+    /// Take on a step that has just started, at the top.
+    fn insert(&mut self, row: Row) {
+        // With nothing running the cursor had nowhere to be, so it lands on
+        // whatever starts first; after that it only moves when it is moved.
+        if self.selected.is_none() {
+            self.selected = Some(row.id);
+        }
+        self.rows.insert(0, row);
+    }
+
+    /// Drop a step that has finished, keeping the cursor on screen.
+    fn remove(&mut self, id: usize) {
+        let Some(position) = self.rows.iter().position(|row| row.id == id) else {
+            return;
+        };
+        self.rows.remove(position);
+        if self.selected == Some(id) {
+            // Stay where it was: the row that moved up into this slot, or the
+            // last row when it was the bottom one that finished.
+            self.selected = self
+                .rows
+                .get(position)
+                .or_else(|| self.rows.last())
+                .map(|row| row.id);
+        }
+    }
+
+    /// Move the cursor `delta` rows down the screen, stopping at the ends.
+    ///
+    /// Deliberately not wrapping: rows appear and disappear under the cursor on
+    /// their own as steps start and finish, and a cursor that also jumped from
+    /// one end of the list to the other would be one more thing moving.
+    fn step(&mut self, delta: isize) {
+        let Some(position) = self.position() else {
+            return;
+        };
+        let moved = (position as isize + delta).clamp(0, self.rows.len() as isize - 1);
+        self.selected = self.rows.get(moved as usize).map(|row| row.id);
+    }
+
+    fn position(&self) -> Option<usize> {
+        let selected = self.selected?;
+        self.rows.iter().position(|row| row.id == selected)
+    }
+
+    fn selected(&self) -> Option<&Row> {
+        self.position().map(|position| &self.rows[position])
+    }
+
+    /// Draw the cursor where it now is.
+    fn draw(&self) {
+        for row in &self.rows {
+            row.bar.set_style(step_style(self.selected == Some(row.id)));
+        }
+    }
+}
+
+impl Row {
+    /// A command to watch this step's log as it is written, if it has one yet.
+    ///
+    /// The output of the tool the step is driving is what someone watching it
+    /// wants, so that wins; the step's own log is what there is to offer until
+    /// a tool has started.
+    fn follow_command(&self) -> Option<String> {
+        let outputs = self.state.lock().unwrap().outputs.clone();
+        let files = if outputs.is_empty() {
+            self.log.clone().into_iter().collect()
+        } else {
+            outputs
+        };
+        (!files.is_empty()).then(|| follow_command(&files))
+    }
+}
+
+/// `tail` over the files a step is writing.
+///
+/// `-F` rather than `-f`, so the command works pasted into a terminal before
+/// the file exists — a step that has not reached that tool yet — and keeps
+/// working when a tool replaces its log rather than appending to it.
+fn follow_command(files: &[PathBuf]) -> String {
+    let files: Vec<String> = files.iter().map(|file| quote(&full_path(file))).collect();
+    format!("tail -n {TAIL_LINES} -F {}", files.join(" "))
+}
+
+/// A path as it has to be to be pasted somewhere else, which is not necessarily
+/// a shell sitting in the directory this run was started from.
+fn full_path(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+/// Quote a path for a shell: a step's own log is named after the step, and step
+/// labels have spaces in them.
+fn quote(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-+=/:,@%".contains(c));
+    if plain {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
     }
 }
 
@@ -454,6 +797,8 @@ fn parse_position(text: &str) -> Option<(usize, usize)> {
 /// output without corrupting the live display.
 #[derive(Clone)]
 pub struct StepHandle {
+    /// Which step this is, to the display's cursor.
+    id: usize,
     label: Arc<str>,
     bar: Option<ProgressBar>,
     reporter: Arc<Reporter>,
@@ -477,16 +822,12 @@ struct StepState {
     status: Option<Progress>,
     /// Right half: parsed out of the tool's output.
     banner: Option<Progress>,
+    /// Files the step's tool is writing. Not part of the line: these are what
+    /// the cursor copies a command to follow.
+    outputs: Vec<PathBuf>,
 }
 
 impl StepHandle {
-    /// Give the step a log file of its own, so what it logs is written there as
-    /// well as to the run-wide log.
-    pub(crate) fn with_log(mut self, log: Option<Arc<crate::log::LogFile>>) -> Self {
-        self.log = log;
-        self
-    }
-
     /// The label this step is displayed under.
     pub fn label(&self) -> &str {
         &self.label
@@ -532,6 +873,22 @@ impl StepHandle {
     /// The substep last parsed out of this step's output.
     pub fn substep(&self) -> Option<Progress> {
         self.state.lock().unwrap().banner.clone()
+    }
+
+    /// Say which files the step's tool is writing its output to.
+    ///
+    /// Not shown — raw tool output never is — but offered to whoever is
+    /// watching: the display's cursor turns these into a command for following
+    /// the step's log somewhere else. [`crate::exec`] calls this for the
+    /// commands it runs; a step driving a tool some other way should call it
+    /// itself.
+    pub fn set_output_files(&self, files: Vec<PathBuf>) {
+        self.state.lock().unwrap().outputs = files;
+    }
+
+    /// The files last given to [`StepHandle::set_output_files`].
+    pub fn output_files(&self) -> Vec<PathBuf> {
+        self.state.lock().unwrap().outputs.clone()
     }
 
     /// Clear the substep, for when the tool reporting it has exited.
@@ -683,7 +1040,9 @@ pub fn note(message: impl AsRef<str>) {
 pub fn suspend<R>(f: impl FnOnce() -> R) -> R {
     let active = ACTIVE.read().unwrap().clone();
     match active.as_ref().and_then(|reporter| reporter.ui.as_ref()) {
-        Some(ui) => ui.multi.suspend(f),
+        // The terminal goes back to collecting and echoing whole lines as well
+        // as going still: whatever has to have it to itself usually wants both.
+        Some(ui) => ui.multi.suspend(|| ui.cooked(f)),
         None => f(),
     }
 }
@@ -739,10 +1098,30 @@ pub fn clear_substep() {
     }
 }
 
-fn step_style() -> ProgressStyle {
-    ProgressStyle::with_template("  {spinner:.cyan} {prefix:.bold} {elapsed:>5} {wide_msg}")
-        .expect("valid step template")
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
+fn step_style(selected: bool) -> ProgressStyle {
+    // The cursor goes in the indent every line already has, so that a step
+    // moving under it does not shift the column the labels line up in.
+    let cursor = if selected {
+        "❯".cyan().bold().to_string()
+    } else {
+        " ".to_string()
+    };
+    ProgressStyle::with_template(&format!(
+        "{cursor} {{spinner:.cyan}} {{prefix:.bold}} {{elapsed:>5}} {{wide_msg}}"
+    ))
+    .expect("valid step template")
+    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
+}
+
+fn hint_style() -> ProgressStyle {
+    ProgressStyle::with_template("  {wide_msg}").expect("valid hint template")
+}
+
+/// What the keys do, on the line under the summary.
+fn hint_line() -> String {
+    "↑/↓ or j/k select a step · enter copies a command to follow its log"
+        .dimmed()
+        .to_string()
 }
 
 fn overall_style() -> ProgressStyle {
@@ -843,8 +1222,10 @@ mod tests {
     fn progress_templates_are_valid() {
         // These templates are only built when a terminal is attached, so parse
         // them here to keep the unwraps honest.
-        step_style();
+        step_style(false);
+        step_style(true);
         overall_style();
+        hint_style();
     }
 
     #[test]
@@ -911,7 +1292,7 @@ mod tests {
     #[test]
     fn only_banners_reach_the_display() {
         let reporter = Reporter::new(1, 8, false);
-        let handle = reporter.start("decoder par");
+        let handle = reporter.start("decoder par", None);
 
         handle.output_line("starting up");
         assert_eq!(handle.substep(), None);
@@ -926,7 +1307,7 @@ mod tests {
     #[test]
     fn status_and_banners_do_not_disturb_each_other() {
         let reporter = Reporter::new(1, 8, false);
-        let handle = reporter.start("decoder par");
+        let handle = reporter.start("decoder par", None);
 
         handle.set_status_progress(3, 12, "merging gds");
         handle.output_line(&banner(2, 5, "route_design"));
@@ -948,18 +1329,18 @@ mod tests {
     fn location_reports_whichever_halves_are_set() {
         let reporter = Reporter::new(1, 8, false);
 
-        let handle = reporter.start("a");
+        let handle = reporter.start("a", None);
         assert_eq!(handle.location(), None);
 
-        let handle = reporter.start("b");
+        let handle = reporter.start("b", None);
         handle.set_status("merging");
         assert_eq!(handle.location().as_deref(), Some("merging"));
 
-        let handle = reporter.start("c");
+        let handle = reporter.start("c", None);
         handle.output_line(&banner(2, 5, "route"));
         assert_eq!(handle.location().as_deref(), Some("route (2/5)"));
 
-        let handle = reporter.start("d");
+        let handle = reporter.start("d", None);
         handle.set_status_progress(7, 12, "merging");
         handle.output_line(&banner(2, 5, "route"));
         assert_eq!(
@@ -974,7 +1355,7 @@ mod tests {
     #[test]
     fn status_can_be_cleared_on_its_own() {
         let reporter = Reporter::new(1, 8, false);
-        let handle = reporter.start("decoder par");
+        let handle = reporter.start("decoder par", None);
 
         handle.output_line(&banner(1, 2, "place"));
         handle.set_status("linking");
@@ -1046,5 +1427,145 @@ mod tests {
     fn long_labels_are_truncated() {
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(truncate("abc", 4), "abc");
+    }
+
+    // -- the cursor ---------------------------------------------------------
+
+    /// A row with a bar that draws nowhere, so the cursor can be moved around
+    /// without a terminal.
+    fn row(id: usize) -> Row {
+        Row {
+            id,
+            label: Arc::from(format!("step {id}")),
+            bar: ProgressBar::hidden(),
+            state: Arc::new(Mutex::new(StepState::default())),
+            log: None,
+        }
+    }
+
+    /// The rows in the order they are drawn, newest first.
+    fn running(cursor: &Cursor) -> Vec<usize> {
+        cursor.rows.iter().map(|row| row.id).collect()
+    }
+
+    #[test]
+    fn the_cursor_lands_on_the_first_step_and_then_stays_put() {
+        let mut cursor = Cursor::default();
+        assert_eq!(cursor.selected, None);
+
+        cursor.insert(row(1));
+        assert_eq!(cursor.selected, Some(1));
+
+        // A step starting goes above it and does not take the cursor with it.
+        cursor.insert(row(2));
+        cursor.insert(row(3));
+        assert_eq!(running(&cursor), [3, 2, 1]);
+        assert_eq!(cursor.selected, Some(1));
+    }
+
+    #[test]
+    fn the_cursor_moves_down_the_screen_and_stops_at_the_ends() {
+        let mut cursor = Cursor::default();
+        for id in 1..=3 {
+            cursor.insert(row(id));
+        }
+        // Drawn 3, 2, 1 from the top, and the cursor starts on the first step
+        // to have started, which is at the bottom.
+        assert_eq!(cursor.position(), Some(2));
+
+        cursor.step(-1);
+        assert_eq!(cursor.selected, Some(2));
+        cursor.step(-1);
+        assert_eq!(cursor.selected, Some(3));
+        // The top row.
+        cursor.step(-1);
+        assert_eq!(cursor.selected, Some(3));
+
+        cursor.step(1);
+        assert_eq!(cursor.selected, Some(2));
+        // Several rows at once, clamped at the bottom.
+        cursor.step(5);
+        assert_eq!(cursor.selected, Some(1));
+    }
+
+    #[test]
+    fn a_step_finishing_under_the_cursor_leaves_it_where_it_was() {
+        let mut cursor = Cursor::default();
+        for id in 1..=3 {
+            cursor.insert(row(id));
+        }
+
+        // The middle row finishes while the cursor is on it: the row that moves
+        // up into that slot takes the cursor.
+        cursor.selected = Some(2);
+        cursor.remove(2);
+        assert_eq!(running(&cursor), [3, 1]);
+        assert_eq!(cursor.selected, Some(1));
+
+        // The bottom row goes, and there is nothing below to move up.
+        cursor.remove(1);
+        assert_eq!(cursor.selected, Some(3));
+
+        // Nothing left is running, so there is nothing to select.
+        cursor.remove(3);
+        assert_eq!(cursor.selected, None);
+
+        // And the next step to start takes the cursor again.
+        cursor.insert(row(4));
+        assert_eq!(cursor.selected, Some(4));
+    }
+
+    #[test]
+    fn a_step_finishing_elsewhere_does_not_move_the_cursor() {
+        let mut cursor = Cursor::default();
+        for id in 1..=3 {
+            cursor.insert(row(id));
+        }
+        cursor.selected = Some(1);
+
+        cursor.remove(3);
+        assert_eq!(running(&cursor), [2, 1]);
+        assert_eq!(cursor.selected, Some(1));
+    }
+
+    // -- what enter copies --------------------------------------------------
+
+    #[test]
+    fn a_step_offers_its_tools_output_and_falls_back_to_its_own_log() {
+        let mut row = row(1);
+        // Nothing to follow before the step has written anything.
+        assert_eq!(row.follow_command(), None);
+
+        row.log = Some(PathBuf::from("/build/decoder/par/decoder par.rivet.log"));
+        assert_eq!(
+            row.follow_command().as_deref(),
+            Some(r"tail -n 100 -F '/build/decoder/par/decoder par.rivet.log'")
+        );
+
+        // Once a tool is running, its output is what someone watching wants.
+        row.state.lock().unwrap().outputs = vec![
+            PathBuf::from("/build/decoder/par/decoder.par.out"),
+            PathBuf::from("/build/decoder/par/decoder.par.err"),
+        ];
+        assert_eq!(
+            row.follow_command().as_deref(),
+            Some(concat!(
+                "tail -n 100 -F /build/decoder/par/decoder.par.out",
+                " /build/decoder/par/decoder.par.err"
+            ))
+        );
+    }
+
+    #[test]
+    fn paths_are_quoted_for_the_shell_they_are_pasted_into() {
+        assert_eq!(quote("/build/decoder.par.out"), "/build/decoder.par.out");
+        // Step labels have spaces in them, and their log files are named after
+        // them.
+        assert_eq!(
+            quote("/build/decoder par.rivet.log"),
+            "'/build/decoder par.rivet.log'"
+        );
+        assert_eq!(quote("/build/it's.log"), r"'/build/it'\''s.log'");
+        assert_eq!(quote(""), "''");
     }
 }

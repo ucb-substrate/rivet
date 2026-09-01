@@ -7,8 +7,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub mod bash;
+mod clipboard;
 pub mod exec;
 pub mod executor;
+mod keys;
 pub mod log;
 pub mod progress;
 pub mod rust;

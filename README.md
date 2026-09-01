@@ -173,6 +173,46 @@ only ever comes from there.
 The two never interfere: a banner cannot clear the status, and a status cannot
 clear the banner. Each half is omitted entirely until something fills it.
 
+### Following a step's log
+
+One of the running steps is under a cursor, moved between them with `↑`/`↓` or
+`j`/`k`:
+
+```text
+  ⠹ decoder drc   1m02s ━━━╸────── 1/3 density
+❯ ⠹ decoder par   12m8s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+  ━━━━━━╸───────────────── 3/7 steps · 00:12:08 2 running
+  ↑/↓ or j/k select a step · enter copies a command to follow its log
+```
+
+`enter` copies a `tail` command for that step's log to the clipboard, to be
+pasted into another terminal:
+
+```text
+tail -n 100 -F /build/decoder/par/decoder.par.out /build/decoder/par/decoder.par.err
+```
+
+The display says where a step has got to and never what its tool is saying, so
+this is how to go and read that — in another window, without disturbing the run
+or the display. The files are the ones `exec::run_logged` is writing for the
+command the step is running right now; before a step has started a tool, it is
+the step's own `{step}.rivet.log`. A step driving a tool some other way can say
+what to follow with `StepHandle::set_output_files`.
+
+The copy is asked for with OSC 52, which is the terminal's own way of doing it
+and therefore the one that works over ssh: the clipboard that matters is on the
+machine the person is watching from, not the compute server the flow is running
+on. A local `wl-copy`, `xclip`, `xsel` or `pbcopy` is asked as well, if the
+environment suggests one would work.
+
+While the display is up, the terminal hands over keys as they are typed rather
+than collecting whole lines, and stops echoing them. Signals are deliberately
+left alone — `^C` and `^Z` mean exactly what they always did — and the terminal
+is put back when the run ends, if it is backgrounded, around
+`progress::suspend`, and from a signal handler if the run is killed outright.
+A run whose stderr is not a terminal has no cursor, and neither has one that has
+been put in the background.
+
 ## Logging
 
 The display owns stderr while a flow runs, so a log line printed to a stream

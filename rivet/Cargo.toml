@@ -29,3 +29,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 ] }
 tracing-appender = "0.2"
 
+# For the keys typed at the live display: the terminal has to be asked to hand
+# them over as they are typed, which is a `termios` call and nothing std has.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+

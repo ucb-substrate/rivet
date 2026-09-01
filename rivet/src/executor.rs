@@ -645,9 +645,7 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), 
         None
     };
 
-    let handle = reporter
-        .start(&node.label)
-        .with_log(log::open_step_log(log_dir, &node.label));
+    let handle = reporter.start(&node.label, log::open_step_log(log_dir, &node.label));
     // Guards, because there are several ways out of this function: the step
     // stops being the current one, and its events stop being logged as its own,
     // whichever one is taken.

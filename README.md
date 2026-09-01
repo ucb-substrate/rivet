@@ -113,11 +113,12 @@ While a flow runs, each executing step gets a line with a spinner, its elapsed
 time, and whatever progress it reports (see below); finished steps scroll off as
 `✔` (executed), `⏭` (pinned), `⊘` (blocked by a failure) or `✖` (failed), and
 stay in the terminal's scrollback afterwards. The live part is a ratatui inline
-viewport — a fixed block of rows at the bottom of the ordinary terminal, sized
-for as many steps as the run can have going at once (up to eight) — so nothing
-takes over the screen and nothing is erased when the run ends. With more steps
-running than rows, the list scrolls under the cursor and the summary says how
-many are out of sight. Raw tool output is never shown: it
+viewport — a fixed block at the bottom of the ordinary terminal, holding four to
+eight step rows depending on how many can run at once, with the summary and the
+hint under them — so nothing takes over the screen and nothing is erased when
+the run ends. It holds every step
+that has run, so it scrolls under the cursor once there are more than fit. Raw
+tool output is never shown: it
 goes to `{step}.out` and `{step}.err` in the step's work directory and stops
 there. Two things reach the display, and nothing else — a step's `status`, set
 from Rust, and the substep banners a tool is told to print. Which stream a tool
@@ -181,15 +182,32 @@ clear the banner. Each half is omitted entirely until something fills it.
 
 ### Following a step's log
 
-One of the running steps is under a cursor, moved between them with `↑`/`↓` or
+Every step that has run is under a cursor, moved between them with `↑`/`↓` or
 `j`/`k`:
 
 ```text
-  ⠹ decoder drc   1m02s ━━━╸────── 1/3 density
-❯ ⠹ decoder par   12m8s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
-  ━━━━━━╸───────────────── 3/7 steps · 12m08s · 2 running
+  ✔ decoder syn    1m14s
+  ✖ decoder lvs    2m01s  compare (2/2)
+  ⠹ decoder drc    1m02s ━━━╸────── 1/3 density
+❯ ⠹ decoder par   12m08s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+  ━━━━━━╸───────────────── 3/7 steps · 12m08s · 2 running · 1 failed
   ↑/↓ or j/k select a step · enter copies a command to follow its log
 ```
+
+The list is the tail of the record: what is running, and behind it the steps
+that finished most recently, dimmed. Those stay reachable because the log worth
+reading is usually one belonging to a step that has already stopped — a step
+that failed most of all, which keeps the substep it died in beside it and never
+leaves the list. Other finished steps move up into the scrollback as newer ones
+push them out, so nothing is ever shown twice and the record above still grows
+in the order things happened.
+
+The cursor stays on the step it is on. Steps starting never move it; the one
+thing that does is the step under it finishing, when it goes to the newest step
+still running — so someone watching the run keeps watching the run, and is not
+left on what the step turned into. Put on a step that has already finished, it
+stays there until you move it. With nothing else running when its step finishes,
+it waits and takes the next step to start.
 
 `enter` copies a `tail` command for that step's log to the clipboard, to be
 pasted into another terminal:

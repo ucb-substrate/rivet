@@ -91,6 +91,10 @@ pub(crate) trait Paint: Send + Sync {
     /// read.
     fn scrollback(&self) -> Vec<Line<'static>>;
 
+    /// Everything that still belongs in the scrollback once the run is over,
+    /// including what the live area was holding on to.
+    fn remaining(&self) -> Vec<Line<'static>>;
+
     /// A key was typed at the display.
     fn key(&self, key: Key);
 }
@@ -350,7 +354,7 @@ fn draw_loop(
             // The tools this run started have had the same signal from the
             // terminal already; all that is left is to hand the terminal back
             // before the run goes.
-            let last = painter.upgrade().map(|paint| paint.scrollback());
+            let last = painter.upgrade().map(|paint| paint.remaining());
             give_back(stage, last.unwrap_or_default());
             std::process::exit(INTERRUPTED);
         }

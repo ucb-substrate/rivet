@@ -9,12 +9,22 @@
 //!
 //! # The cursor
 //!
-//! One of the running steps is under a cursor, which `↑`/`↓` (or `j`/`k`) move
-//! between them. `enter` copies a `tail` command for the log that step is
-//! writing, to be pasted into another terminal: the display shows where a step
-//! has got to and never what its tool is saying, so this is how to go and read
-//! that without disturbing the run. See [`StepHandle::set_output_files`] for
-//! what a step offers to follow, and [`crate::tui`] for the terminal itself.
+//! One of the steps is under a cursor, which `↑`/`↓` (or `j`/`k`) move between
+//! them. `enter` copies a `tail` command for the log that step is writing, to
+//! be pasted into another terminal: the display shows where a step has got to
+//! and never what its tool is saying, so this is how to go and read that
+//! without disturbing the run.
+//!
+//! The list is the tail of the record: the steps that are running, and behind
+//! them the ones that finished most recently, which stay reachable because the
+//! log worth reading is usually one belonging to a step that has already
+//! stopped — a step that failed most of all. The cursor stays on the step it is
+//! on; the one thing that moves it by itself is that step finishing, when it
+//! goes to the newest step still running. Nothing is shown twice: a finished
+//! step moves up into the scrollback only when it leaves the list.
+//!
+//! See [`StepHandle::set_output_files`] for what a step offers to follow, and
+//! [`crate::tui`] for the terminal itself.
 //!
 //! When stderr is not a terminal (CI, redirected logs) the display degrades to
 //! plain, one-line-per-event logging instead of drawing escape sequences.
@@ -60,9 +70,16 @@ use crate::tui::{Key, Paint, Screen, Tui};
 /// Longest step label rendered before it is truncated.
 const MAX_LABEL_WIDTH: usize = 44;
 
-/// Most running steps the live area ever shows at once. Beyond this the list
-/// scrolls under the cursor and the summary says how many are out of sight.
+/// Most steps the live area shows at once.
 const MAX_VISIBLE: usize = 8;
+
+/// Fewest steps the live area shows, however few run at a time.
+const MIN_VISIBLE: usize = 4;
+
+/// Rows kept for steps that have finished, over and above the ones that can be
+/// running. Finished steps stay in the list this long before moving up into the
+/// scrollback, so there is recent history to move the cursor onto.
+const HISTORY: usize = 2;
 
 /// Rows the live area has besides the steps: the summary, and the hint.
 const FIXED_ROWS: usize = 2;
@@ -159,12 +176,15 @@ impl Reporter {
         concurrency: usize,
         progress: bool,
     ) -> Arc<Self> {
-        // A step's line only exists while it is running, so the live area never
-        // needs more rows than there are workers.
-        let visible = concurrency.min(total).clamp(1, MAX_VISIBLE);
+        // Room for everything that can run at once and a little of what has
+        // just finished, within reason either way.
+        let visible = (concurrency + HISTORY)
+            .clamp(MIN_VISIBLE, MAX_VISIBLE)
+            .min(total)
+            .max(1);
         let ui = (progress && on_a_terminal()).then(|| Ui {
             scrollback: Mutex::new(Vec::new()),
-            cursor: Mutex::new(Cursor::default()),
+            cursor: Mutex::new(Cursor::new(visible)),
             flash: Mutex::new(None),
             visible,
             tui: Mutex::new(None),
@@ -224,16 +244,17 @@ impl Reporter {
         let state = Arc::new(Mutex::new(StepState::default()));
         let started = Instant::now();
 
-        match &self.ui {
+        match self.ui.as_ref().filter(|_| self.drawing()) {
             Some(ui) => {
-                let mut cursor = ui.cursor.lock().unwrap();
-                cursor.insert(Row {
+                let retired = ui.cursor.lock().unwrap().insert(Row {
                     id,
                     label: Arc::clone(&label),
                     started,
                     state: Arc::clone(&state),
                     log: log.as_ref().map(|log| log.path().to_path_buf()),
+                    ended: None,
                 });
+                ui.leave(retired);
             }
             None => self.print(Line::from(vec![
                 span("  ▶ ", Style::new().cyan()),
@@ -285,16 +306,19 @@ impl Reporter {
         self.running.fetch_sub(1, Ordering::Relaxed);
         self.finished.fetch_add(1, Ordering::Relaxed);
 
+        // The step's line for the record, which is also its row in the list
+        // once it has stopped. Built without the record's indent, so that the
+        // cursor can go where the indent goes.
         let elapsed = fmt_duration(handle.started.elapsed());
         let padded = self.pad(&handle.label);
-        let line = match outcome {
+        let record = match outcome {
             Outcome::Completed => Line::from(vec![
-                span("  ✔ ", Style::new().green()),
+                span("✔ ", Style::new().green()),
                 span(padded, Style::new().bold()),
                 span(format!("  {elapsed}"), Style::new().dim()),
             ]),
             Outcome::Skipped => Line::from(vec![
-                span("  ⏭ ", Style::new().yellow()),
+                span("⏭ ", Style::new().yellow()),
                 span(padded, Style::new().dim()),
                 span("  ", Style::new()),
                 span(
@@ -305,7 +329,7 @@ impl Reporter {
             Outcome::Failed => {
                 self.failed.fetch_add(1, Ordering::Relaxed);
                 let mut spans = vec![
-                    span("  ✖ ", Style::new().red()),
+                    span("✖ ", Style::new().red()),
                     span(padded, Style::new().red().bold()),
                     span(format!("  {elapsed}"), Style::new().dim()),
                 ];
@@ -325,17 +349,38 @@ impl Reporter {
             }
         };
 
-        if let Some(ui) = &self.ui {
-            let mut cursor = ui.cursor.lock().unwrap();
-            cursor.remove(handle.id);
+        match self.ui.as_ref().filter(|_| self.drawing()) {
+            Some(ui) => {
+                // A failure goes into the record at once: it is the one line
+                // nobody should have to wait for. Everything else reaches the
+                // record when its row retires from the list, so that nothing is
+                // on screen twice.
+                if outcome == Outcome::Failed {
+                    self.print(indent(record.clone()));
+                }
+                let retired = ui
+                    .cursor
+                    .lock()
+                    .unwrap()
+                    .end(handle.id, Ended { outcome, record });
+                ui.leave(retired);
+            }
+            None => self.print(indent(record)),
         }
-        self.print(line);
     }
 
     /// Leave a line in the terminal above the live display.
     pub(crate) fn print(&self, line: Line<'static>) {
         match self.ui.as_ref().filter(|_| self.drawing()) {
-            Some(ui) => ui.scrollback.lock().unwrap().push(line),
+            Some(ui) => {
+                // Steps that finished before this are still in the list; they
+                // go into the record ahead of it, so the record reads in the
+                // order things happened.
+                let held = ui.cursor.lock().unwrap().flush();
+                let mut scrollback = ui.scrollback.lock().unwrap();
+                scrollback.extend(held);
+                scrollback.push(line);
+            }
             // Nothing is drawing, so the line is just output. Written rather
             // than printed because `eprintln!` panics if the write fails, and
             // this runs on a worker: a run piped into something that stops
@@ -352,7 +397,7 @@ impl Reporter {
             // the threads, and a key being handled wants this same lock.
             let tui = ui.tui.lock().unwrap().take();
             if let Some(tui) = tui {
-                tui.stop(self.scrollback());
+                tui.stop(self.remaining());
             }
         }
 
@@ -403,8 +448,8 @@ impl Reporter {
         format!("{label:<width$}")
     }
 
-    /// The bar and counts under the running steps.
-    fn summary(&self, hidden: usize) -> Line<'static> {
+    /// The bar and counts under the steps.
+    fn summary(&self) -> Line<'static> {
         let counts = self.counts();
         let (done, todo) = bar_parts(counts.finished, self.total, SUMMARY_BAR_WIDTH);
         let mut spans = vec![
@@ -426,9 +471,6 @@ impl Reporter {
         let running = self.running.load(Ordering::Relaxed);
         if running > 0 {
             spans.push(span(format!(" · {running} running"), Style::new().dim()));
-        }
-        if hidden > 0 {
-            spans.push(span(format!(" · {hidden} not shown"), Style::new().dim()));
         }
         if counts.blocked > 0 {
             spans.push(span(
@@ -537,19 +579,19 @@ impl Paint for Reporter {
         // Every running step is handed over, however many there are: keeping
         // the selected one on screen is the list's job, and it does that by
         // scrolling as little as it has to.
+        let selected = cursor.position();
         let steps: Vec<Line<'static>> = cursor
             .rows
             .iter()
-            .map(|row| row.line(cursor.is_selected(row), self.label_width, spinner))
+            .enumerate()
+            .map(|(index, row)| row.line(Some(index) == selected, self.label_width, spinner))
             .collect();
-        let selected = cursor.position();
         drop(cursor);
 
-        let hidden = steps.len().saturating_sub(ui.visible);
         Screen {
             steps,
             selected,
-            footer: vec![self.summary(hidden), ui.hint()],
+            footer: vec![self.summary(), ui.hint()],
         }
     }
 
@@ -558,6 +600,17 @@ impl Paint for Reporter {
             Some(ui) => std::mem::take(&mut *ui.scrollback.lock().unwrap()),
             None => Vec::new(),
         }
+    }
+
+    fn remaining(&self) -> Vec<Line<'static>> {
+        let Some(ui) = &self.ui else {
+            return Vec::new();
+        };
+        // Everything still in the list that belongs in the record goes there
+        // now, in order, ahead of whatever else was waiting.
+        let drained = ui.cursor.lock().unwrap().drain();
+        ui.leave(drained);
+        self.scrollback()
     }
 
     fn key(&self, key: Key) {
@@ -570,6 +623,13 @@ impl Paint for Reporter {
 }
 
 impl Ui {
+    /// Leave lines in the scrollback, above the live area.
+    fn leave(&self, lines: Vec<Line<'static>>) {
+        if !lines.is_empty() {
+            self.scrollback.lock().unwrap().extend(lines);
+        }
+    }
+
     /// The bottom line: what was just done, or what the keys do.
     fn hint(&self) -> Line<'static> {
         let mut flash = self.flash.lock().unwrap();
@@ -583,18 +643,45 @@ impl Ui {
     }
 }
 
-/// Which running step the display's cursor is on.
+/// Which step the display's cursor is on.
 ///
-/// The rows are in the order they are drawn, newest first: a step's line is put
-/// at the top when it starts, so every other row moves down under the cursor.
-/// That is why the selection is kept as a step and not as a position.
-#[derive(Default)]
+/// The rows are the steps that are running, and behind them the steps that
+/// finished most recently: the log worth reading is usually one belonging to a
+/// step that has already stopped, and a failed step that vanished the moment
+/// it failed would take its log with it. They are in the order the steps
+/// started, oldest first, which is the order the record above the display is
+/// in as well.
+///
+/// # The cursor stays put
+///
+/// Steps starting never move it. Only the step it is on finishing does, and
+/// then only if that step was running: it goes to the newest step still
+/// running, so that someone watching the run keeps watching the run. Put on a
+/// step that has already finished, it stays there until it is moved.
+///
+/// # Nothing is on screen twice
+///
+/// A finished step is either in the list or in the record above it, never
+/// both. It stays in the list until enough newer steps have come along to push
+/// it out, or until something else needs to go into the record after it, and
+/// moves up into the scrollback then — so the record still grows as the run
+/// goes, and still reads in the order things happened. Failures are the
+/// exception both ways: they go into the record at once, because that line
+/// should not wait, and they never retire from the list, because reaching them
+/// is what the list is for.
 struct Cursor {
     rows: Vec<Row>,
-    selected: Option<usize>,
+    /// The step the cursor is on.
+    ///
+    /// `None` only while there is nothing running for it to be on: before the
+    /// first step starts, and after the step it was on finished with nothing
+    /// else going. The next step to start takes it.
+    on: Option<usize>,
+    /// How many rows the list keeps before finished steps start to retire.
+    keep: usize,
 }
 
-/// A running step, as the display sees it.
+/// A step that has run, as the display sees it.
 struct Row {
     id: usize,
     label: Arc<str>,
@@ -602,76 +689,177 @@ struct Row {
     state: Arc<Mutex<StepState>>,
     /// The step's own log file, if it has one.
     log: Option<PathBuf>,
+    /// How it ended, once it has. `None` while it is still running.
+    ended: Option<Ended>,
+}
+
+/// How a step that has stopped ended.
+struct Ended {
+    outcome: Outcome,
+    /// Its line for the record, which is also its row in the list.
+    record: Line<'static>,
 }
 
 impl Cursor {
-    /// Take on a step that has just started, at the top.
-    fn insert(&mut self, row: Row) {
-        // With nothing running the cursor had nowhere to be, so it lands on
-        // whatever starts first; after that it only moves when it is moved.
-        if self.selected.is_none() {
-            self.selected = Some(row.id);
-        }
-        self.rows.insert(0, row);
-    }
-
-    /// Drop a step that has finished, keeping the cursor on screen.
-    fn remove(&mut self, id: usize) {
-        let Some(position) = self.rows.iter().position(|row| row.id == id) else {
-            return;
-        };
-        self.rows.remove(position);
-        if self.selected == Some(id) {
-            // Stay where it was: the row that moved up into this slot, or the
-            // last row when it was the bottom one that finished.
-            self.selected = self
-                .rows
-                .get(position)
-                .or_else(|| self.rows.last())
-                .map(|row| row.id);
+    fn new(keep: usize) -> Self {
+        Self {
+            rows: Vec::new(),
+            on: None,
+            keep,
         }
     }
 
-    /// Move the cursor `delta` rows down the screen, stopping at the ends.
+    /// Take on a step that has just started, at the end, handing back the lines
+    /// of any steps that retire to make room.
     ///
-    /// Deliberately not wrapping: rows appear and disappear under the cursor on
-    /// their own as steps start and finish, and a cursor that also jumped from
-    /// one end of the list to the other would be one more thing moving.
+    /// A step starting never moves the cursor off a step — only off nothing,
+    /// when it has been waiting for something to run.
+    fn insert(&mut self, row: Row) -> Vec<Line<'static>> {
+        if self.on.is_none() {
+            self.on = Some(row.id);
+        }
+        self.rows.push(row);
+        self.retire()
+    }
+
+    /// Record how a step ended, handing back the lines of any steps that retire
+    /// as a result. Its row stays, so its log can still be reached.
+    ///
+    /// This is the one thing that moves the cursor on its own: the step it was
+    /// on has stopped, so it goes to what is running now — the newest such step
+    /// — rather than being left on what the step turned into. That row is still
+    /// there, a key or two up. With nothing running it waits for the next step
+    /// to start.
+    fn end(&mut self, id: usize, ended: Ended) -> Vec<Line<'static>> {
+        if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
+            row.ended = Some(ended);
+        }
+        if self.on == Some(id) {
+            self.on = self.newest_running().map(|index| self.rows[index].id);
+        }
+        self.retire()
+    }
+
+    /// Move finished steps out of the list, oldest first, while it is fuller
+    /// than it keeps, and hand back their lines for the record.
+    fn retire(&mut self) -> Vec<Line<'static>> {
+        let mut retired = Vec::new();
+        while self.rows.len() > self.keep {
+            let Some(index) = self.rows.iter().position(|row| self.retires(row)) else {
+                break;
+            };
+            retired.push(indent(self.rows.remove(index).record()));
+        }
+        retired
+    }
+
+    /// Move every finished step that can go into the record now, whatever the
+    /// list's size, so that something else can go in after them in order.
+    fn flush(&mut self) -> Vec<Line<'static>> {
+        let mut flushed = Vec::new();
+        let mut index = 0;
+        while index < self.rows.len() {
+            if self.retires(&self.rows[index]) {
+                flushed.push(indent(self.rows.remove(index).record()));
+            } else {
+                index += 1;
+            }
+        }
+        flushed
+    }
+
+    /// Whether a row is done with: finished, not a failure, and not what the
+    /// cursor is on.
+    fn retires(&self, row: &Row) -> bool {
+        let finished = row
+            .ended
+            .as_ref()
+            .is_some_and(|ended| ended.outcome != Outcome::Failed);
+        finished && self.on != Some(row.id)
+    }
+
+    /// Everything in the list that still belongs in the record, in order, for
+    /// when the run is over.
+    fn drain(&mut self) -> Vec<Line<'static>> {
+        let mut rows = std::mem::take(&mut self.rows);
+        rows.retain(|row| {
+            row.ended
+                .as_ref()
+                .is_some_and(|ended| ended.outcome != Outcome::Failed)
+        });
+        rows.into_iter().map(|row| indent(row.record())).collect()
+    }
+
+    /// Move the cursor `delta` rows down the list, stopping at the ends.
+    ///
+    /// Deliberately not wrapping: the list is history as well as what is
+    /// running, and a cursor that jumped from one end to the other would lose
+    /// someone's place in it.
     fn step(&mut self, delta: isize) {
         let Some(position) = self.position() else {
             return;
         };
-        let moved = (position as isize + delta).clamp(0, self.rows.len() as isize - 1);
-        self.selected = self.rows.get(moved as usize).map(|row| row.id);
+        let moved = (position as isize + delta).clamp(0, self.rows.len() as isize - 1) as usize;
+        self.on = Some(self.rows[moved].id);
     }
 
+    /// Where the cursor is in the list.
+    ///
+    /// While it waits for something to run it rests on the last step, so that
+    /// there is still something to move from.
     fn position(&self) -> Option<usize> {
-        let selected = self.selected?;
-        self.rows.iter().position(|row| row.id == selected)
+        match self.on {
+            Some(id) => self.rows.iter().position(|row| row.id == id),
+            None => self.rows.len().checked_sub(1),
+        }
+    }
+
+    fn newest_running(&self) -> Option<usize> {
+        self.rows.iter().rposition(|row| row.ended.is_none())
     }
 
     fn selected(&self) -> Option<&Row> {
         self.position().map(|position| &self.rows[position])
-    }
-
-    fn is_selected(&self, row: &Row) -> bool {
-        self.selected == Some(row.id)
     }
 }
 
 impl Row {
     /// This step's line in the live area.
     fn line(&self, selected: bool, width: usize, spinner: &str) -> Line<'static> {
+        let cursor = span(
+            if selected { "❯ " } else { "  " },
+            Style::new().cyan().bold(),
+        );
+        match &self.ended {
+            // The very line the record will get, so the two can never say
+            // different things. Dimmed while it is history in the list — except
+            // a failure, which is what the list is for reaching.
+            Some(ended) => {
+                let mut spans = vec![cursor];
+                spans.extend(ended.record.spans.iter().cloned());
+                let line = Line::from(spans);
+                match ended.outcome {
+                    Outcome::Failed => line,
+                    _ => line.dim(),
+                }
+            }
+            None => {
+                let label = format!("{:<width$}", truncate(&self.label, MAX_LABEL_WIDTH));
+                self.running_line(cursor, label, spinner)
+            }
+        }
+    }
+
+    /// The step's line for the record. Only a finished step has one.
+    fn record(self) -> Line<'static> {
+        self.ended.map(|ended| ended.record).unwrap_or_default()
+    }
+
+    fn running_line(&self, cursor: Span<'static>, label: String, spinner: &str) -> Line<'static> {
         let mut spans = vec![
-            span(
-                if selected { "❯ " } else { "  " },
-                Style::new().cyan().bold(),
-            ),
+            cursor,
             span(format!("{spinner} "), Style::new().cyan()),
-            span(
-                format!("{:<width$}", truncate(&self.label, MAX_LABEL_WIDTH)),
-                Style::new().bold(),
-            ),
+            span(label, Style::new().bold()),
             span(
                 format!(" {:>5}  ", fmt_duration(self.started.elapsed())),
                 Style::new().dim(),
@@ -1193,6 +1381,13 @@ fn write_line(line: &str) {
     let _ = writeln!(stderr, "{line}");
 }
 
+/// A line as it goes into the record: indented to where the cursor would be.
+fn indent(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![span("  ", Style::new())];
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
 /// One piece of a line, in the display's own styling.
 fn span(text: impl Into<String>, style: Style) -> Span<'static> {
     Span::styled(text.into(), style)
@@ -1504,13 +1699,10 @@ mod tests {
         reporter.running.store(2, Ordering::Relaxed);
         reporter.failed.store(1, Ordering::Relaxed);
 
-        let summary = plain(&reporter.summary(0));
+        let summary = plain(&reporter.summary());
         assert!(summary.contains("3/7 steps"), "{summary}");
         assert!(summary.contains("2 running"), "{summary}");
         assert!(summary.contains("1 failed"), "{summary}");
-
-        // Steps that did not fit in the live area are counted, not forgotten.
-        assert!(plain(&reporter.summary(4)).contains("4 not shown"));
     }
 
     // -- the cursor ---------------------------------------------------------
@@ -1522,116 +1714,255 @@ mod tests {
             started: Instant::now(),
             state: Arc::new(Mutex::new(StepState::default())),
             log: None,
+            ended: None,
         }
     }
 
-    /// The rows in the order they are drawn, newest first.
-    fn running(cursor: &Cursor) -> Vec<usize> {
+    /// The steps in the order they are drawn, oldest first.
+    fn listed(cursor: &Cursor) -> Vec<usize> {
         cursor.rows.iter().map(|row| row.id).collect()
     }
 
+    /// A cursor over `count` running steps, with room for plenty more.
     fn filled(count: usize) -> Cursor {
-        let mut cursor = Cursor::default();
+        let mut cursor = Cursor::new(100);
         for id in 1..=count {
             cursor.insert(row(id));
         }
         cursor
     }
 
-    #[test]
-    fn the_cursor_lands_on_the_first_step_and_then_stays_put() {
-        let mut cursor = Cursor::default();
-        assert_eq!(cursor.selected, None);
-
-        cursor.insert(row(1));
-        assert_eq!(cursor.selected, Some(1));
-
-        // A step starting goes above it and does not take the cursor with it.
-        cursor.insert(row(2));
-        cursor.insert(row(3));
-        assert_eq!(running(&cursor), [3, 2, 1]);
-        assert_eq!(cursor.selected, Some(1));
+    /// End step `id`, handing back what retired as plain text.
+    fn end(cursor: &mut Cursor, id: usize, outcome: Outcome) -> Vec<String> {
+        let glyph = match outcome {
+            Outcome::Completed => "✔",
+            Outcome::Skipped => "⏭",
+            Outcome::Failed => "✖",
+        };
+        let record = Line::from(format!("{glyph} step {id}"));
+        cursor
+            .end(id, Ended { outcome, record })
+            .iter()
+            .map(plain)
+            .collect()
     }
 
     #[test]
-    fn the_cursor_moves_down_the_screen_and_stops_at_the_ends() {
+    fn steps_starting_never_move_the_cursor() {
         let mut cursor = filled(3);
-        // Drawn 3, 2, 1 from the top, and the cursor starts on the first step
-        // to have started, which is at the bottom.
-        assert_eq!(cursor.position(), Some(2));
+        assert_eq!(listed(&cursor), [1, 2, 3]);
+        // On the first step to start, and still there however many follow.
+        assert_eq!(cursor.on, Some(1));
+        cursor.insert(row(4));
+        assert_eq!(cursor.on, Some(1));
 
+        // Moved onto the newest running step, it stays on that one too.
+        cursor.step(3);
+        assert_eq!(cursor.on, Some(4));
+        cursor.insert(row(5));
+        assert_eq!(cursor.on, Some(4));
+        assert_eq!(cursor.position(), Some(3));
+    }
+
+    #[test]
+    fn the_step_under_the_cursor_finishing_moves_it_to_what_is_running() {
+        let mut cursor = filled(3);
+        assert_eq!(cursor.on, Some(1));
+
+        // To the newest step still running, not the next one along.
+        end(&mut cursor, 1, Outcome::Completed);
+        assert_eq!(cursor.on, Some(3));
+
+        // A step finishing elsewhere is none of its business.
+        end(&mut cursor, 2, Outcome::Completed);
+        assert_eq!(cursor.on, Some(3));
+    }
+
+    #[test]
+    fn with_nothing_running_the_cursor_waits_for_the_next_step() {
+        // One step at a time — how a flow with one licence runs — must not
+        // leave the cursor stranded on every step as it finishes.
+        let mut cursor = filled(1);
+        end(&mut cursor, 1, Outcome::Completed);
+        assert_eq!(cursor.on, None);
+        // Resting on the last step meanwhile, so there is something to see and
+        // to move from.
+        assert_eq!(cursor.position(), Some(0));
+
+        cursor.insert(row(2));
+        assert_eq!(cursor.on, Some(2));
+    }
+
+    #[test]
+    fn put_on_a_finished_step_the_cursor_stays_there() {
+        // The whole point: a step's log outlives the step, and a failed one is
+        // the log most worth reading.
+        let mut cursor = filled(3);
+        end(&mut cursor, 2, Outcome::Failed);
+        cursor.step(1);
+        assert_eq!(cursor.on, Some(2));
+
+        // Nothing that happens to the run moves it.
+        cursor.insert(row(4));
+        end(&mut cursor, 1, Outcome::Completed);
+        end(&mut cursor, 3, Outcome::Completed);
+        end(&mut cursor, 4, Outcome::Completed);
+        assert_eq!(cursor.on, Some(2));
+        assert_eq!(&*cursor.selected().unwrap().label, "step 2");
+    }
+
+    #[test]
+    fn put_on_another_running_step_the_cursor_stays_until_that_step_ends() {
+        let mut cursor = filled(3);
+        cursor.step(1);
+        assert_eq!(cursor.on, Some(2));
+
+        // Something newer starting does not pull it away from a step that is
+        // still going.
+        cursor.insert(row(4));
+        assert_eq!(cursor.on, Some(2));
+
+        // That step ending does: on to the newest step still running, rather
+        // than being left behind on what the step turned into.
+        end(&mut cursor, 2, Outcome::Failed);
+        assert_eq!(cursor.on, Some(4));
+    }
+
+    #[test]
+    fn the_cursor_moves_down_the_list_and_stops_at_the_ends() {
+        let mut cursor = filled(3);
+        assert_eq!(cursor.position(), Some(0));
+
+        // The top of the list.
         cursor.step(-1);
-        assert_eq!(cursor.selected, Some(2));
-        cursor.step(-1);
-        assert_eq!(cursor.selected, Some(3));
-        // The top row.
-        cursor.step(-1);
-        assert_eq!(cursor.selected, Some(3));
+        assert_eq!(cursor.position(), Some(0));
 
         cursor.step(1);
-        assert_eq!(cursor.selected, Some(2));
+        assert_eq!(cursor.position(), Some(1));
+        cursor.step(1);
+        assert_eq!(cursor.position(), Some(2));
         // Several rows at once, clamped at the bottom.
         cursor.step(5);
-        assert_eq!(cursor.selected, Some(1));
-    }
-
-    #[test]
-    fn a_step_finishing_under_the_cursor_leaves_it_where_it_was() {
-        let mut cursor = filled(3);
-
-        // The middle row finishes while the cursor is on it: the row that moves
-        // up into that slot takes the cursor.
-        cursor.selected = Some(2);
-        cursor.remove(2);
-        assert_eq!(running(&cursor), [3, 1]);
-        assert_eq!(cursor.selected, Some(1));
-
-        // The bottom row goes, and there is nothing below to move up.
-        cursor.remove(1);
-        assert_eq!(cursor.selected, Some(3));
-
-        // Nothing left is running, so there is nothing to select.
-        cursor.remove(3);
-        assert_eq!(cursor.selected, None);
-
-        // And the next step to start takes the cursor again.
-        cursor.insert(row(4));
-        assert_eq!(cursor.selected, Some(4));
-    }
-
-    #[test]
-    fn a_step_finishing_elsewhere_does_not_move_the_cursor() {
-        let mut cursor = filled(3);
-        cursor.selected = Some(1);
-
-        cursor.remove(3);
-        assert_eq!(running(&cursor), [2, 1]);
-        assert_eq!(cursor.selected, Some(1));
-    }
-
-    #[test]
-    fn the_cursor_is_handed_to_the_list_as_a_position() {
-        // With more steps running than rows for them, keeping the selected one
-        // on screen is the list's job. What is decided here is which step that
-        // is, and where in the list it sits.
-        let mut cursor = filled(6);
-        assert_eq!(cursor.position(), Some(5));
-
-        cursor.step(-1);
-        assert_eq!(cursor.position(), Some(4));
-        cursor.step(-4);
-        assert_eq!(cursor.position(), Some(0));
-        // The top of the list, however far up it is asked to go.
-        cursor.step(-1);
-        assert_eq!(cursor.position(), Some(0));
-
-        // A step finishing above the cursor moves it up the list without
-        // changing which step it is on.
-        cursor.step(3);
-        assert_eq!(cursor.selected, Some(3));
-        cursor.remove(6);
-        assert_eq!(cursor.selected, Some(3));
         assert_eq!(cursor.position(), Some(2));
+        cursor.step(-1);
+        assert_eq!(cursor.position(), Some(1));
+    }
+
+    // -- retiring to the record ---------------------------------------------
+
+    #[test]
+    fn finished_steps_retire_oldest_first_once_the_list_is_full() {
+        let mut cursor = Cursor::new(3);
+        for id in 1..=3 {
+            assert!(cursor.insert(row(id)).is_empty());
+        }
+        // Full, but nothing has finished, so nothing can go.
+        assert!(cursor.insert(row(4)).is_empty());
+        assert_eq!(listed(&cursor), [1, 2, 3, 4]);
+
+        // The first to finish is the first to go, with its line for the record.
+        assert_eq!(end(&mut cursor, 2, Outcome::Completed), ["  ✔ step 2"]);
+        assert_eq!(listed(&cursor), [1, 3, 4]);
+
+        // Under the limit again, so the next to finish stays as history…
+        assert!(end(&mut cursor, 1, Outcome::Completed).is_empty());
+        assert_eq!(listed(&cursor), [1, 3, 4]);
+        // …until something new pushes it out.
+        assert_eq!(
+            cursor.insert(row(5)).iter().map(plain).collect::<Vec<_>>(),
+            ["  ✔ step 1"]
+        );
+        assert_eq!(listed(&cursor), [3, 4, 5]);
+    }
+
+    #[test]
+    fn running_steps_failures_and_the_step_under_the_cursor_never_retire() {
+        let mut cursor = Cursor::new(5);
+        for id in 1..=3 {
+            cursor.insert(row(id));
+        }
+        // A failure stays however full the list gets: reaching it is what the
+        // list is for.
+        assert!(end(&mut cursor, 1, Outcome::Failed).is_empty());
+        assert!(cursor.insert(row(4)).is_empty());
+
+        // A step finishes while there is room, and the cursor is put on it.
+        // (The cursor left step 1 when it failed, for step 3, the newest
+        // running; step 2 is one up from there.)
+        assert!(end(&mut cursor, 2, Outcome::Completed).is_empty());
+        assert_eq!(cursor.on, Some(3));
+        cursor.step(-1);
+        assert_eq!(cursor.on, Some(2));
+
+        // The list overflows, but only running steps, a failure and the step
+        // under the cursor are left in it: nothing can go.
+        cursor.insert(row(5));
+        assert!(cursor.insert(row(6)).is_empty());
+        assert_eq!(listed(&cursor), [1, 2, 3, 4, 5, 6]);
+
+        // Once the cursor has moved on, the step it was on can go — and the
+        // failure still cannot.
+        cursor.step(4);
+        assert_eq!(cursor.on, Some(6));
+        let retired: Vec<String> = cursor.insert(row(7)).iter().map(plain).collect();
+        assert_eq!(retired, ["  ✔ step 2"]);
+        assert_eq!(listed(&cursor), [1, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn anything_else_entering_the_record_lets_finished_steps_in_ahead_of_it() {
+        // The record must read in the order things happened, so a note or a
+        // failure arriving flushes the steps that finished before it — but not
+        // a failure, which is already there, nor the step under the cursor.
+        let mut cursor = Cursor::new(10);
+        for id in 1..=5 {
+            cursor.insert(row(id));
+        }
+        end(&mut cursor, 1, Outcome::Completed);
+        end(&mut cursor, 2, Outcome::Failed);
+        end(&mut cursor, 3, Outcome::Completed);
+        end(&mut cursor, 4, Outcome::Completed);
+        cursor.step(-1);
+        assert_eq!(cursor.on, Some(4));
+
+        let flushed: Vec<String> = cursor.flush().iter().map(plain).collect();
+        assert_eq!(flushed, ["  ✔ step 1", "  ✔ step 3"]);
+        assert_eq!(listed(&cursor), [2, 4, 5]);
+    }
+
+    #[test]
+    fn what_is_left_in_the_list_at_the_end_goes_to_the_record_in_order() {
+        let mut cursor = Cursor::new(10);
+        for id in 1..=4 {
+            cursor.insert(row(id));
+        }
+        end(&mut cursor, 3, Outcome::Completed);
+        end(&mut cursor, 1, Outcome::Failed);
+        end(&mut cursor, 2, Outcome::Completed);
+
+        // In list order, not the order they finished, and without the failure,
+        // which went into the record when it happened. Step 4 is still running
+        // and has no line yet.
+        let drained: Vec<String> = cursor.drain().iter().map(plain).collect();
+        assert_eq!(drained, ["  ✔ step 2", "  ✔ step 3"]);
+        assert!(cursor.rows.is_empty());
+    }
+
+    #[test]
+    fn a_finished_step_is_drawn_as_its_line_for_the_record() {
+        let mut row = row(1);
+        row.ended = Some(Ended {
+            outcome: Outcome::Failed,
+            record: Line::from("✖ step 1   1m14s  during compare (2/2)"),
+        });
+        assert_eq!(
+            plain(&row.line(true, 8, "⠹")),
+            "❯ ✖ step 1   1m14s  during compare (2/2)"
+        );
+        assert_eq!(
+            plain(&row.line(false, 8, "⠹")),
+            "  ✖ step 1   1m14s  during compare (2/2)"
+        );
     }
 
     // -- what enter copies --------------------------------------------------

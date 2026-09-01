@@ -11,7 +11,9 @@ pub mod executor;
 pub mod progress;
 pub mod rust;
 
-pub use executor::{execute, ExecuteConfig, ExecuteError, Executor, StepFailure, Summary};
+pub use executor::{
+    execute, BlockedStep, ExecuteConfig, ExecuteError, Executor, StepFailure, Summary,
+};
 
 #[derive(Debug)]
 pub struct Dag<F> {

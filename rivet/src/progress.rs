@@ -3,8 +3,9 @@
 //! While a flow is running, every step that is currently executing gets a line
 //! with a spinner, its elapsed time, and where the step says it has got to.
 //! Finished steps scroll off into normal terminal output as `✔` (executed),
-//! `⏭` (skipped because it was pinned) or `✖` (failed), and a summary bar at
-//! the bottom tracks overall progress.
+//! `⏭` (skipped because it was pinned), `⊘` (never runnable, because something
+//! it depended on failed) or `✖` (failed), and a summary bar at the bottom
+//! tracks overall progress.
 //!
 //! When stderr is not a terminal (CI, redirected logs) the display degrades to
 //! plain, one-line-per-event logging instead of drawing escape sequences.
@@ -34,7 +35,7 @@
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -55,14 +56,35 @@ pub enum Outcome {
     Failed,
 }
 
+/// How many steps ended each way.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Counts {
+    /// Steps that will not be started again, whatever the reason.
+    pub finished: usize,
+    /// Steps skipped because they were pinned.
+    pub skipped: usize,
+    /// Steps that never became runnable because a step upstream of them failed.
+    pub blocked: usize,
+    /// Steps that failed.
+    pub failed: usize,
+}
+
+impl Counts {
+    /// Steps that actually ran and succeeded.
+    pub fn executed(&self) -> usize {
+        self.finished
+            .saturating_sub(self.skipped + self.blocked + self.failed)
+    }
+}
+
 /// Renders the state of a run to the terminal.
 pub(crate) struct Reporter {
     label_width: usize,
     finished: AtomicUsize,
     running: AtomicUsize,
     skipped: AtomicUsize,
+    blocked: AtomicUsize,
     failed: AtomicUsize,
-    aborting: AtomicBool,
     ui: Option<Ui>,
 }
 
@@ -95,8 +117,8 @@ impl Reporter {
             finished: AtomicUsize::new(0),
             running: AtomicUsize::new(0),
             skipped: AtomicUsize::new(0),
+            blocked: AtomicUsize::new(0),
             failed: AtomicUsize::new(0),
-            aborting: AtomicBool::new(false),
             ui,
         });
         reporter.refresh();
@@ -139,6 +161,24 @@ impl Reporter {
             "⏭".yellow(),
             self.pad(label).dimmed(),
             reason.yellow()
+        ));
+        self.refresh();
+    }
+
+    /// Record a step that can never run because something it depends on
+    /// failed.
+    ///
+    /// A failure does not stop the rest of the run — independent steps keep
+    /// going and new ones still start — so the steps downstream of it are
+    /// named as they are dropped, rather than being left to look forgotten.
+    pub(crate) fn block(&self, label: &str, blame: &str) {
+        self.blocked.fetch_add(1, Ordering::Relaxed);
+        self.finished.fetch_add(1, Ordering::Relaxed);
+        self.print_above(&format!(
+            "  {} {}  {}",
+            "⊘".yellow(),
+            self.pad(label).dimmed(),
+            format!("blocked by {blame}").yellow()
         ));
         self.refresh();
     }
@@ -189,25 +229,6 @@ impl Reporter {
         self.refresh();
     }
 
-    /// Announce that the run is winding down after a failure.
-    ///
-    /// A failure stops the executor scheduling anything new, but steps already
-    /// running are allowed to finish. Without saying so, the display looks like
-    /// it reported an error and then carried on regardless.
-    pub(crate) fn aborting(&self, in_flight: usize) {
-        self.aborting.store(true, Ordering::Relaxed);
-        let mut notice = String::from("aborting: no further steps will start");
-        match in_flight {
-            0 => {}
-            1 => notice.push_str("; waiting for 1 step still running"),
-            n => {
-                let _ = write!(notice, "; waiting for {n} steps still running");
-            }
-        }
-        self.print_above(&format!("  {} {}", "⚠".yellow(), notice.yellow()));
-        self.refresh();
-    }
-
     /// Print a line above the live display without disturbing it.
     pub(crate) fn print_above(&self, line: &str) {
         match &self.ui {
@@ -224,40 +245,47 @@ impl Reporter {
             ui.overall.finish_and_clear();
         }
 
-        let (finished, skipped, failed) = self.counts();
-        let executed = finished.saturating_sub(skipped + failed);
+        let counts = self.counts();
         let mut line = format!(
             "  {} {} executed",
-            if failed == 0 {
+            if counts.failed == 0 {
                 "✔".green()
             } else {
                 "✖".red()
             },
-            executed
+            counts.executed()
         );
-        if skipped > 0 {
-            let _ = write!(line, " · {skipped} skipped");
+        if counts.skipped > 0 {
+            let _ = write!(line, " · {} skipped", counts.skipped);
         }
-        if failed > 0 {
-            let _ = write!(line, " · {}", format!("{failed} failed").red());
+        if counts.blocked > 0 {
+            let _ = write!(
+                line,
+                " · {}",
+                format!("{} blocked", counts.blocked).yellow()
+            );
+        }
+        if counts.failed > 0 {
+            let _ = write!(line, " · {}", format!("{} failed", counts.failed).red());
         }
         let _ = write!(line, " · {}", fmt_duration(elapsed).dimmed());
         self.print_above(&line);
     }
 
-    /// `(finished, skipped, failed)` step counts.
-    pub(crate) fn counts(&self) -> (usize, usize, usize) {
-        (
-            self.finished.load(Ordering::Relaxed),
-            self.skipped.load(Ordering::Relaxed),
-            self.failed.load(Ordering::Relaxed),
-        )
+    /// How the run has gone so far.
+    pub(crate) fn counts(&self) -> Counts {
+        Counts {
+            finished: self.finished.load(Ordering::Relaxed),
+            skipped: self.skipped.load(Ordering::Relaxed),
+            blocked: self.blocked.load(Ordering::Relaxed),
+            failed: self.failed.load(Ordering::Relaxed),
+        }
     }
 
     fn refresh(&self) {
         let Some(ui) = &self.ui else { return };
-        let (finished, _, failed) = self.counts();
-        ui.overall.set_position(finished as u64);
+        let counts = self.counts();
+        ui.overall.set_position(counts.finished as u64);
 
         let running = self.running.load(Ordering::Relaxed);
         let mut msg = match running {
@@ -265,17 +293,17 @@ impl Reporter {
             1 => "1 running".to_string(),
             n => format!("{n} running"),
         };
-        if failed > 0 {
+        if counts.blocked > 0 {
             if !msg.is_empty() {
                 msg.push_str(" · ");
             }
-            let _ = write!(msg, "{}", format!("{failed} failed").red());
+            let _ = write!(msg, "{}", format!("{} blocked", counts.blocked).yellow());
         }
-        if self.aborting.load(Ordering::Relaxed) {
+        if counts.failed > 0 {
             if !msg.is_empty() {
                 msg.push_str(" · ");
             }
-            let _ = write!(msg, "{}", "aborting".yellow());
+            let _ = write!(msg, "{}", format!("{} failed", counts.failed).red());
         }
         ui.overall.set_message(msg);
     }

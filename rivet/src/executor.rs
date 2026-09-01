@@ -486,7 +486,7 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
     // Before the reporter, so `rivet.log` opens with the run it describes.
     let _run_log = log::start_run(&config.log_dir, config.logging);
 
-    let reporter = Reporter::new(total, label_width, config.progress);
+    let reporter = Reporter::new(total, label_width, config.concurrency, config.progress);
     progress::set_active_reporter(Some(Arc::clone(&reporter)));
 
     let unfinished_deps: Vec<usize> = graph.nodes.iter().map(|node| node.deps.len()).collect();
@@ -645,9 +645,7 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), 
         None
     };
 
-    let handle = reporter
-        .start(&node.label)
-        .with_log(log::open_step_log(log_dir, &node.label));
+    let handle = reporter.start(&node.label, log::open_step_log(log_dir, &node.label));
     // Guards, because there are several ways out of this function: the step
     // stops being the current one, and its events stop being logged as its own,
     // whichever one is taken.

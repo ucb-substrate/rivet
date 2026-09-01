@@ -111,7 +111,14 @@ A dependency cycle is reported as `ExecuteError::Cycle` rather than hanging.
 
 While a flow runs, each executing step gets a line with a spinner, its elapsed
 time, and whatever progress it reports (see below); finished steps scroll off as
-`✔` (executed), `⏭` (pinned), `⊘` (blocked by a failure) or `✖` (failed). Raw tool output is never shown: it
+`✔` (executed), `⏭` (pinned), `⊘` (blocked by a failure) or `✖` (failed), and
+stay in the terminal's scrollback afterwards. The live part is a ratatui inline
+viewport — a fixed block at the bottom of the ordinary terminal, holding four to
+eight step rows depending on how many can run at once, with the summary and the
+hint under them — so nothing takes over the screen and nothing is erased when
+the run ends. It holds every step
+that has run, so it scrolls under the cursor once there are more than fit. Raw
+tool output is never shown: it
 goes to `{step}.out` and `{step}.err` in the step's work directory and stops
 there. Two things reach the display, and nothing else — a step's `status`, set
 from Rust, and the substep banners a tool is told to print. Which stream a tool
@@ -172,6 +179,69 @@ only ever comes from there.
 
 The two never interfere: a banner cannot clear the status, and a status cannot
 clear the banner. Each half is omitted entirely until something fills it.
+
+### Following a step's log
+
+Every step that has run is under a cursor, moved between them with `↑`/`↓` or
+`j`/`k`:
+
+```text
+  ✔ decoder syn    1m14s
+  ✖ decoder lvs    2m01s  compare (2/2)
+  ⠹ decoder drc    1m02s ━━━╸────── 1/3 density
+❯ ⠹ decoder par   12m08s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+  ━━━━━━╸───────────────── 3/7 steps · 12m08s · 2 running · 1 failed
+  ↑/↓ or j/k select a step · enter copies a command to follow its log
+```
+
+The list is the tail of the record: what is running, and behind it the steps
+that finished most recently, dimmed. Those stay reachable because the log worth
+reading is usually one belonging to a step that has already stopped — a step
+that failed most of all, which keeps the substep it died in beside it and never
+leaves the list. Other finished steps move up into the scrollback as newer ones
+push them out, so nothing is ever shown twice and the record above still grows
+in the order things happened.
+
+The cursor stays on the step it is on. Steps starting never move it; the one
+thing that does is the step under it finishing, when it goes to the newest step
+still running — so someone watching the run keeps watching the run, and is not
+left on what the step turned into. Put on a step that has already finished, it
+stays there until you move it. With nothing else running when its step finishes,
+it waits and takes the next step to start.
+
+`enter` copies a `tail` command for that step's log to the clipboard, to be
+pasted into another terminal:
+
+```text
+tail -n 100 -F /build/decoder/par/decoder.par.out /build/decoder/par/decoder.par.err
+```
+
+The display says where a step has got to and never what its tool is saying, so
+this is how to go and read that — in another window, without disturbing the run
+or the display. The files are the ones `exec::run_logged` is writing for the
+command the step is running right now; before a step has started a tool, it is
+the step's own `{step}.rivet.log`. A step driving a tool some other way can say
+what to follow with `StepHandle::set_output_files`.
+
+The copy is asked for with OSC 52, which is the terminal's own way of doing it
+and therefore the one that works over ssh: the clipboard that matters is on the
+machine the person is watching from, not the compute server the flow is running
+on. A local `wl-copy`, `xclip`, `xsel` or `pbcopy` is asked as well, if the
+environment suggests one would work.
+
+While the display is up, the terminal hands over keys as they are typed rather
+than collecting whole lines, and stops echoing them. The signal keys are put
+back afterwards, so `^C` and `^Z` mean exactly what they always did — `^C` in
+particular has to keep reaching the tools a step is running, which are in the
+same process group. An interrupt is caught only so that the terminal can be
+handed back before the run ends, and the run exits `130`; a second one gives up
+on being tidy and exits at once.
+
+Both stdout and stderr have to be terminals, though only stderr is ever drawn
+on: placing the live area means asking the terminal where its cursor is, and
+crossterm asks by writing to stdout. Anything else — a run in CI, either stream
+redirected — falls back to plain one-line-per-event logging on stderr.
+
 
 ## Logging
 

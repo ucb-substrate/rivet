@@ -7,11 +7,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub mod bash;
+mod clipboard;
 pub mod exec;
 pub mod executor;
 pub mod log;
 pub mod progress;
 pub mod rust;
+mod tui;
 
 pub use executor::{
     execute, BlockedStep, ExecuteConfig, ExecuteError, Executor, StepFailure, Summary,

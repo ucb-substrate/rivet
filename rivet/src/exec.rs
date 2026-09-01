@@ -60,6 +60,12 @@ pub fn run_logged(
     // The reader threads are not the worker thread, so they cannot look the
     // handle up themselves.
     let handle = progress::current_step();
+    if let Some(handle) = &handle {
+        // Not to show — none of this is shown — but so that someone watching
+        // the run can be handed a command to follow these two files while the
+        // tool is writing them. See `progress::StepHandle::set_output_files`.
+        handle.set_output_files(vec![stdout_log.to_path_buf(), stderr_log.to_path_buf()]);
+    }
     let stdout_handle = handle.clone();
     let stderr_handle = handle.clone();
 

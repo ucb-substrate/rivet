@@ -111,7 +111,11 @@ const DEFAULT_FILTER: &str = "info";
 /// they describe, so there is nothing to roll over, and rotation is the one part
 /// of that crate that reports errors by printing them, which is the single thing
 /// this module must never do.
-pub(crate) struct LogFile(RollingFileAppender);
+pub(crate) struct LogFile {
+    appender: RollingFileAppender,
+    /// Where it was opened, so the display can offer a command to read it.
+    path: PathBuf,
+}
 
 impl LogFile {
     /// Opens `dir/name`, or gives up.
@@ -127,7 +131,15 @@ impl LogFile {
             .filename_prefix(name)
             .build(dir)
             .ok()
-            .map(Self)
+            .map(|appender| Self {
+                appender,
+                path: dir.join(name),
+            })
+    }
+
+    /// The file being written. With [`Rotation::NEVER`] it does not change.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Writes one whole event.
@@ -135,7 +147,7 @@ impl LogFile {
     /// A single `write_all` per event into a file opened for append is what
     /// keeps steps running at the same time from interleaving mid-line.
     fn write(&self, bytes: &[u8]) {
-        let _ = self.0.make_writer().write_all(bytes);
+        let _ = self.appender.make_writer().write_all(bytes);
     }
 }
 

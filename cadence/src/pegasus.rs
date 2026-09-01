@@ -187,4 +187,8 @@ impl Step for PegasusStep {
     fn pinned(&self) -> bool {
         self.pinned
     }
+
+    fn log_dir(&self) -> Option<PathBuf> {
+        Some(self.work_dir.clone())
+    }
 }

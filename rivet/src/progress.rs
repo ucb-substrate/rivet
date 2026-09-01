@@ -31,6 +31,9 @@
 //! So while a flow is running, print with [`note`], run subprocesses through
 //! [`crate::exec`] so their output is captured to file, and wrap anything that
 //! insists on the terminal for itself in [`suspend`].
+//!
+//! Anything worth recording rather than showing goes through `tracing`, which
+//! [`crate::log`] writes to files and never to a stream.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -149,6 +152,7 @@ impl Reporter {
             reporter: Arc::clone(self),
             started: Instant::now(),
             state: Arc::new(Mutex::new(StepState::default())),
+            log: None,
         }
     }
 
@@ -455,6 +459,12 @@ pub struct StepHandle {
     reporter: Arc<Reporter>,
     started: Instant,
     state: Arc<Mutex<StepState>>,
+    /// Where this step's events are logged, if it has a file of its own.
+    ///
+    /// The handle is already the answer to "which step is running here", so it
+    /// carries both of the step's channels: the line on screen and the file on
+    /// disk. See [`crate::log`].
+    log: Option<Arc<crate::log::LogFile>>,
 }
 
 /// What the step's progress line is currently showing.
@@ -470,6 +480,13 @@ struct StepState {
 }
 
 impl StepHandle {
+    /// Give the step a log file of its own, so what it logs is written there as
+    /// well as to the run-wide log.
+    pub(crate) fn with_log(mut self, log: Option<Arc<crate::log::LogFile>>) -> Self {
+        self.log = log;
+        self
+    }
+
     /// The label this step is displayed under.
     pub fn label(&self) -> &str {
         &self.label
@@ -598,8 +615,35 @@ pub fn current_step() -> Option<StepHandle> {
     CURRENT.with(|current| current.borrow().clone())
 }
 
-pub(crate) fn set_current_step(handle: Option<StepHandle>) {
-    CURRENT.with(|current| *current.borrow_mut() = handle);
+/// Make `handle` the step running on this thread until the guard is dropped.
+///
+/// This is the one place the answer lives. The display reads it to know whose
+/// line to draw on, [`crate::exec`] reads it to offer tool output to, and
+/// [`crate::log`] reads it to know which file a log line belongs in.
+pub(crate) fn enter_step(handle: StepHandle) -> CurrentStep {
+    let _ = CURRENT.try_with(|current| *current.borrow_mut() = Some(handle));
+    CurrentStep
+}
+
+pub(crate) struct CurrentStep;
+
+impl Drop for CurrentStep {
+    fn drop(&mut self) {
+        let _ = CURRENT.try_with(|current| *current.borrow_mut() = None);
+    }
+}
+
+/// The log file of the step running on this thread, if it has one.
+pub(crate) fn current_step_log() -> Option<Arc<crate::log::LogFile>> {
+    CURRENT
+        .try_with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .and_then(|handle| handle.log.clone())
+        })
+        .ok()
+        .flatten()
 }
 
 pub(crate) fn set_active_reporter(reporter: Option<Arc<Reporter>>) {
@@ -610,13 +654,19 @@ pub(crate) fn set_active_reporter(reporter: Option<Arc<Reporter>>) {
 ///
 /// Use this instead of `println!` anywhere that might run inside a flow: see
 /// [the module docs](self#nothing-else-may-write-to-the-terminal).
+///
+/// The line is logged as well as shown, so a run's log holds everything the
+/// person watching it was told.
 pub fn note(message: impl AsRef<str>) {
+    let message = message.as_ref();
+    tracing::info!(target: "rivet::note", "{message}");
+
     // Cloned out so the lock is not held while drawing, which would block the
     // end of the run.
     let active = ACTIVE.read().unwrap().clone();
     match active {
-        Some(reporter) => reporter.print_above(message.as_ref()),
-        None => println!("{}", message.as_ref()),
+        Some(reporter) => reporter.print_above(message),
+        None => println!("{message}"),
     }
 }
 

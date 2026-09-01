@@ -241,6 +241,10 @@ impl Step for GenusStep {
     fn pinned(&self) -> bool {
         self.pinned
     }
+
+    fn log_dir(&self) -> Option<PathBuf> {
+        Some(self.work_dir.clone())
+    }
 }
 
 pub fn set_default_options() -> Substep {

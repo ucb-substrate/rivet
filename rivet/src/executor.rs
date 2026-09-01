@@ -21,12 +21,14 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe, PanicHookInfo};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use by_address::ByThinAddress;
 
+use crate::log;
 use crate::progress::{self, Outcome, Reporter};
 use crate::{Step, StepRef};
 
@@ -43,6 +45,8 @@ use crate::{Step, StepRef};
 pub struct ExecuteConfig {
     concurrency: usize,
     progress: bool,
+    logging: bool,
+    log_dir: PathBuf,
 }
 
 impl Default for ExecuteConfig {
@@ -50,6 +54,8 @@ impl Default for ExecuteConfig {
         Self {
             concurrency: default_concurrency(),
             progress: true,
+            logging: true,
+            log_dir: PathBuf::from("."),
         }
     }
 }
@@ -72,6 +78,26 @@ impl ExecuteConfig {
     /// is not a terminal) the run falls back to plain line logging.
     pub fn progress(mut self, progress: bool) -> Self {
         self.progress = progress;
+        self
+    }
+
+    /// Directory the run's log file, [`rivet.log`](crate::log::RUN_LOG), is
+    /// written in. Defaults to the current directory.
+    ///
+    /// This is the whole run in one file. A step that says where it lives
+    /// ([`Step::log_dir`]) also gets its own events next to it; see
+    /// [`crate::log`].
+    pub fn log_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.log_dir = dir.into();
+        self
+    }
+
+    /// Whether to write log files at all. Defaults to on.
+    ///
+    /// Turning it off leaves the `tracing` subscriber installed but gives it
+    /// nowhere to write, so a run leaves nothing on disk.
+    pub fn logging(mut self, logging: bool) -> Self {
+        self.logging = logging;
         self
     }
 
@@ -130,6 +156,18 @@ impl Executor {
     /// See [`ExecuteConfig::progress`].
     pub fn progress(mut self, progress: bool) -> Self {
         self.config = self.config.progress(progress);
+        self
+    }
+
+    /// See [`ExecuteConfig::log_dir`].
+    pub fn log_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.config = self.config.log_dir(dir);
+        self
+    }
+
+    /// See [`ExecuteConfig::logging`].
+    pub fn logging(mut self, logging: bool) -> Self {
+        self.config = self.config.logging(logging);
         self
     }
 
@@ -445,6 +483,9 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
         .map(|node| node.label.chars().count())
         .max()
         .unwrap_or(0);
+    // Before the reporter, so `rivet.log` opens with the run it describes.
+    let _run_log = log::start_run(&config.log_dir, config.logging);
+
     let reporter = Reporter::new(total, label_width, config.progress);
     progress::set_active_reporter(Some(Arc::clone(&reporter)));
 
@@ -465,11 +506,13 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
 
     let workers = config.concurrency.max(1).min(total.max(1));
     let started = Instant::now();
+    tracing::info!(steps = total, workers, "run started");
 
+    let logging = config.logging;
     let hook_guard = PanicHookGuard::install();
     thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| worker(&graph, &shared, &condvar, &reporter));
+            scope.spawn(|| worker(&graph, &shared, &condvar, &reporter, logging));
         }
     });
     drop(hook_guard);
@@ -477,6 +520,18 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
     let elapsed = started.elapsed();
     reporter.finish_all(elapsed);
     progress::set_active_reporter(None);
+
+    // Ahead of the error paths below, so the log records how every run ended
+    // and not just the ones that succeeded.
+    let counts = reporter.counts();
+    tracing::info!(
+        executed = counts.executed(),
+        skipped = counts.skipped,
+        blocked = counts.blocked,
+        failed = counts.failed,
+        ?elapsed,
+        "run finished"
+    );
 
     let shared = shared.into_inner().unwrap();
     if !shared.failures.is_empty() {
@@ -495,7 +550,6 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
         return Err(ExecuteError::Cycle(cycle));
     }
 
-    let counts = reporter.counts();
     Ok(Summary {
         total,
         executed: counts.executed(),
@@ -504,7 +558,13 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
     })
 }
 
-fn worker(graph: &Graph, shared: &Mutex<Shared>, condvar: &Condvar, reporter: &Arc<Reporter>) {
+fn worker(
+    graph: &Graph,
+    shared: &Mutex<Shared>,
+    condvar: &Condvar,
+    reporter: &Arc<Reporter>,
+    logging: bool,
+) {
     IS_WORKER.with(|is_worker| is_worker.set(true));
 
     loop {
@@ -528,7 +588,7 @@ fn worker(graph: &Graph, shared: &Mutex<Shared>, condvar: &Condvar, reporter: &A
         drop(guard);
 
         let node = &graph.nodes[index];
-        let outcome = run_node(node, reporter);
+        let outcome = run_node(node, reporter, logging);
 
         let mut guard = shared.lock().unwrap();
         guard.in_flight -= 1;
@@ -563,28 +623,47 @@ fn worker(graph: &Graph, shared: &Mutex<Shared>, condvar: &Condvar, reporter: &A
         drop(guard);
 
         for index in dropped {
-            reporter.block(&graph.nodes[index].label, &node.label);
+            let label = &graph.nodes[index].label;
+            reporter.block(label, &node.label);
+            tracing::warn!(step = %label, blame = %node.label, "blocked by a failed dependency");
         }
     }
 }
 
-fn run_node(node: &Node, reporter: &Arc<Reporter>) -> Result<(), StepFailure> {
+fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), StepFailure> {
     if node.pinned {
         reporter.skip(&node.label, "pinned");
+        tracing::info!(step = %node.label, "pinned, so not run");
         return Ok(());
     }
 
-    let handle = reporter.start(&node.label);
-    progress::set_current_step(Some(handle.clone()));
+    // Where the step's own log file goes, asked for before it starts so the
+    // read guard is not held while it runs.
+    let log_dir = if logging {
+        node.step.read().log_dir()
+    } else {
+        None
+    };
+
+    let handle = reporter
+        .start(&node.label)
+        .with_log(log::open_step_log(log_dir, &node.label));
+    // Guards, because there are several ways out of this function: the step
+    // stops being the current one, and its events stop being logged as its own,
+    // whichever one is taken.
+    let _current = progress::enter_step(handle.clone());
+    let step_span = tracing::info_span!("step", name = %node.label);
+    let _span = step_span.enter();
+    tracing::info!("started");
     take_panic_message();
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| node.step.read().execute()));
 
-    progress::set_current_step(None);
-
     let (message, panicked) = match result {
         Ok(Ok(())) => {
+            let elapsed = handle.elapsed();
             reporter.finish(&handle, Outcome::Completed, None);
+            tracing::info!(?elapsed, "completed");
             return Ok(());
         }
         Ok(Err(error)) => (error.to_string(), false),
@@ -593,6 +672,14 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>) -> Result<(), StepFailure> {
             true,
         ),
     };
+
+    // Both halves of where it was, the same pair the display names: which of
+    // them caused the failure is exactly what is not known here.
+    let elapsed = handle.elapsed();
+    match handle.location() {
+        Some(location) => tracing::error!(panicked, ?elapsed, %location, "{message}"),
+        None => tracing::error!(panicked, ?elapsed, "{message}"),
+    }
 
     let detail = if panicked {
         format!("panicked: {message}")
@@ -739,7 +826,9 @@ mod tests {
     }
 
     fn config() -> ExecuteConfig {
-        ExecuteConfig::new().progress(false)
+        // No log files: these tests care about scheduling, and would otherwise
+        // drop a `rivet.log` into whatever directory `cargo test` ran in.
+        ExecuteConfig::new().progress(false).logging(false)
     }
 
     #[test]

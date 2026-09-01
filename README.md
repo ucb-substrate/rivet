@@ -173,4 +173,58 @@ only ever comes from there.
 The two never interfere: a banner cannot clear the status, and a status cannot
 clear the banner. Each half is omitted entirely until something fills it.
 
+## Logging
+
+The display owns stderr while a flow runs, so a log line printed to a stream
+would corrupt it. Logging goes to files instead, through `tracing`:
+
+```rust
+tracing::info!(unmatched, "LVS did not match");
+```
+
+There is nothing to set up — the executor installs the subscriber — and an
+event is written twice:
+
+```text
+build/
+  rivet.log                  the whole run, every step, in order
+  decoder/par/
+    decoder.par.out          raw innovus stdout
+    decoder.par.err          raw innovus stderr
+    decoder par.rivet.log    what this step logged, and nothing else
+```
+
+`rivet.log` goes in `ExecuteConfig::log_dir` (the current directory by default)
+and is appended to, with a blank line between runs. A step's own log goes
+wherever `Step::log_dir` says the step lives, next to the output of the tools it
+drove, and is rewritten each time the step runs, like the `.out` and `.err`
+beside it. A step that returns `None` — the default — still reaches `rivet.log`;
+it just has nowhere of its own to go.
+
+Events are tagged with the step that emitted them, so `rivet.log` reads as one
+narrative even with several steps in flight:
+
+```text
+18:02:11.401Z  INFO rivet::executor: step{name=decoder par}: started
+18:02:11.402Z  INFO rivet::exec: step{name=decoder par}: running command="innovus" "-files" "par.tcl" stdout="…/decoder.par.out" stderr="…/decoder.par.err"
+18:06:12.884Z  INFO rivet::exec: step{name=decoder par}: exited code=0 success=true
+18:06:13.002Z  INFO rivet::executor: step{name=decoder par}: completed elapsed=4m1.6s
+```
+
+`RIVET_LOG` sets what is kept, in the usual `EnvFilter` syntax — `RIVET_LOG=debug`,
+or `RIVET_LOG=rivet=info,cadence=debug` to turn one plugin up. It defaults to
+`info`.
+
+Tool output is not folded in: there is far too much of it for a log meant to
+stay readable, and it is already captured in full next door. What rivet records
+is which command a step ran, where that output went, and how it ended.
+
+So there are three channels, and nothing writes to two of them:
+
+| | goes to | written by |
+|---|---|---|
+| raw tool output | `{step}.out` / `.err` | the tool, captured by `exec` |
+| the live display | stderr | `progress::status` and substep banners |
+| the run's own record | `rivet.log`, `{step}.rivet.log` | `tracing` |
+
 Run `cargo run -p rivet --example parallel` to see it against a mock flow.

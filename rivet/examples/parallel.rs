@@ -16,11 +16,17 @@
 //! No real tools are involved: each step shells out to a bash script that
 //! prints substep banners and chatter the way an EDA tool would.
 
+use std::path::PathBuf;
 use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 
 use rivet::{exec, progress, ExecuteConfig, Executor, Step, StepRef, StepResult};
+
+/// Where every step in this example works, and where the run's logs land.
+fn work_dir() -> PathBuf {
+    std::env::temp_dir().join("rivet-example")
+}
 
 /// A step that drives a "tool": a bash script printing banners on stdout.
 #[derive(Debug)]
@@ -109,8 +115,10 @@ impl ToolStep {
 
 impl Step for ToolStep {
     fn execute(&self) -> StepResult {
-        let work_dir = std::env::temp_dir().join("rivet-example");
+        let work_dir = work_dir();
         std::fs::create_dir_all(&work_dir)?;
+
+        tracing::info!(substeps = self.substeps.len(), "faking a tool run");
 
         // Rust-side work before the tool starts. Its status stays on the left
         // half of the line while the tool's banners fill the right half.
@@ -151,6 +159,12 @@ impl Step for ToolStep {
     fn label(&self) -> String {
         self.name.clone()
     }
+
+    /// Puts this step's log next to the `.out` and `.err` files of the tool it
+    /// runs, rather than only in the run-wide `rivet.log`.
+    fn log_dir(&self) -> Option<PathBuf> {
+        Some(work_dir())
+    }
 }
 
 /// Work done entirely in Rust, reporting progress with no tool to parse.
@@ -163,7 +177,10 @@ struct MergeStep {
 impl Step for MergeStep {
     fn execute(&self) -> StepResult {
         for (index, file) in self.files.iter().enumerate() {
+            // The status is for whoever is watching; the log is for whoever
+            // reads it afterwards. Neither goes where the other does.
             progress::status_progress(index + 1, self.files.len(), format!("merging {file}"));
+            tracing::info!(file, "merging");
             sleep(Duration::from_millis(300));
         }
         Ok(())
@@ -179,6 +196,10 @@ impl Step for MergeStep {
 
     fn label(&self) -> String {
         "decoder merge".into()
+    }
+
+    fn log_dir(&self) -> Option<PathBuf> {
+        Some(work_dir())
     }
 }
 
@@ -233,7 +254,11 @@ fn main() {
         "   pinned steps are skipped; drc, lvs and merge run together once par is done.\n\
          \x20  `decoder par` shows a Rust status on the left and tool substeps on the right."
     );
-    match ExecuteConfig::new().concurrency(4).run_dyn(flow(false)) {
+    match ExecuteConfig::new()
+        .concurrency(4)
+        .log_dir(work_dir())
+        .run_dyn(flow(false))
+    {
         Ok(summary) => println!(
             "\n   {} of {} steps ran in {:.1}s",
             summary.executed,
@@ -248,13 +273,22 @@ fn main() {
         "   lvs returns an error rather than panicking. drc and merge do not depend\n\
          \x20  on it, so they run to completion; only signoff is dropped."
     );
-    match Executor::new().concurrency(4).target_dyn(flow(true)).run() {
+    match Executor::new()
+        .concurrency(4)
+        .log_dir(work_dir())
+        .target_dyn(flow(true))
+        .run()
+    {
         Ok(_) => println!("\n   unexpectedly succeeded"),
         Err(error) => println!("\n   {error}"),
     }
 
+    let dir = work_dir();
     println!(
-        "\n   full tool output for every step is in {}",
-        std::env::temp_dir().join("rivet-example").display()
+        "\n   raw tool output is in {}, one `.out` and `.err` per step.\n\
+         \x20  both runs are logged to {}, and each step's own events to\n\
+         \x20  `{{step}}.rivet.log` beside its output. `RIVET_LOG=debug` for more.",
+        dir.display(),
+        dir.join(rivet::log::RUN_LOG).display()
     );
 }

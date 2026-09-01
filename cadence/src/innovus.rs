@@ -279,6 +279,10 @@ impl Step for InnovusStep {
     fn pinned(&self) -> bool {
         self.pinned
     }
+
+    fn log_dir(&self) -> Option<PathBuf> {
+        Some(self.work_dir.clone())
+    }
 }
 
 #[derive(Debug, Clone)]

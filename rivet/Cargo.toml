@@ -17,4 +17,15 @@ rust_decimal_macros = "1"
 by_address = "1.2.1"
 console = "0.15"
 indicatif = "0.17"
+tracing = "0.1"
+# No `ansi`: these layers write to files, never to a terminal. `tracing-log`
+# catches anything a dependency logs through the `log` crate, which would
+# otherwise land on stderr and corrupt the display.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "std",
+    "env-filter",
+    "tracing-log",
+] }
+tracing-appender = "0.2"
 

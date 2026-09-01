@@ -74,4 +74,8 @@ impl Step for BashStep {
     fn label(&self) -> String {
         format!("{} {}", self.block, self.name)
     }
+
+    fn log_dir(&self) -> Option<PathBuf> {
+        Some(self.work_dir.clone())
+    }
 }

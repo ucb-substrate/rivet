@@ -11,6 +11,11 @@
 //! tools put all their chatter on stderr — and differ only in which file they
 //! land in.
 //!
+//! A tool's own output stays in those files and is not folded into
+//! [`rivet.log`](crate::log): there is far too much of it for a log meant to
+//! stay readable. What is recorded there instead is the command a step ran,
+//! where its output went, and how it exited.
+//!
 //! Any `Command` a step runs some other way must have its stdio piped or
 //! redirected for the same reason; if it genuinely needs the terminal, wrap it
 //! in [`crate::progress::suspend`].
@@ -30,8 +35,19 @@ pub fn run_logged(
     stdout_log: impl AsRef<Path>,
     stderr_log: impl AsRef<Path>,
 ) -> std::io::Result<ExitStatus> {
-    let stdout_file = File::create(stdout_log.as_ref())?;
-    let stderr_file = File::create(stderr_log.as_ref())?;
+    let stdout_log = stdout_log.as_ref();
+    let stderr_log = stderr_log.as_ref();
+    let stdout_file = File::create(stdout_log)?;
+    let stderr_file = File::create(stderr_log)?;
+
+    // Named at `info`, because "which command was this and where did its output
+    // go" is the first thing anyone reading the log wants.
+    tracing::info!(
+        command = ?command,
+        stdout = %stdout_log.display(),
+        stderr = %stderr_log.display(),
+        "running"
+    );
 
     let mut child = command
         .stdout(Stdio::piped())
@@ -54,6 +70,7 @@ pub fn run_logged(
     let _ = err_thread.join();
 
     let status = child.wait()?;
+    tracing::info!(code = status.code(), success = status.success(), "exited");
 
     // Only on success. If the tool failed, the substep it failed in is the
     // whole point, and the caller is about to turn that into an error.

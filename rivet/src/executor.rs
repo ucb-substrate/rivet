@@ -9,6 +9,12 @@
 //! Steps are identified by the address of their `Arc`, so a step shared by
 //! several dependents is run exactly once no matter how many paths reach it.
 //! Two separately constructed steps are two steps, however identical they look.
+//!
+//! A failure takes down the branch below it and nothing else. The steps that
+//! depended on the failed one can never run, so they are dropped from the run;
+//! every other branch keeps going, and steps that had not started yet are still
+//! dispatched as long as they do not depend on anything that failed. The run
+//! ends when the graph is exhausted, reporting every failure it collected.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -157,6 +163,21 @@ pub struct Summary {
     pub elapsed: Duration,
 }
 
+/// A step that could never run because a step it depended on failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedStep {
+    pub label: String,
+    /// The failed step that made this one unreachable. With more than one
+    /// failure upstream, this is whichever one was reported first.
+    pub blame: String,
+}
+
+impl fmt::Display for BlockedStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} (blocked by {})", self.label, self.blame)
+    }
+}
+
 /// A step that did not succeed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepFailure {
@@ -192,9 +213,13 @@ impl fmt::Display for StepFailure {
 /// Why a run did not finish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecuteError {
-    /// One or more steps panicked. Steps already in flight were allowed to
-    /// finish, so this can hold more than one failure.
-    Failed(Vec<StepFailure>),
+    /// One or more steps failed. The rest of the graph was run anyway, so
+    /// this can hold more than one failure.
+    Failed {
+        failures: Vec<StepFailure>,
+        /// Steps that never ran because something they depended on failed.
+        blocked: Vec<BlockedStep>,
+    },
     /// The graph contains a dependency cycle; the listed steps could never
     /// become runnable.
     Cycle(Vec<String>),
@@ -203,10 +228,20 @@ pub enum ExecuteError {
 impl fmt::Display for ExecuteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Failed(failures) => {
+            Self::Failed { failures, blocked } => {
                 write!(f, "{} step(s) failed:", failures.len())?;
                 for failure in failures {
                     write!(f, "\n  {failure}")?;
+                }
+                if !blocked.is_empty() {
+                    let labels: Vec<&str> =
+                        blocked.iter().map(|step| step.label.as_str()).collect();
+                    write!(
+                        f,
+                        "\n{} step(s) never ran: {}",
+                        blocked.len(),
+                        labels.join(", ")
+                    )?;
                 }
                 Ok(())
             }
@@ -337,9 +372,11 @@ struct Shared {
     unfinished_deps: Vec<usize>,
     in_flight: usize,
     remaining: usize,
-    aborted: bool,
+    /// Steps taken out of the run because something upstream of them failed.
+    blocked: Vec<bool>,
     stuck: bool,
     failures: Vec<StepFailure>,
+    blocked_steps: Vec<BlockedStep>,
 }
 
 enum Work {
@@ -356,14 +393,6 @@ impl Shared {
         if self.remaining == 0 {
             return Work::Done;
         }
-        if self.aborted {
-            // Let in-flight steps finish, but start nothing new.
-            return if self.in_flight == 0 {
-                Work::Done
-            } else {
-                Work::Wait
-            };
-        }
         if let Some(index) = self.ready.pop_front() {
             self.in_flight += 1;
             return Work::Run(index);
@@ -372,6 +401,37 @@ impl Shared {
             return Work::Stuck;
         }
         Work::Wait
+    }
+
+    /// Take everything below a failed step out of the run.
+    ///
+    /// Those steps can never become runnable — the dependency they are waiting
+    /// on will never finish — so they are dropped here, which is also what
+    /// keeps `remaining` honest and stops the scheduler mistaking them for a
+    /// cycle. Nothing outside the failed step's dependents is touched: other
+    /// branches keep running, and steps that have not started yet are still
+    /// dispatched.
+    ///
+    /// Returns the steps dropped by this call, so they can be reported once
+    /// the lock is free.
+    fn block_dependents(&mut self, graph: &Graph, failed: usize) -> Vec<usize> {
+        let mut dropped = Vec::new();
+        let mut queue: VecDeque<usize> = graph.nodes[failed].dependents.iter().copied().collect();
+        while let Some(index) = queue.pop_front() {
+            // A step under two failures is only dropped once, and is blamed on
+            // the failure that reached it first.
+            if self.blocked[index] {
+                continue;
+            }
+            // A dependent cannot have started: it only becomes ready once every
+            // dependency has *succeeded*, so this never double-counts a step
+            // that already finished or is in flight.
+            self.blocked[index] = true;
+            self.remaining -= 1;
+            dropped.push(index);
+            queue.extend(graph.nodes[index].dependents.iter().copied());
+        }
+        dropped
     }
 }
 
@@ -396,9 +456,10 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
         unfinished_deps,
         in_flight: 0,
         remaining: total,
-        aborted: false,
+        blocked: vec![false; total],
         stuck: false,
         failures: Vec::new(),
+        blocked_steps: Vec::new(),
     });
     let condvar = Condvar::new();
 
@@ -419,21 +480,26 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
 
     let shared = shared.into_inner().unwrap();
     if !shared.failures.is_empty() {
-        return Err(ExecuteError::Failed(shared.failures));
+        return Err(ExecuteError::Failed {
+            failures: shared.failures,
+            blocked: shared.blocked_steps,
+        });
     }
     if shared.stuck {
+        // Steps dropped after a failure also sit at a non-zero dependency
+        // count, so they are excluded here; without a failure there are none.
         let cycle = (0..total)
-            .filter(|&i| shared.unfinished_deps[i] > 0)
+            .filter(|&i| shared.unfinished_deps[i] > 0 && !shared.blocked[i])
             .map(|i| graph.nodes[i].label.clone())
             .collect();
         return Err(ExecuteError::Cycle(cycle));
     }
 
-    let (finished, skipped, _) = reporter.counts();
+    let counts = reporter.counts();
     Ok(Summary {
         total,
-        executed: finished.saturating_sub(skipped),
-        skipped,
+        executed: counts.executed(),
+        skipped: counts.skipped,
         elapsed,
     })
 }
@@ -454,7 +520,6 @@ fn worker(graph: &Graph, shared: &Mutex<Shared>, condvar: &Condvar, reporter: &A
                 }
                 Work::Stuck => {
                     guard.stuck = true;
-                    guard.aborted = true;
                     condvar.notify_all();
                     return;
                 }
@@ -470,7 +535,7 @@ fn worker(graph: &Graph, shared: &Mutex<Shared>, condvar: &Condvar, reporter: &A
         guard.remaining -= 1;
         // Reported after the lock is dropped: `Reporter` draws, and drawing
         // under the scheduler lock would stall every other worker.
-        let mut announce_abort = None;
+        let mut dropped = Vec::new();
         match outcome {
             Ok(()) => {
                 for &dependent in &node.dependents {
@@ -481,20 +546,24 @@ fn worker(graph: &Graph, shared: &Mutex<Shared>, condvar: &Condvar, reporter: &A
                 }
             }
             Err(failure) => {
-                // Only the first failure announces the abort; the rest are
-                // steps that were already in flight when it happened.
-                if guard.failures.is_empty() {
-                    announce_abort = Some(guard.in_flight);
-                }
+                // The branch below this step is gone, but the run is not: every
+                // other branch carries on and unstarted steps that do not
+                // depend on this one are still dispatched.
+                dropped = guard.block_dependents(graph, index);
                 guard.failures.push(failure);
-                guard.aborted = true;
+                guard
+                    .blocked_steps
+                    .extend(dropped.iter().map(|&i| BlockedStep {
+                        label: graph.nodes[i].label.clone(),
+                        blame: node.label.clone(),
+                    }));
             }
         }
         condvar.notify_all();
         drop(guard);
 
-        if let Some(in_flight) = announce_abort {
-            reporter.aborting(in_flight);
+        for index in dropped {
+            reporter.block(&graph.nodes[index].label, &node.label);
         }
     }
 }
@@ -828,11 +897,14 @@ mod tests {
         let error = config().run_dyn(drc).unwrap_err();
 
         match error {
-            ExecuteError::Failed(failures) => {
+            ExecuteError::Failed { failures, blocked } => {
                 assert_eq!(failures.len(), 1);
                 assert_eq!(failures[0].label, "par");
                 assert_eq!(failures[0].message, "LVS mismatch: 3 unmatched nets");
                 assert!(!failures[0].panicked, "an Err is not a panic");
+                assert_eq!(blocked.len(), 1);
+                assert_eq!(blocked[0].label, "drc");
+                assert_eq!(blocked[0].blame, "par");
             }
             other => panic!("expected a failure, got {other:?}"),
         }
@@ -840,15 +912,60 @@ mod tests {
     }
 
     #[test]
-    fn steps_already_in_flight_finish_after_a_failure() {
-        // A failure stops the executor scheduling anything new, but steps
-        // already running are allowed to finish — which is why a run carries on
-        // after the first `✖`. Their failures are reported too.
+    fn everything_below_a_failure_is_dropped_transitively() {
+        let par = acting("par", vec![], || Err("router gave up".into()));
+        let drc = acting("drc", vec![par.clone()], || {
+            Err("a step under a failure must not run".into())
+        });
+        let signoff = acting("signoff", vec![drc], || {
+            Err("a step under a failure must not run".into())
+        });
+
+        let error = config().run_dyn(signoff).unwrap_err();
+
+        match error {
+            ExecuteError::Failed { failures, blocked } => {
+                assert_eq!(failures.len(), 1, "only `par` ran, so only `par` failed");
+                let labels: Vec<&str> = blocked.iter().map(|s| s.label.as_str()).collect();
+                assert_eq!(labels, ["drc", "signoff"]);
+                // Both are blamed on the failure itself, not on the step
+                // immediately above them.
+                assert!(blocked.iter().all(|s| s.blame == "par"), "got {blocked:?}");
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_step_under_two_failures_is_reported_once() {
+        let drc = acting("drc", vec![], || Err("drc failed".into()));
+        let lvs = acting("lvs", vec![], || Err("lvs failed".into()));
+        let signoff = acting("signoff", vec![drc, lvs], || {
+            Err("a step under a failure must not run".into())
+        });
+
+        let error = config().concurrency(2).run_dyn(signoff).unwrap_err();
+
+        match error {
+            ExecuteError::Failed { failures, blocked } => {
+                assert_eq!(failures.len(), 2);
+                assert_eq!(blocked.len(), 1, "got {blocked:?}");
+                assert_eq!(blocked[0].label, "signoff");
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unrelated_steps_still_start_after_a_failure() {
+        // A failure takes down its own dependents and nothing else: steps
+        // already running finish, and steps that had not started yet are still
+        // dispatched as long as they do not depend on what failed.
         let gate = Arc::new((Mutex::new(0usize), Condvar::new()));
         let started_late = Arc::new(AtomicUsize::new(0));
 
         // Both fail, but only once each has seen the other start, so the second
-        // failure is guaranteed to arrive after the run is already aborting.
+        // failure is guaranteed to arrive after the first has been reported.
         let mut roots: Vec<StepRef<dyn Step>> = Vec::new();
         for name in ["lvs", "drc"] {
             let gate = Arc::clone(&gate);
@@ -870,19 +987,21 @@ mod tests {
         }));
 
         // Two slots for three roots: `signoff` can only start once one of the
-        // failing steps has freed a worker, by which point the run has aborted.
+        // failing steps has freed a worker, so it is dispatched strictly after
+        // the first failure was reported.
         let error = config().concurrency(2).run_all(roots).unwrap_err();
 
         match error {
-            ExecuteError::Failed(failures) => {
+            ExecuteError::Failed { failures, blocked } => {
                 assert_eq!(failures.len(), 2, "both in-flight steps should report");
+                assert!(blocked.is_empty(), "nothing depended on either failure");
             }
             other => panic!("expected two failures, got {other:?}"),
         }
         assert_eq!(
             started_late.load(AtomicOrdering::SeqCst),
-            0,
-            "no step may start after a failure"
+            1,
+            "an independent step must still start after a failure"
         );
     }
 
@@ -893,7 +1012,7 @@ mod tests {
         let error = config().run_dyn(par).unwrap_err();
 
         match error {
-            ExecuteError::Failed(failures) => {
+            ExecuteError::Failed { failures, .. } => {
                 assert_eq!(failures.len(), 1);
                 assert!(failures[0].panicked, "a panic should be flagged as one");
                 assert!(
@@ -917,7 +1036,7 @@ mod tests {
         let error = config().run_dyn(par).unwrap_err();
 
         match error {
-            ExecuteError::Failed(failures) => {
+            ExecuteError::Failed { failures, .. } => {
                 assert_eq!(failures[0].status, None);
                 assert_eq!(
                     failures[0].substep.as_deref(),
@@ -943,7 +1062,7 @@ mod tests {
         let error = config().run_dyn(par).unwrap_err();
 
         match error {
-            ExecuteError::Failed(failures) => {
+            ExecuteError::Failed { failures, .. } => {
                 // Which half caused it is exactly what is not known, so both
                 // are kept.
                 assert_eq!(failures[0].status.as_deref(), Some("merging gds (7/12)"));
@@ -974,7 +1093,7 @@ mod tests {
         let error = config().run_dyn(par).unwrap_err();
 
         match error {
-            ExecuteError::Failed(failures) => {
+            ExecuteError::Failed { failures, .. } => {
                 assert_eq!(failures[0].substep, None);
                 assert_eq!(failures[0].status.as_deref(), Some("checking gds"));
                 assert_eq!(

@@ -74,16 +74,27 @@ Panicking is for bugs. The executor catches panics so one cannot take down the
 run, but reports them separately (`StepFailure::panicked`) because a panic means
 something is wrong with the step itself rather than with the design.
 
-Either way the rule is *stop starting, don't stop running*: steps already in
-flight are allowed to finish, nothing new is dispatched, dependents of the
-failed step never run, and the run ends with `ExecuteError::Failed` listing
-every step that failed and where it was when it failed.
+Either way the rule is *drop the branch, not the run*: a failure takes down the
+steps that depended on it and nothing else. Steps already in flight are left to
+finish, every other branch keeps going, and steps that have not started yet are
+still dispatched as long as they do not depend on anything that failed — so a
+run gets as far as it can before it stops. Dependents of a failed step can never
+become runnable, so they are dropped as `⊘` and named, transitively.
+
+The run ends with `ExecuteError::Failed`, listing every step that failed and
+where it was when it failed, plus the steps that never ran as a result:
 
 ```text
-  ✖ decoder lvs      0.3s  during place_opt_design (3/5)  LVS mismatch: 3 unmatched nets
-  ✔ decoder drc      0.9s
-  ✖ 2 executed · 1 failed · 0.9s
+  ✔ decoder merge    0.9s
+  ✖ decoder lvs      1.2s  during compare (2/2)  LVS mismatch: 3 unmatched nets
+  ⊘ decoder signoff  blocked by decoder lvs
+  ✔ decoder drc      2.8s
+  ✖ 4 executed · 1 skipped · 1 blocked · 1 failed · 6.9s
 ```
+
+`decoder drc` and `decoder merge` do not depend on LVS, so they run to
+completion; `decoder signoff` does, so it is dropped rather than left to look
+stalled.
 
 "Where" is both halves of the step's line when both are set — which of them
 caused the failure is exactly what is not known at that point:
@@ -100,7 +111,7 @@ A dependency cycle is reported as `ExecuteError::Cycle` rather than hanging.
 
 While a flow runs, each executing step gets a line with a spinner, its elapsed
 time, and whatever progress it reports (see below); finished steps scroll off as
-`✔` (executed), `⏭` (pinned) or `✖` (failed). Raw tool output is never shown: it
+`✔` (executed), `⏭` (pinned), `⊘` (blocked by a failure) or `✖` (failed). Raw tool output is never shown: it
 goes to `{step}.out` and `{step}.err` in the step's work directory and stops
 there. Two things reach the display, and nothing else — a step's `status`, set
 from Rust, and the substep banners a tool is told to print. Which stream a tool

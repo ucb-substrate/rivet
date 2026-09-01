@@ -245,8 +245,8 @@ fn main() {
 
     banner_line("2. the same flow, with LVS failing");
     println!(
-        "   lvs returns an error rather than panicking. drc and merge are already\n\
-         \x20  in flight and are allowed to finish; signoff never starts."
+        "   lvs returns an error rather than panicking. drc and merge do not depend\n\
+         \x20  on it, so they run to completion; only signoff is dropped."
     );
     match Executor::new().concurrency(4).target_dyn(flow(true)).run() {
         Ok(_) => println!("\n   unexpectedly succeeded"),

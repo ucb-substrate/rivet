@@ -58,19 +58,28 @@
 //! worth folding into a log that is meant to stay readable. What rivet records
 //! here is which command a step ran, where that output went, and how it ended.
 //!
-//! # Threads
+//! # Which step a line belongs to
 //!
-//! The step a log line belongs to is tracked per thread, the same way
-//! [`crate::progress::current_step`] is. A thread a step spawns for itself does
-//! not inherit it, so its events reach `rivet.log` but not the step's own file.
+//! The step is the one whose line is on screen: this module asks
+//! [`crate::progress::current_step`] rather than tracking a second copy of the
+//! same fact, and a step's log file hangs off the same handle its progress line
+//! does.
+//!
+//! It cannot come from the `tracing` span instead. The formatter picks its
+//! writer through `MakeWriter`, which is handed the event's `Metadata` and
+//! never the span context, so routing per step through spans would mean writing
+//! an event formatter as well — `FmtContext` is not constructible outside
+//! `tracing-subscriber`. The consequence is that a thread a step spawns for
+//! itself is not that step: its events reach `rivet.log` but not the step's own
+//! file, even if it carries the span.
 
-use std::cell::RefCell;
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use tracing::Subscriber;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
@@ -94,97 +103,51 @@ const DEFAULT_FILTER: &str = "info";
 // Sinks
 // ---------------------------------------------------------------------------
 
-/// A log file opened the first time something is written to it.
+/// A file rivet writes events to.
 ///
-/// Opening lazily is what keeps the filesystem honest: a step that logs nothing
-/// leaves no file behind, and a run whose subscriber never got installed does
-/// not drop an empty `rivet.log` into someone's directory.
-struct LazyFile {
-    path: PathBuf,
-    /// Keep what is already in the file rather than truncating it.
-    append: bool,
-    file: Option<File>,
-    /// Set once opening or writing has failed, so a broken sink is not retried
-    /// on every line.
-    failed: bool,
-}
+/// The file handling is `tracing-appender`'s: it creates the directory, opens
+/// for append, and synchronises writes internally so a sink can be shared. Only
+/// [`Rotation::NEVER`] is used — these files are named for the run or the step
+/// they describe, so there is nothing to roll over, and rotation is the one part
+/// of that crate that reports errors by printing them, which is the single thing
+/// this module must never do.
+pub(crate) struct LogFile(RollingFileAppender);
 
-impl LazyFile {
-    /// A file that keeps what earlier runs wrote.
-    fn appending(path: PathBuf) -> Self {
-        Self {
-            path,
-            append: true,
-            file: None,
-            failed: false,
-        }
+impl LogFile {
+    /// Opens `dir/name`, or gives up.
+    ///
+    /// There is nowhere to report a failure to: printing it is what this module
+    /// exists to avoid, and failing a step because its log file would not open
+    /// would be worse than losing the log. `build` is used rather than
+    /// [`tracing_appender::rolling::never`] for the same reason — that one
+    /// panics.
+    fn open(dir: &Path, name: &str) -> Option<Self> {
+        RollingFileAppender::builder()
+            .rotation(Rotation::NEVER)
+            .filename_prefix(name)
+            .build(dir)
+            .ok()
+            .map(Self)
     }
 
-    /// A file that starts empty each time.
-    fn truncating(path: PathBuf) -> Self {
-        Self {
-            path,
-            append: false,
-            file: None,
-            failed: false,
-        }
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        if self.failed {
-            return;
-        }
-        if self.file.is_none() {
-            match self.open() {
-                Ok(file) => self.file = Some(file),
-                // There is nowhere to report this. Printing it is the one thing
-                // this module exists to avoid, and failing a step because its
-                // log file could not be opened would be worse than losing the
-                // log.
-                Err(_) => {
-                    self.failed = true;
-                    return;
-                }
-            }
-        }
-        let file = self.file.as_mut().expect("just opened");
-        if file.write_all(bytes).is_err() {
-            self.failed = true;
-        }
-    }
-
-    fn open(&self) -> io::Result<File> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if !self.append {
-            return File::create(&self.path);
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        // A blank line before a run appends to an existing log, so the file
-        // reads as a stack of runs rather than one undifferentiated stream.
-        if file.metadata().map(|meta| meta.len() > 0).unwrap_or(false) {
-            let _ = file.write_all(b"\n");
-        }
-        Ok(file)
+    /// Writes one whole event.
+    ///
+    /// A single `write_all` per event into a file opened for append is what
+    /// keeps steps running at the same time from interleaving mid-line.
+    fn write(&self, bytes: &[u8]) {
+        let _ = self.0.make_writer().write_all(bytes);
     }
 }
 
 /// `rivet.log` for the run in progress, if there is one.
-static RUN: LazyLock<Mutex<Option<LazyFile>>> = LazyLock::new(|| Mutex::new(None));
-
-thread_local! {
-    /// The log file of the step running on this thread, if any.
-    static STEP: RefCell<Option<LazyFile>> = const { RefCell::new(None) };
-}
+static RUN: LazyLock<RwLock<Option<Arc<LogFile>>>> = LazyLock::new(|| RwLock::new(None));
 
 /// A panic while writing a log line should not disable logging for the rest of
-/// the run, so a poisoned lock is taken anyway.
-fn run_sink() -> MutexGuard<'static, Option<LazyFile>> {
-    RUN.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+/// the run, so a poisoned lock is read anyway.
+fn run_log() -> Option<Arc<LogFile>> {
+    RUN.read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -192,9 +155,9 @@ fn run_sink() -> MutexGuard<'static, Option<LazyFile>> {
 // ---------------------------------------------------------------------------
 
 /// Hands each formatted event to the files it belongs in.
-struct Sink;
+struct Fanout;
 
-impl<'a> MakeWriter<'a> for Sink {
+impl<'a> MakeWriter<'a> for Fanout {
     type Writer = Record;
 
     fn make_writer(&'a self) -> Record {
@@ -229,18 +192,12 @@ impl Drop for Record {
         if self.buf.is_empty() {
             return;
         }
-        if let Some(run) = run_sink().as_mut() {
+        if let Some(run) = run_log() {
             run.write(&self.buf);
         }
-        // `try_with` and `try_borrow_mut`: writing a log line must not panic,
-        // whatever else the thread is in the middle of.
-        let _ = STEP.try_with(|step| {
-            if let Ok(mut step) = step.try_borrow_mut() {
-                if let Some(step) = step.as_mut() {
-                    step.write(&self.buf);
-                }
-            }
-        });
+        if let Some(step) = crate::progress::current_step_log() {
+            step.write(&self.buf);
+        }
     }
 }
 
@@ -271,7 +228,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     tracing_subscriber::fmt::layer()
-        .with_writer(Sink)
+        .with_writer(Fanout)
         // These are files, not a terminal.
         .with_ansi(false)
         .with_filter(filter())
@@ -302,7 +259,23 @@ pub(crate) fn start_run(dir: &Path, enabled: bool) -> RunLog {
         return RunLog { active: false };
     }
     install();
-    *run_sink() = Some(LazyFile::appending(dir.join(RUN_LOG)));
+
+    // Asked before opening, because opening creates the file: this is the last
+    // moment at which an earlier run's log can be told apart from an empty one.
+    let appended_to = fs::metadata(dir.join(RUN_LOG))
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false);
+    let file = LogFile::open(dir, RUN_LOG);
+    if let Some(file) = &file {
+        if appended_to {
+            // A blank line between runs, so the log reads as a stack of runs
+            // rather than one undifferentiated stream.
+            file.write(b"\n");
+        }
+    }
+
+    let mut run = RUN.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *run = file.map(Arc::new);
     RunLog { active: true }
 }
 
@@ -313,27 +286,24 @@ pub(crate) struct RunLog {
 impl Drop for RunLog {
     fn drop(&mut self) {
         if self.active {
-            *run_sink() = None;
+            let mut run = RUN.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *run = None;
         }
     }
 }
 
-/// Also send everything logged on this thread to `dir/{label}.rivet.log`, until
-/// the returned guard is dropped.
+/// Opens the log file for a step working in `dir`.
 ///
-/// With no directory the step logs only to `rivet.log`.
-pub(crate) fn start_step(dir: Option<PathBuf>, label: &str) -> StepLog {
-    let sink = dir.map(|dir| LazyFile::truncating(dir.join(step_log_name(label))));
-    let _ = STEP.try_with(|step| *step.borrow_mut() = sink);
-    StepLog
-}
-
-pub(crate) struct StepLog;
-
-impl Drop for StepLog {
-    fn drop(&mut self) {
-        let _ = STEP.try_with(|step| *step.borrow_mut() = None);
-    }
+/// The executor hangs the result on the step's handle, which is what makes it
+/// the file events land in while that step runs. A step with no directory of
+/// its own reaches `rivet.log` and nothing else.
+pub(crate) fn open_step_log(dir: Option<PathBuf>, label: &str) -> Option<Arc<LogFile>> {
+    let dir = dir?;
+    let name = step_log_name(label);
+    // The appender only appends, and this file describes one run of the step:
+    // the same rule as the `.out` and `.err` files it sits beside.
+    let _ = fs::remove_file(dir.join(&name));
+    LogFile::open(&dir, &name).map(Arc::new)
 }
 
 /// What a step's log file is called.
@@ -366,6 +336,7 @@ mod tests {
     use super::*;
     use crate::{Step, StepRef, StepResult};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     /// The run sink is process-wide, so these take turns. They still assert on
     /// what a file *contains* rather than on all of it: a flow running in
@@ -466,6 +437,30 @@ mod tests {
         let second = fs::read_to_string(two.join("two.rivet.log")).expect("two.rivet.log");
         assert!(second.contains("only in two"), "{second}");
         assert!(!second.contains("only in one"), "{second}");
+    }
+
+    #[test]
+    fn a_second_run_is_appended_to_the_first() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_dir("append");
+
+        for message in ["first run", "second run"] {
+            crate::Executor::new()
+                .progress(false)
+                .log_dir(&dir)
+                .target(Talker::build("talker", &dir, message))
+                .run()
+                .expect("run");
+        }
+
+        let run = fs::read_to_string(dir.join(RUN_LOG)).expect("rivet.log");
+        assert!(run.contains("first run"), "{run}");
+        assert!(run.contains("second run"), "{run}");
+
+        // The step's own log describes the run it just did, not the one before.
+        let step = fs::read_to_string(dir.join("talker.rivet.log")).expect("talker.rivet.log");
+        assert!(step.contains("second run"), "{step}");
+        assert!(!step.contains("first run"), "{step}");
     }
 
     #[test]

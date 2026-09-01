@@ -645,19 +645,19 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), 
         None
     };
 
-    let handle = reporter.start(&node.label);
-    progress::set_current_step(Some(handle.clone()));
-    // Both are guards: every way out of this function is one of them going out
-    // of scope, and there are several.
-    let _step_log = log::start_step(log_dir, &node.label);
+    let handle = reporter
+        .start(&node.label)
+        .with_log(log::open_step_log(log_dir, &node.label));
+    // Guards, because there are several ways out of this function: the step
+    // stops being the current one, and its events stop being logged as its own,
+    // whichever one is taken.
+    let _current = progress::enter_step(handle.clone());
     let step_span = tracing::info_span!("step", name = %node.label);
     let _span = step_span.enter();
     tracing::info!("started");
     take_panic_message();
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| node.step.read().execute()));
-
-    progress::set_current_step(None);
 
     let (message, panicked) = match result {
         Ok(Ok(())) => {

@@ -111,7 +111,13 @@ A dependency cycle is reported as `ExecuteError::Cycle` rather than hanging.
 
 While a flow runs, each executing step gets a line with a spinner, its elapsed
 time, and whatever progress it reports (see below); finished steps scroll off as
-`✔` (executed), `⏭` (pinned), `⊘` (blocked by a failure) or `✖` (failed). Raw tool output is never shown: it
+`✔` (executed), `⏭` (pinned), `⊘` (blocked by a failure) or `✖` (failed), and
+stay in the terminal's scrollback afterwards. The live part is a ratatui inline
+viewport — a fixed block of rows at the bottom of the ordinary terminal, sized
+for as many steps as the run can have going at once (up to eight) — so nothing
+takes over the screen and nothing is erased when the run ends. With more steps
+running than rows, the list scrolls under the cursor and the summary says how
+many are out of sight. Raw tool output is never shown: it
 goes to `{step}.out` and `{step}.err` in the step's work directory and stops
 there. Two things reach the display, and nothing else — a step's `status`, set
 from Rust, and the substep banners a tool is told to print. Which stream a tool
@@ -181,7 +187,7 @@ One of the running steps is under a cursor, moved between them with `↑`/`↓` 
 ```text
   ⠹ decoder drc   1m02s ━━━╸────── 1/3 density
 ❯ ⠹ decoder par   12m8s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
-  ━━━━━━╸───────────────── 3/7 steps · 00:12:08 2 running
+  ━━━━━━╸───────────────── 3/7 steps · 12m08s · 2 running
   ↑/↓ or j/k select a step · enter copies a command to follow its log
 ```
 
@@ -206,12 +212,18 @@ on. A local `wl-copy`, `xclip`, `xsel` or `pbcopy` is asked as well, if the
 environment suggests one would work.
 
 While the display is up, the terminal hands over keys as they are typed rather
-than collecting whole lines, and stops echoing them. Signals are deliberately
-left alone — `^C` and `^Z` mean exactly what they always did — and the terminal
-is put back when the run ends, if it is backgrounded, around
-`progress::suspend`, and from a signal handler if the run is killed outright.
-A run whose stderr is not a terminal has no cursor, and neither has one that has
-been put in the background.
+than collecting whole lines, and stops echoing them. The signal keys are put
+back afterwards, so `^C` and `^Z` mean exactly what they always did — `^C` in
+particular has to keep reaching the tools a step is running, which are in the
+same process group. An interrupt is caught only so that the terminal can be
+handed back before the run ends, and the run exits `130`; a second one gives up
+on being tidy and exits at once.
+
+Both stdout and stderr have to be terminals, though only stderr is ever drawn
+on: placing the live area means asking the terminal where its cursor is, and
+crossterm asks by writing to stdout. Anything else — a run in CI, either stream
+redirected — falls back to plain one-line-per-event logging on stderr.
+
 
 ## Logging
 

@@ -486,7 +486,7 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
     // Before the reporter, so `rivet.log` opens with the run it describes.
     let _run_log = log::start_run(&config.log_dir, config.logging);
 
-    let reporter = Reporter::new(total, label_width, config.progress);
+    let reporter = Reporter::new(total, label_width, config.concurrency, config.progress);
     progress::set_active_reporter(Some(Arc::clone(&reporter)));
 
     let unfinished_deps: Vec<usize> = graph.nodes.iter().map(|node| node.deps.len()).collect();

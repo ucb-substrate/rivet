@@ -211,6 +211,8 @@ impl Step for GenusStep {
             ])
             .current_dir(self.work_dir.clone());
 
+        crate::no_stack_trace_collector(&mut command);
+
         progress::status(format!("running genus (log: {}.syn.out)", self.module));
         let status = exec::run_logged_in(
             &mut command,
@@ -222,7 +224,15 @@ impl Step for GenusStep {
             return Err(format!(
                 "genus exited with {status}; see {}",
                 self.work_dir
-                    .join(format!("{}.syn.err", self.module))
+                    // Which log holds the reason depends on how it died. A
+                    // fatal signal is reported by the tool's own handler on
+                    // stdout and never reaches `.syn.err`, which a crash
+                    // leaves empty: `catch_fatal.tcl` can see a Tcl error, not
+                    // a signal.
+                    .join(match status.code() {
+                        None => format!("{}.syn.out", self.module),
+                        Some(_) => format!("{}.syn.err", self.module),
+                    })
                     .display()
             )
             .into());

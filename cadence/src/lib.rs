@@ -7,6 +7,30 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as FmtWrite;
 use std::path::PathBuf;
+use std::process::Command;
+
+/// Keep a Cadence tool's crash handler from outliving the crash.
+///
+/// On a fatal signal the tool prints its own stack trace and then forks
+/// `etc/innovus/.pstk`, which runs `/bin/pstack` — a `gdb` wrapper on RHEL —
+/// against itself. That attach ptrace-stops every one of the tool's threads,
+/// including the one draining its own stdout pipe, and `gdb` then blocks
+/// writing the backtrace into that same pipe. Whichever of the two wins the
+/// race decides whether the tool dies or sits there frozen with the run waiting
+/// on it, which is no way to find out that a stage has crashed.
+///
+/// `gstack` honours `GDB` and `.pstk` honours `NO_GDB`, so between them the
+/// collector becomes a no-op and the signal always kills the tool. The stack
+/// trace is not lost with it — that comes from the tool's own handler, before
+/// the fork — and the collector's `pstack` dump was never symbolised anyway.
+///
+/// Both are read by shell scripts inside the tool's own installation, so a
+/// version that stops consulting them would quietly stop being covered here.
+/// Nothing depends on it having worked: a tool that hangs anyway is still
+/// reported, by the quiet-output warning in `rivet::exec`.
+pub fn no_stack_trace_collector(command: &mut Command) -> &mut Command {
+    command.env("GDB", "/bin/true").env("NO_GDB", "1")
+}
 
 #[derive(Debug, Clone)]
 pub struct Substep {

@@ -105,6 +105,14 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 /// How long each spinner frame lasts.
 const SPIN_EVERY: u128 = 100;
 
+/// How long a tool may say nothing before its line admits it.
+///
+/// A spinner means the step is still there, which is not the same as making
+/// progress: a tool can wedge with its process alive and its output stopped
+/// dead. Long enough that a slow-but-working stage does not trip it, short
+/// enough that nobody watches a stalled run for an afternoon.
+pub(crate) const QUIET_AFTER: Duration = Duration::from_secs(600);
+
 /// Separates the two halves of a step's line, and the two halves of the
 /// location reported when a step fails.
 pub(crate) const REGION_SEP: &str = " │ ";
@@ -877,6 +885,15 @@ impl Row {
             }
             spans.extend(region.spans());
         }
+
+        // Last, after whatever the step and its tool had to say, so it reads as
+        // a remark on the line rather than displacing it.
+        if let Some(quiet) = state.quiet_for(self.started) {
+            spans.push(span(
+                format!("  (quiet for {})", fmt_duration(quiet)),
+                Style::new().yellow(),
+            ));
+        }
         Line::from(spans)
     }
 
@@ -1098,6 +1115,21 @@ struct StepState {
     /// Files the step's tool is writing. Not part of the line: these are what
     /// the cursor copies a command to follow.
     outputs: Vec<PathBuf>,
+    /// When the tool last wrote a line. `None` until it writes its first.
+    last_output: Option<Instant>,
+}
+
+impl StepState {
+    /// How long it has been since the tool last wrote a line, once that is long
+    /// enough to be worth saying. `None` while it is still writing.
+    ///
+    /// A tool that has written nothing at all is timed from `started` instead:
+    /// a stage that hangs before its first line — waiting on a license, say —
+    /// is exactly the case worth hearing about, and has no last line to go on.
+    fn quiet_for(&self, started: Instant) -> Option<Duration> {
+        let quiet = self.last_output.unwrap_or(started).elapsed();
+        (quiet >= QUIET_AFTER).then_some(quiet)
+    }
 }
 
 impl StepHandle {
@@ -1111,12 +1143,27 @@ impl StepHandle {
         self.started.elapsed()
     }
 
+    /// How long it has been since the step's tool wrote a line, once that is
+    /// long enough to be worth saying. `None` while it is still writing.
+    ///
+    /// See [`QUIET_AFTER`]. The display shows this on the step's line; it is
+    /// public so that whatever is waiting on the tool can say it out loud,
+    /// which is the only way a run with no live display hears about it.
+    pub fn quiet_for(&self) -> Option<Duration> {
+        self.state.lock().unwrap().quiet_for(self.started)
+    }
+
     /// Offer one line of the step's output to the display.
     ///
     /// A line carrying a substep banner moves the step on; see [`banner`].
     /// Everything else is ignored — raw output belongs in the step's log files,
     /// not on screen, whichever stream it arrived on.
     pub fn output_line(&self, line: &str) {
+        // Before the banner check, and whatever the line said: any output at
+        // all is the tool proving it is still working. The guard is dropped at
+        // the end of the statement, because `enter_substep` takes the lock too.
+        self.state.lock().unwrap().last_output = Some(Instant::now());
+
         if let Some(banner) = parse_banner(line) {
             self.enter_substep(banner);
         }
@@ -1474,7 +1521,7 @@ fn truncate(text: &str, width: usize) -> String {
         + "…"
 }
 
-fn fmt_duration(duration: Duration) -> String {
+pub(crate) fn fmt_duration(duration: Duration) -> String {
     let secs = duration.as_secs();
     match secs {
         0..=59 if secs < 10 => format!("{:.1}s", duration.as_secs_f64()),

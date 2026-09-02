@@ -249,6 +249,8 @@ impl Step for InnovusStep {
         let mut command = Command::new("innovus");
         command.args(args).current_dir(self.work_dir.clone());
 
+        crate::no_stack_trace_collector(&mut command);
+
         progress::status(format!("running innovus (log: {}.par.out)", self.module));
         let status = exec::run_logged_in(
             &mut command,
@@ -260,7 +262,15 @@ impl Step for InnovusStep {
             return Err(format!(
                 "innovus exited with {status}; see {}",
                 self.work_dir
-                    .join(format!("{}.par.err", self.module))
+                    // Which log holds the reason depends on how it died. A
+                    // fatal signal is reported by the tool's own handler on
+                    // stdout and never reaches `.par.err`, which a crash
+                    // leaves empty: `catch_fatal.tcl` can see a Tcl error, not
+                    // a signal.
+                    .join(match status.code() {
+                        None => format!("{}.par.out", self.module),
+                        Some(_) => format!("{}.par.err", self.module),
+                    })
                     .display()
             )
             .into());

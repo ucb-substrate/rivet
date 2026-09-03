@@ -54,6 +54,48 @@
 //! so that the screen can be handed back before the process stops — otherwise
 //! the shell's prompt would land on the alternate screen — and taken again when
 //! it is continued.
+//!
+//! # The wheel
+//!
+//! The wheel does what `↑` and `↓` do, on either page: moves the cursor
+//! through the list, and scrolls an open log. That means asking the terminal
+//! to report the mouse, which is asked for along with the screen and given
+//! back with it.
+//!
+//! Asking is not free. A terminal reporting the mouse hands the display every
+//! click and drag over it, the drags that would otherwise have selected text
+//! included. That is the trade tmux makes with `mouse on`, and it answers it
+//! by being a terminal in its own right: it has a selection of its own to put
+//! in place of the one it took. So does this — see below — and the hint line
+//! says so, because a drag that quietly stopped working would be worse than a
+//! wheel that never worked. `shift` is still there for the terminal's own
+//! selection, which is what a terminal does with a drag it is told to keep:
+//! useful for taking a whole screen at once, and for a terminal whose
+//! selection reaches somewhere this one's cannot.
+//!
+//! # Selecting
+//!
+//! Dragging selects, and letting go copies. What is selected is the screen —
+//! the frame is marked where the drag covers, and read back out of the same
+//! buffer when the button comes up — so it is whatever was drawn there: a
+//! log's lines, a step's failure in the list, a path out of the banner. There
+//! is nothing to teach it about pages, and nothing for a page to remember.
+//!
+//! The clipboard it reaches is the watcher's, not the run's. Both are asked
+//! ([`crate::clipboard`]): an OSC 52 escape sequence, which the terminal
+//! answers wherever it is running, and a local tool for the terminals that do
+//! not. An EDA run is nearly always watched over ssh, and the first is what
+//! carries the text back across it.
+//!
+//! A log that is following its end would go on scrolling out from under a
+//! selection being made from it, so starting one holds the log where it is;
+//! putting the selection away — a click, a key, the wheel — lets it follow
+//! again.
+//!
+//! Only normal tracking is asked for, not the any-event tracking that would
+//! report the pointer merely moving whether anything wanted it or not: see
+//! [`ReportMouse`]. What arrives is the wheel, the buttons, and the drags
+//! between them, all of which are things to answer.
 
 use std::collections::VecDeque;
 use std::fs::{self, File, Metadata};
@@ -65,7 +107,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -119,6 +165,9 @@ const HANG: usize = 4;
 
 /// Most rows a step's line may take on its own page.
 const MAX_STEP_ROWS: usize = 6;
+
+/// Rows a log scrolls, or steps the cursor moves, per notch of the wheel.
+const WHEEL: usize = 3;
 
 /// Most lines of a log kept in memory to scroll back through.
 const MAX_LINES: usize = 10_000;
@@ -256,7 +305,7 @@ impl Tui {
         }
         enable_raw_mode().ok()?;
         signals::keep_keys();
-        if execute!(io::stderr(), EnterAlternateScreen).is_err() {
+        if execute!(io::stderr(), EnterAlternateScreen, ReportMouse(true)).is_err() {
             let _ = disable_raw_mode();
             return None;
         }
@@ -264,7 +313,9 @@ impl Tui {
         let terminal = match Terminal::new(CrosstermBackend::new(io::stderr())) {
             Ok(terminal) => terminal,
             Err(_) => {
-                let _ = execute!(io::stderr(), LeaveAlternateScreen);
+                // The mouse was asked for along with the screen, and goes back
+                // with it.
+                let _ = execute!(io::stderr(), ReportMouse(false), LeaveAlternateScreen);
                 let _ = disable_raw_mode();
                 return None;
             }
@@ -276,6 +327,8 @@ impl Tui {
         let stage = Arc::new(Stage {
             terminal: Mutex::new(terminal),
             closed: AtomicBool::new(false),
+            // Asked for along with the screen, just above.
+            mouse: AtomicBool::new(true),
             signals: Mutex::new(signals::catch(&interrupted, &stopped, &resumed)),
             interrupted,
             stopped,
@@ -339,13 +392,61 @@ impl Tui {
             return f();
         }
         let _ = terminal.show_cursor();
+        // Whatever runs next is not to be sent mouse reports.
+        self.stage.set_mouse(false);
         let _ = execute!(io::stderr(), LeaveAlternateScreen);
         let _ = disable_raw_mode();
 
         let result = f();
 
-        Stage::retake(&mut terminal);
+        self.stage.retake(&mut terminal);
         result
+    }
+}
+
+/// Ask the terminal to report the mouse, or to stop.
+///
+/// Three modes, and the choice of them is the whole point of not using
+/// crossterm's [`EnableMouseCapture`]:
+///
+/// - `1000`, normal tracking: the buttons and the wheel.
+/// - `1002`, button-event tracking: motion **while a button is held**, which
+///   is what a drag is. Without it a drag is invisible — the press arrives,
+///   then the release, and nothing in between — so a selection could never
+///   grow past the cell it started on.
+/// - `1006`, SGR encoding: coordinates that stay unambiguous past column 223.
+///
+/// What is left out is `1003`, any-event tracking, which reports the pointer
+/// moving whether a button is down or not. The display is up for as long as
+/// the run is, and a flow that takes an hour would spend it being handed
+/// events about a pointer that is not doing anything. `1000` and `1002`
+/// together report only what someone is actually doing to the display, which
+/// is the same set tmux asks for with `mouse on`.
+///
+/// [`EnableMouseCapture`]: ratatui::crossterm::event::EnableMouseCapture
+struct ReportMouse(bool);
+
+impl ratatui::crossterm::Command for ReportMouse {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str(if self.0 {
+            concat!("\x1b[?1000h", "\x1b[?1002h", "\x1b[?1006h")
+        } else {
+            // Undone in the order they were done.
+            concat!("\x1b[?1006l", "\x1b[?1002l", "\x1b[?1000l")
+        })
+    }
+
+    /// Windows has no such modes: its console is either reporting the mouse or
+    /// it is not, which is what crossterm's own commands set.
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+        use ratatui::crossterm::Command;
+        if self.0 {
+            EnableMouseCapture.execute_winapi()
+        } else {
+            DisableMouseCapture.execute_winapi()
+        }
     }
 }
 
@@ -358,6 +459,9 @@ struct Stage {
     terminal: Mutex<Terminal<CrosstermBackend<Stderr>>>,
     /// Set once the terminal has been handed back. Nothing draws after that.
     closed: AtomicBool,
+    /// Whether the terminal is reporting the mouse. True for as long as the
+    /// display has the screen. See [`Stage::set_mouse`].
+    mouse: AtomicBool,
     signals: Mutex<Vec<signals::Id>>,
     /// Set by the signals, read by the display's thread. Acting on them —
     /// redrawing, restoring a terminal — is far more than a signal handler may
@@ -378,6 +482,25 @@ impl Stage {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Start or stop the terminal reporting the mouse, unless it already is
+    /// as `want`.
+    ///
+    /// Asked for as long as the display has the screen, and given back
+    /// whenever the screen is — a suspended run's shell is not to be sent
+    /// mouse reports.
+    ///
+    /// The terminal must be held: this writes to the stream the frames are
+    /// drawn on.
+    fn set_mouse(&self, want: bool) {
+        if self.mouse.load(Ordering::SeqCst) == want {
+            return;
+        }
+        // A terminal that will not report the mouse is one the wheel does not
+        // work on. The keys still scroll, so there is nothing to say about it.
+        let asked = execute!(io::stderr(), ReportMouse(want));
+        self.mouse.store(want && asked.is_ok(), Ordering::SeqCst);
+    }
+
     /// Hand the terminal back as it was found, leaving `record` in its
     /// scrollback. Done once; asking again does nothing.
     fn close(&self, record: Vec<Line<'static>>) {
@@ -386,6 +509,7 @@ impl Stage {
             return;
         }
         let _ = terminal.show_cursor();
+        self.set_mouse(false);
         let _ = execute!(io::stderr(), LeaveAlternateScreen);
         let _ = disable_raw_mode();
         // The signals are the shell's again.
@@ -398,11 +522,15 @@ impl Stage {
     /// Whatever ran has changed the mode and drawn where it liked, so nothing
     /// is assumed: the mode is set again, the screen taken again, and the next
     /// frame draws everything.
-    fn retake(terminal: &mut Term) {
+    fn retake(&self, terminal: &mut Term) {
         if enable_raw_mode().is_ok() {
             signals::keep_keys();
         }
+        // The mouse was given back before the terminal was, and this is a
+        // fresh mode, so it is asked for again here rather than assumed.
+        self.mouse.store(false, Ordering::SeqCst);
         let _ = execute!(io::stderr(), EnterAlternateScreen);
+        self.set_mouse(true);
         let _ = terminal.clear();
     }
 
@@ -410,12 +538,13 @@ impl Stage {
     /// continued.
     fn pause(&self, terminal: &mut Term) {
         let _ = terminal.show_cursor();
+        self.set_mouse(false);
         let _ = execute!(io::stderr(), LeaveAlternateScreen);
         let _ = disable_raw_mode();
         signals::stop_now();
         // Back: the shell had the terminal in the meantime, so nothing on
         // screen is ours and nothing is still set up.
-        Self::retake(terminal);
+        self.retake(terminal);
     }
 }
 
@@ -454,7 +583,7 @@ fn run_loop(stage: &Stage, painter: &Weak<dyn Paint>) {
             stage.resumed.store(false, Ordering::SeqCst);
         }
         if stage.resumed.swap(false, Ordering::SeqCst) {
-            Stage::retake(&mut stage.hold());
+            stage.retake(&mut stage.hold());
         }
 
         // The run this was drawing has gone without saying so; there is nothing
@@ -481,6 +610,7 @@ fn run_loop(stage: &Stage, painter: &Weak<dyn Paint>) {
                     }
                 };
                 if let Some(event) = event {
+                    let at_once = worth_a_frame(&event);
                     match view.event(event, &*paint) {
                         Action::None => {}
                         Action::Redraw => {
@@ -499,8 +629,12 @@ fn run_loop(stage: &Stage, painter: &Weak<dyn Paint>) {
                             signals::interrupt_run(&stage.interrupted);
                         }
                     }
-                    // Drawn at once, so the key is seen to land.
-                    next_frame = Instant::now();
+                    // Drawn straight away, so the key is seen to land — but
+                    // not for the pointer merely moving over the screen, which
+                    // nothing on it answers.
+                    if at_once {
+                        next_frame = Instant::now();
+                    }
                 }
             }
             Ok(false) => {}
@@ -514,10 +648,36 @@ fn run_loop(stage: &Stage, painter: &Weak<dyn Paint>) {
             if stage.closed.load(Ordering::SeqCst) {
                 return;
             }
-            view.draw(&mut terminal, &*paint);
+            let copied = view.draw(&mut terminal, &*paint);
             next_frame = Instant::now() + FRAME;
+            if let Some(text) = copied {
+                // The terminal is held, which is what asking it to copy needs,
+                // and the frame saying so is worth drawing at once.
+                view.copy_text(&text);
+                next_frame = Instant::now();
+            }
         }
     }
+}
+
+/// Whether an event has earned a frame of its own, rather than waiting for the
+/// next one.
+///
+/// Nearly everything has: a key is to be seen to land, and a drag pulls the
+/// selection along behind it, which is worth watching happen rather than
+/// catching up ten times a second. The pointer merely moving is the exception
+/// — it changes nothing on screen, and a terminal that reports it reports it
+/// continuously, which would redraw the display as fast as a hand could move.
+/// [`ReportMouse`] does not ask for it, and this is what would keep a terminal
+/// that sent it anyway from being able to spin the display.
+fn worth_a_frame(event: &Event) -> bool {
+    !matches!(
+        event,
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            ..
+        })
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +708,11 @@ struct View {
     /// Whether the list had a scrollbar last frame, which takes a column off
     /// what its lines can use.
     list_scrollbar: bool,
+    /// The column this frame's scrollbar took, if it had one. A selection
+    /// leaves it out: a scrollbar is furniture rather than text, and dragging
+    /// across a log to the edge of the screen should not paste a column of
+    /// scrollbar into whatever it is pasted into.
+    scrollbar: Option<u16>,
     /// The step under the cursor as of the last frame, by id.
     selected: Option<usize>,
     /// Something to say on the hint line, until the moment it expires.
@@ -555,6 +720,8 @@ struct View {
     /// `q` was pressed while the run was going, and the next key decides
     /// whether the run is cancelled.
     confirming: bool,
+    /// Text being selected with the mouse, or just selected.
+    selection: Option<Selection>,
 }
 
 #[derive(Default)]
@@ -570,14 +737,101 @@ impl View {
             // A terminal that reports releases as well as presses would
             // otherwise act twice per keystroke.
             Event::Key(key) if key.kind == KeyEventKind::Press => self.key(key, paint),
-            // The next frame measures the terminal again and draws everything.
+            Event::Mouse(mouse) => self.mouse(mouse, paint),
+            // Everything moves, so whatever was selected is not where it was.
+            // The next frame measures the terminal again and draws it all.
+            Event::Resize(..) => {
+                self.deselect();
+                Action::None
+            }
             _ => Action::None,
+        }
+    }
+
+    /// What the mouse does: the wheel moves, and dragging selects.
+    ///
+    /// The wheel does on either page what `↑` and `↓` do — moves the cursor
+    /// through the list, scrolls an open log — and moving is enough to mean
+    /// the selection is finished with, so it clears one.
+    ///
+    /// A drag selects the screen it is drawn over, and letting go copies. A
+    /// click that goes nowhere is how a selection is put away again. Nothing
+    /// on screen is meant to be clicked otherwise, so no other button does
+    /// anything.
+    fn mouse(&mut self, mouse: MouseEvent, paint: &dyn Paint) -> Action {
+        let at = (mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = mouse.kind == MouseEventKind::ScrollUp;
+                self.deselect();
+                match &mut self.page {
+                    Page::List => paint.move_cursor(if up {
+                        Motion::Up(WHEEL)
+                    } else {
+                        Motion::Down(WHEEL)
+                    }),
+                    Page::Detail(watch) => {
+                        let by = WHEEL as isize;
+                        watch.scroll(if up { -by } else { by });
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // A log that is following its end would go on moving under the
+                // selection, so it is held where it is until the selection is
+                // done with.
+                self.deselect();
+                if let Page::Detail(watch) = &mut self.page {
+                    watch.pin();
+                }
+                self.selection = Some(Selection::new(at));
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(selection) = &mut self.selection {
+                    if selection.dragging {
+                        selection.head = at;
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(selection) = &mut self.selection {
+                    // Where the button came up is the far end, whether or not
+                    // the drags on the way were reported: a terminal that
+                    // sends none still says where the release was.
+                    selection.head = at;
+                    selection.dragging = false;
+                    if selection.head == selection.anchor {
+                        // A click that went nowhere is how a selection is put
+                        // away, rather than a selection of the one cell.
+                        self.deselect();
+                    } else {
+                        // Read off the next frame, which is the one that knows
+                        // what the selected cells say.
+                        selection.copy = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Put a selection away, and let a log follow its end again.
+    fn deselect(&mut self) {
+        if self.selection.take().is_some() {
+            if let Page::Detail(watch) = &mut self.page {
+                watch.unpin();
+            }
         }
     }
 
     fn key(&mut self, key: KeyEvent, paint: &dyn Paint) -> Action {
         use KeyCode::*;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        // Whatever the key turns out to do, typing means the selection on
+        // screen is finished with.
+        self.deselect();
 
         // The answer to "cancel the run?": `y` (or `q` again) does, and any
         // other key is a no that is otherwise ignored.
@@ -703,6 +957,40 @@ impl View {
         }
     }
 
+    /// Put selected text on the clipboard, and say what went.
+    ///
+    /// Unlike [`Self::copy`], the terminal is already held by the frame this
+    /// follows, so it is not asked for again.
+    fn copy_text(&mut self, text: &str) {
+        let lines = text.lines().count();
+        let copied = clipboard::copy(text);
+        tracing::info!(lines, copied, "copied a selection");
+
+        // One line is short enough to show back, which is the clearest way of
+        // saying what was caught; more than one is counted instead.
+        let what = match text.lines().next() {
+            Some(line) if lines == 1 => format!("\"{}\"", clip(line, 48)),
+            _ => format!("{lines} lines"),
+        };
+        if copied {
+            self.flash(
+                Line::from(vec![
+                    span("  ✔ copied ", Style::new().green().bold()),
+                    span(what, Style::new().dim()),
+                ]),
+                FLASH_FOR,
+            );
+        } else {
+            self.flash(
+                Line::from(span(
+                    format!("  no clipboard to copy {what} to"),
+                    Style::new().yellow(),
+                )),
+                FLASH_FOR,
+            );
+        }
+    }
+
     fn flash(&mut self, line: Line<'static>, for_: Duration) {
         self.flash = Some((line, Instant::now() + for_));
     }
@@ -723,7 +1011,13 @@ impl View {
         Line::from(span(hint_text(list, done, width), Style::new().dim()))
     }
 
-    fn draw(&mut self, terminal: &mut Term, paint: &dyn Paint) {
+    /// Draw a frame, and hand back any text the selection on it has just been
+    /// let go of over.
+    ///
+    /// The selection is marked on the frame after the page has drawn, so that
+    /// it picks out whatever ended up there, and read back from the same
+    /// frame: what is copied is what was on screen to be seen.
+    fn draw(&mut self, terminal: &mut Term, paint: &dyn Paint) -> Option<String> {
         let width = terminal
             .size()
             .map(|size| size.width as usize)
@@ -734,10 +1028,18 @@ impl View {
             Page::Detail(watch) => Some(paint.detail(watch.id, width)),
             Page::List => None,
         };
-        let _ = terminal.draw(|frame| match detail {
-            None => self.draw_list(frame, screen),
-            Some(detail) => self.draw_detail(frame, screen, detail),
+        let mut copied = None;
+        let _ = terminal.draw(|frame| {
+            match detail {
+                None => self.draw_list(frame, screen),
+                Some(detail) => self.draw_detail(frame, screen, detail),
+            }
+            let skip = self.scrollbar;
+            if let Some(selection) = &mut self.selection {
+                copied = selection.mark(frame.buffer_mut(), skip);
+            }
         });
+        copied
     }
 
     /// The list page: the banner, the steps, the last few notes, the summary,
@@ -772,7 +1074,8 @@ impl View {
             }
         });
         frame.render_stateful_widget(List::new(items), list_area, &mut self.list);
-        self.list_scrollbar = scrollbar(frame, list_area, count, self.list.offset());
+        self.scrollbar = scrollbar(frame, list_area, count, self.list.offset());
+        self.list_scrollbar = self.scrollbar.is_some();
 
         let recent = screen.notes.len() - notes;
         frame.render_widget(
@@ -808,13 +1111,17 @@ impl View {
         match detail {
             Some(detail) => {
                 watch.sync(&detail.files);
-                watch.draw(frame, log_area, &detail);
+                let column = watch.draw(frame, log_area, &detail);
                 frame.render_widget(Paragraph::new(Text::from(step_rows)), step_area);
+                self.scrollbar = column;
             }
-            None => frame.render_widget(
-                Paragraph::new(span("  no such step", Style::new().dim())),
-                log_area,
-            ),
+            None => {
+                frame.render_widget(
+                    Paragraph::new(span("  no such step", Style::new().dim())),
+                    log_area,
+                );
+                self.scrollbar = None;
+            }
         }
         frame.render_widget(Paragraph::new(screen.summary), summary_area);
         let hint = self.hint(screen.done, hint_area.width as usize);
@@ -874,29 +1181,49 @@ fn banner_lines(about: &About, height: u16) -> Vec<Line<'static>> {
 
 /// What the keys do, said at whatever length fits in `width` columns: in full
 /// where there is room, and more tersely where there is not.
+///
+/// Both pages say what a drag does as well as what the keys do. The mouse is
+/// being reported on either, so a drag no longer selects the way it would have
+/// in a terminal left alone, and what it does instead has to be said or it is
+/// a thing that simply stopped working. It outlasts most of the keys on the
+/// way down: only the narrowest terminal, with room for nothing but the keys
+/// themselves, goes without it.
 fn hint_text(list: bool, done: bool, width: usize) -> String {
     let quit = if done { "q quit" } else { "q cancel the run" };
     let quit_short = if done { "q quit" } else { "q cancel" };
-    let tiers = if list {
-        [
-            format!("  ↑/↓ or j/k move · enter open a step · y copy a less command · {quit}"),
-            format!("  ↑/↓ move · enter open · y copy less command · {quit_short}"),
+    let tiers: Vec<String> = if list {
+        vec![
+            format!(
+                "  ↑/↓ or wheel move · enter open a step · drag copies · \
+                 y copy a less command · {quit}"
+            ),
+            format!("  ↑/↓/wheel move · enter open · drag copies · y copy · {quit_short}"),
+            format!("  ↑/↓/wheel · enter · drag copies · y · {quit_short}"),
+            "  ↑/↓ · enter · drag copies · y · q".to_string(),
             "  ↑/↓ · enter · y · q".to_string(),
         ]
     } else {
-        [
+        vec![
             format!(
-                "  esc back · ↑/↓ scroll · G follow · tab next file · y copy a less command · {quit}"
+                "  esc back · ↑/↓ or wheel scroll · G follow · tab next file · drag copies · \
+                 y copy a less command · {quit}"
             ),
-            format!("  esc back · ↑/↓ scroll · G follow · tab file · y copy · {quit_short}"),
+            format!(
+                "  esc back · ↑/↓ or wheel scroll · G follow · tab file · drag copies · \
+                 y copy · {quit_short}"
+            ),
+            format!("  esc back · ↑/↓/wheel · G follow · tab file · drag copies · {quit_short}"),
+            format!("  esc · ↑/↓/wheel · G · tab · drag copies · {quit_short}"),
+            "  esc · ↑/↓ · G · tab · drag copies · q".to_string(),
             "  esc · ↑/↓ · G · tab · y · q".to_string(),
         ]
     };
     tiers
         .iter()
         .find(|tier| columns(tier) <= width)
-        .unwrap_or(&tiers[2])
-        .clone()
+        .or_else(|| tiers.last())
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// The question `q` asks while the run is going, at whatever length fits.
@@ -916,6 +1243,26 @@ fn confirm_text(width: usize) -> String {
 /// How many columns `text` takes.
 fn columns(text: &str) -> usize {
     text.chars().map(|c| c.width().unwrap_or(0)).sum()
+}
+
+/// `text` cut to `max` columns, with an ellipsis for what went: for showing a
+/// line back to whoever just copied it.
+fn clip(text: &str, max: usize) -> String {
+    if columns(text) <= max {
+        return text.to_string();
+    }
+    let mut kept = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > max.saturating_sub(1) {
+            break;
+        }
+        kept.push(c);
+        used += w;
+    }
+    kept.push('…');
+    kept
 }
 
 /// `text` cut to `max` columns from the left, with an ellipsis for what went:
@@ -940,10 +1287,10 @@ fn shorten_left(text: &str, max: usize) -> String {
 }
 
 /// A scrollbar down the right of `area`, if `count` items do not fit in it.
-/// Says whether there was one.
-fn scrollbar(frame: &mut Frame, area: Rect, count: usize, offset: usize) -> bool {
+/// Says which column it took, for whatever has to work around it.
+fn scrollbar(frame: &mut Frame, area: Rect, count: usize, offset: usize) -> Option<u16> {
     if count <= area.height as usize {
-        return false;
+        return None;
     }
     let mut state = ScrollbarState::new(count).position(offset);
     frame.render_stateful_widget(
@@ -953,7 +1300,115 @@ fn scrollbar(frame: &mut Frame, area: Rect, count: usize, offset: usize) -> bool
         area,
         &mut state,
     );
-    true
+    Some(area.right().saturating_sub(1))
+}
+
+// ---------------------------------------------------------------------------
+// Selecting with the mouse
+// ---------------------------------------------------------------------------
+
+/// Text being selected with the mouse, as places on the screen.
+///
+/// Kept as screen cells rather than as places in a log, because the screen is
+/// what it selects from: a step's log, the list's lines, the banner's counts —
+/// whatever has been drawn. What lands on the clipboard is read back out of
+/// the frame, so what was readable is what is copied.
+///
+/// The shape is a terminal's, not a spreadsheet's: from the cell it started on
+/// to the cell it is on now, taking whole rows in between, rather than the
+/// rectangle of the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Selection {
+    anchor: (u16, u16),
+    head: (u16, u16),
+    /// Whether the button is still down. A selection that has been let go of
+    /// stays on screen, and the next thing that happens clears it.
+    dragging: bool,
+    /// Set when the button comes up, and taken by the frame that copies.
+    copy: bool,
+}
+
+impl Selection {
+    fn new(at: (u16, u16)) -> Self {
+        Self {
+            anchor: at,
+            head: at,
+            dragging: true,
+            copy: false,
+        }
+    }
+
+    /// The two ends in reading order.
+    fn ends(&self) -> ((u16, u16), (u16, u16)) {
+        let (a, b) = (self.anchor, self.head);
+        // By row first: a selection running up the screen is the same one as
+        // the selection running down it.
+        if (a.1, a.0) <= (b.1, b.0) {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    }
+
+    /// Whether the selection covers a cell, both ends included.
+    fn covers(&self, x: u16, y: u16) -> bool {
+        let ((sx, sy), (ex, ey)) = self.ends();
+        if y < sy || y > ey {
+            return false;
+        }
+        // One row: between the two. Otherwise the first row runs to the edge
+        // and the last runs from it, the way a terminal's own selection does.
+        match (y == sy, y == ey) {
+            (true, true) => (sx..=ex).contains(&x),
+            (true, false) => x >= sx,
+            (false, true) => x <= ex,
+            (false, false) => true,
+        }
+    }
+
+    /// Draw the selection over the frame, and read it back if it is to be
+    /// copied.
+    ///
+    /// Reversing what is there keeps whatever the page drew — a failure's red,
+    /// a step's bold — and marks it as picked out, without needing to know
+    /// what any of it was.
+    fn mark(&mut self, buffer: &mut Buffer, skip: Option<u16>) -> Option<String> {
+        let area = buffer.area;
+        let wanted = std::mem::take(&mut self.copy);
+        let mut text = String::new();
+        let ((_, sy), (_, ey)) = self.ends();
+
+        for y in sy.max(area.y)..=ey.min(area.bottom().saturating_sub(1)) {
+            let mut row = String::new();
+            for x in area.x..area.right() {
+                if !self.covers(x, y) || skip == Some(x) {
+                    continue;
+                }
+                let Some(cell) = buffer.cell_mut((x, y)) else {
+                    continue;
+                };
+                cell.modifier |= Modifier::REVERSED;
+                if wanted {
+                    // The cells a wide character runs into hold nothing, so
+                    // taking every symbol gives the text back once.
+                    row.push_str(cell.symbol());
+                }
+            }
+            if wanted {
+                // Trailing blanks are the screen's, not the text's.
+                text.push_str(row.trim_end());
+                text.push('\n');
+            }
+        }
+
+        if !wanted {
+            return None;
+        }
+        // A selection of nothing but blank screen is not worth copying, and
+        // saying so would only be in the way.
+        let text = text.trim_end_matches('\n');
+        (!text.trim().is_empty()).then(|| text.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1485,22 @@ impl Watch {
         }
     }
 
+    /// Hold the log still, so that a selection being made from what is on
+    /// screen does not have the screen move under it.
+    fn pin(&mut self) {
+        let (columns, rows) = (self.columns, self.rows);
+        if let Some(log) = &mut self.log {
+            log.pin(columns, rows);
+        }
+    }
+
+    /// Let it follow its end again, if that is where it was.
+    fn unpin(&mut self) {
+        if let Some(log) = &mut self.log {
+            log.unpin();
+        }
+    }
+
     fn follow(&mut self) {
         if let Some(log) = &mut self.log {
             log.follow();
@@ -1038,7 +1509,7 @@ impl Watch {
 
     /// The log, framed: the step and the file above it, where in the file
     /// below.
-    fn draw(&mut self, frame: &mut Frame, area: Rect, detail: &Detail) {
+    fn draw(&mut self, frame: &mut Frame, area: Rect, detail: &Detail) -> Option<u16> {
         let border = Block::new()
             .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(Style::new().dim());
@@ -1125,9 +1596,7 @@ impl Watch {
             area,
         );
         frame.render_widget(Paragraph::new(body), inner);
-        if let Some((count, top)) = scroll {
-            scrollbar(frame, inner, count, top);
-        }
+        scroll.and_then(|(count, top)| scrollbar(frame, inner, count, top))
     }
 }
 
@@ -1140,6 +1609,15 @@ struct LogView {
     tail: Tail,
     /// The first row on screen, or `None` to follow the end as it grows.
     top: Option<Top>,
+    /// Whether the end is to be followed no further, whatever [`Self::top`]
+    /// says. Set while a selection is being made from what is on screen, which
+    /// a log growing underneath would otherwise carry away.
+    pinned: bool,
+    /// Whether the log was following its end when it was pinned, and so is to
+    /// go back to following when the selection is let go of. Holding a log
+    /// still is the selection's doing, not something that was asked for, so it
+    /// is not left behind once the selection is gone.
+    resume: bool,
 }
 
 /// A place in a wrapped file: a line, and a row within it once wrapped.
@@ -1163,6 +1641,8 @@ impl LogView {
         Self {
             tail: Tail::new(path),
             top: None,
+            pinned: false,
+            resume: false,
         }
     }
 
@@ -1172,6 +1652,7 @@ impl LogView {
 
     fn follow(&mut self) {
         self.top = None;
+        self.pinned = false;
     }
 
     fn scroll_to_top(&mut self) {
@@ -1179,6 +1660,29 @@ impl LogView {
             line: self.tail.first(),
             row: 0,
         });
+        self.pinned = false;
+    }
+
+    /// Stay where the screen is now, however the file grows.
+    fn pin(&mut self, width: u16, height: u16) {
+        if self.pinned {
+            return;
+        }
+        let (width, height) = (width.max(1) as usize, height as usize);
+        self.resume = self.top.is_none();
+        self.top = Some(self.top.unwrap_or_else(|| self.follow_top(width, height)));
+        self.pinned = true;
+    }
+
+    /// Let go, and follow the end again if that is what it was doing.
+    fn unpin(&mut self) {
+        if !self.pinned {
+            return;
+        }
+        self.pinned = false;
+        if self.resume {
+            self.top = None;
+        }
     }
 
     /// Where the top of the screen is when following: far enough back from
@@ -1217,7 +1721,7 @@ impl LogView {
     fn top(&mut self, width: usize, height: usize) -> (Top, bool) {
         let follow = self.follow_top(width, height);
         match self.top {
-            Some(top) if top >= follow => {
+            Some(top) if top >= follow && !self.pinned => {
                 self.top = None;
                 (follow, true)
             }
@@ -1265,6 +1769,7 @@ impl LogView {
     /// Move `by` rows down (up, if negative), and follow the end again when
     /// that reaches it.
     fn scroll(&mut self, by: isize, width: u16, height: u16) {
+        self.pinned = false;
         let (width, height) = (width.max(1) as usize, height as usize);
         let follow = self.follow_top(width, height);
         let (mut top, _) = self.top(width, height);
@@ -2129,6 +2634,420 @@ mod tests {
         assert!(text[2].ends_with("logging off"), "{:?}", text[2]);
     }
 
+    // -- the wheel ----------------------------------------------------------
+
+    /// A run of one finished step, which remembers where it was asked to put
+    /// its cursor.
+    #[derive(Default)]
+    struct OneStep {
+        moves: Mutex<Vec<Motion>>,
+    }
+
+    impl Paint for OneStep {
+        fn screen(&self, _width: usize) -> Screen {
+            Screen {
+                steps: vec![StepLine {
+                    id: 7,
+                    line: Line::from("decoder lvs"),
+                    running: false,
+                }],
+                selected: Some(0),
+                done: true,
+                ..Screen::default()
+            }
+        }
+        fn detail(&self, _id: usize, _width: usize) -> Option<Detail> {
+            None
+        }
+        fn move_cursor(&self, motion: Motion) {
+            self.moves.lock().unwrap().push(motion);
+        }
+        fn select(&self, _id: usize) {}
+        fn done(&self) -> bool {
+            true
+        }
+        fn detach(&self) -> Vec<Line<'static>> {
+            Vec::new()
+        }
+    }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn mouse(kind: MouseEventKind) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// A step's page, open on a log of `count` one-row lines, three rows tall.
+    fn page(count: usize) -> View {
+        let mut watch = Watch::new(7);
+        watch.log = Some(view(count));
+        watch.columns = 80;
+        watch.rows = 3;
+        View {
+            page: Page::Detail(Box::new(watch)),
+            ..View::default()
+        }
+    }
+
+    /// What the log on an open step's page is showing.
+    fn log_rows(page: &mut View) -> Vec<String> {
+        let Page::Detail(watch) = &mut page.page else {
+            panic!("not a step's page");
+        };
+        shown(watch.log.as_mut().unwrap(), 3)
+    }
+
+    fn is_following(page: &mut View) -> bool {
+        let Page::Detail(watch) = &mut page.page else {
+            panic!("not a step's page");
+        };
+        watch.log.as_mut().unwrap().render(80, 3).following
+    }
+
+    #[test]
+    fn the_wheel_scrolls_an_open_log_and_follows_its_end_again_at_the_bottom() {
+        let mut page = page(100);
+        assert_eq!(log_rows(&mut page), ["97", "98", "99"]);
+
+        // A notch is WHEEL rows, and the log stops following its end.
+        page.event(mouse(MouseEventKind::ScrollUp), &OneStep::default());
+        assert_eq!(log_rows(&mut page), ["94", "95", "96"]);
+        page.event(mouse(MouseEventKind::ScrollUp), &OneStep::default());
+        assert_eq!(log_rows(&mut page), ["91", "92", "93"]);
+        assert!(!is_following(&mut page));
+
+        // Back down to the end, and it follows again.
+        for _ in 0..2 {
+            page.event(mouse(MouseEventKind::ScrollDown), &OneStep::default());
+        }
+        assert_eq!(log_rows(&mut page), ["97", "98", "99"]);
+        assert!(is_following(&mut page));
+    }
+
+    #[test]
+    fn the_wheel_moves_the_cursor_on_the_list() {
+        let paint = OneStep::default();
+        let mut view = View::default();
+
+        view.event(mouse(MouseEventKind::ScrollUp), &paint);
+        view.event(mouse(MouseEventKind::ScrollDown), &paint);
+        assert_eq!(
+            *paint.moves.lock().unwrap(),
+            [Motion::Up(WHEEL), Motion::Down(WHEEL)]
+        );
+        // Still the list: the wheel does not open anything.
+        assert!(matches!(view.page, Page::List));
+    }
+
+    #[test]
+    fn nothing_else_the_mouse_does_counts_on_either_page() {
+        let idle = [
+            MouseEventKind::Moved,
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Down(MouseButton::Right),
+            // The wheel tilted sideways: there is nothing to scroll across,
+            // because a log's lines are wrapped rather than run off the edge.
+            MouseEventKind::ScrollLeft,
+            MouseEventKind::ScrollRight,
+        ];
+
+        // Nothing on screen is meant to be clicked, and a drag is someone
+        // reaching for the terminal's selection rather than for the display.
+        let paint = OneStep::default();
+        let mut view = View::default();
+        for kind in idle {
+            assert!(matches!(view.event(mouse(kind), &paint), Action::None));
+        }
+        assert!(paint.moves.lock().unwrap().is_empty());
+        assert!(matches!(view.page, Page::List));
+
+        let mut page = page(100);
+        page.event(mouse(MouseEventKind::ScrollUp), &paint);
+        for kind in idle {
+            page.event(mouse(kind), &paint);
+        }
+        assert_eq!(log_rows(&mut page), ["94", "95", "96"]);
+    }
+
+    #[test]
+    fn only_the_pointer_moving_does_not_earn_a_frame_of_its_own() {
+        // It changes nothing on screen, and a terminal reporting it does so
+        // continuously. Nothing asks for it, and this is the guard if one
+        // arrives anyway.
+        assert!(!worth_a_frame(&mouse(MouseEventKind::Moved)));
+
+        // A drag pulls the selection with it, which is worth seeing happen.
+        assert!(worth_a_frame(&mouse(MouseEventKind::Drag(
+            MouseButton::Left
+        ))));
+        assert!(worth_a_frame(&mouse(MouseEventKind::Down(
+            MouseButton::Left
+        ))));
+        assert!(worth_a_frame(&mouse(MouseEventKind::ScrollUp)));
+        assert!(worth_a_frame(&mouse(MouseEventKind::ScrollDown)));
+        assert!(worth_a_frame(&Event::Key(press(KeyCode::Char('j')))));
+        assert!(worth_a_frame(&Event::Resize(80, 24)));
+    }
+
+    #[test]
+    fn the_keys_still_open_and_close_a_step_page() {
+        let paint = OneStep::default();
+        // The cursor is ordinarily put here by the frame that drew the list.
+        let mut view = View {
+            selected: Some(7),
+            ..View::default()
+        };
+        view.key(press(KeyCode::Enter), &paint);
+        assert!(matches!(view.page, Page::Detail(_)));
+        view.key(press(KeyCode::Esc), &paint);
+        assert!(matches!(view.page, Page::List));
+    }
+
+    // -- selecting ----------------------------------------------------------
+
+    fn click(kind: MouseEventKind, at: (u16, u16)) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: at.0,
+            row: at.1,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// A buffer with `rows` written into it, one per line from the top left.
+    fn painted(rows: &[&str], width: u16) -> Buffer {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, rows.len() as u16));
+        for (y, row) in rows.iter().enumerate() {
+            for (x, c) in row.chars().enumerate() {
+                if let Some(cell) = buffer.cell_mut((x as u16, y as u16)) {
+                    cell.set_symbol(&c.to_string());
+                }
+            }
+        }
+        buffer
+    }
+
+    /// The text a drag from `from` to `to` takes off `rows`.
+    fn dragged(rows: &[&str], width: u16, from: (u16, u16), to: (u16, u16)) -> Option<String> {
+        let mut buffer = painted(rows, width);
+        let mut selection = Selection::new(from);
+        selection.head = to;
+        selection.copy = true;
+        selection.mark(&mut buffer, None)
+    }
+
+    #[test]
+    fn a_selection_takes_whole_rows_between_its_ends_the_way_a_terminal_does() {
+        let rows = [
+            "**ERROR: bad thing",
+            "  at decoder.v:12",
+            "  and again here",
+        ];
+
+        // Within one row, it is the run between the two cells, both included.
+        assert_eq!(dragged(&rows, 20, (2, 0), (6, 0)).unwrap(), "ERROR");
+
+        // Across rows, the first runs to the edge and the last runs from it.
+        assert_eq!(
+            dragged(&rows, 20, (9, 0), (16, 1)).unwrap(),
+            "bad thing\n  at decoder.v:12"
+        );
+        assert_eq!(
+            dragged(&rows, 20, (0, 0), (15, 2)).unwrap(),
+            "**ERROR: bad thing\n  at decoder.v:12\n  and again here"
+        );
+
+        // Dragged back up the screen it is the same selection.
+        assert_eq!(
+            dragged(&rows, 20, (16, 1), (9, 0)).unwrap(),
+            dragged(&rows, 20, (9, 0), (16, 1)).unwrap()
+        );
+
+        // The blanks past the end of a line are the screen's, not the text's.
+        assert_eq!(
+            dragged(&rows, 40, (0, 2), (39, 2)).unwrap(),
+            "  and again here"
+        );
+
+        // Nor is a scrollbar down the edge text: dragging a log to the right
+        // of the screen must not paste a column of furniture along with it.
+        let mut buffer = painted(&["one    ║", "two    █"], 8);
+        let mut selection = Selection::new((0, 0));
+        selection.head = (7, 1);
+        selection.copy = true;
+        assert_eq!(selection.mark(&mut buffer, Some(7)).unwrap(), "one\ntwo");
+        // And a selection of nothing but screen is not worth copying.
+        assert!(dragged(&["", ""], 20, (5, 0), (9, 1)).is_none());
+    }
+
+    #[test]
+    fn a_selection_reverses_what_it_covers_and_leaves_the_rest() {
+        let mut buffer = painted(&["abcdef", "ghijkl"], 6);
+        let mut selection = Selection::new((4, 0));
+        selection.head = (1, 1);
+        assert!(
+            selection.mark(&mut buffer, None).is_none(),
+            "not asked to copy yet"
+        );
+
+        let reversed = |x: u16, y: u16| {
+            buffer
+                .cell((x, y))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        };
+        // The first row from the anchor to the edge, the last up to the head.
+        assert!(!reversed(3, 0));
+        assert!(reversed(4, 0) && reversed(5, 0));
+        assert!(reversed(0, 1) && reversed(1, 1));
+        assert!(!reversed(2, 1));
+    }
+
+    #[test]
+    fn dragging_selects_and_letting_go_asks_for_the_copy() {
+        let paint = OneStep::default();
+        let mut view = View::default();
+
+        view.event(
+            click(MouseEventKind::Down(MouseButton::Left), (3, 4)),
+            &paint,
+        );
+        assert_eq!(view.selection.unwrap().anchor, (3, 4));
+        view.event(
+            click(MouseEventKind::Drag(MouseButton::Left), (9, 6)),
+            &paint,
+        );
+        let selection = view.selection.unwrap();
+        assert_eq!((selection.anchor, selection.head), ((3, 4), (9, 6)));
+        assert!(selection.dragging && !selection.copy);
+
+        // Letting go leaves it on screen, marked for the next frame to copy.
+        view.event(click(MouseEventKind::Up(MouseButton::Left), (9, 6)), &paint);
+        let selection = view.selection.unwrap();
+        assert!(!selection.dragging && selection.copy);
+
+        // A click that goes nowhere is how it is put away again.
+        view.event(
+            click(MouseEventKind::Down(MouseButton::Left), (1, 1)),
+            &paint,
+        );
+        view.event(click(MouseEventKind::Up(MouseButton::Left), (1, 1)), &paint);
+        assert!(view.selection.is_none());
+    }
+
+    #[test]
+    fn moving_on_puts_a_selection_away() {
+        let paint = OneStep::default();
+        for moved_on in [
+            click(MouseEventKind::ScrollUp, (0, 0)),
+            click(MouseEventKind::ScrollDown, (0, 0)),
+            Event::Key(press(KeyCode::Char('j'))),
+            Event::Key(press(KeyCode::Enter)),
+        ] {
+            let mut view = View::default();
+            view.event(
+                click(MouseEventKind::Down(MouseButton::Left), (3, 4)),
+                &paint,
+            );
+            view.event(
+                click(MouseEventKind::Drag(MouseButton::Left), (9, 6)),
+                &paint,
+            );
+            assert!(view.selection.is_some());
+            view.event(moved_on, &paint);
+            assert!(view.selection.is_none(), "still selected after moving on");
+        }
+    }
+
+    #[test]
+    fn starting_a_selection_holds_a_following_log_still() {
+        let paint = OneStep::default();
+        let mut page = page(100);
+        assert!(is_following(&mut page));
+        assert_eq!(log_rows(&mut page), ["97", "98", "99"]);
+
+        // Pressing the button pins it where it is...
+        page.event(
+            click(MouseEventKind::Down(MouseButton::Left), (2, 1)),
+            &paint,
+        );
+        let Page::Detail(watch) = &mut page.page else {
+            panic!("not a step's page");
+        };
+        // ...so the lines that arrive during the drag do not carry it away.
+        for n in 100..110 {
+            watch.log.as_mut().unwrap().tail.push(n.to_string());
+        }
+        assert_eq!(log_rows(&mut page), ["97", "98", "99"]);
+        assert!(!is_following(&mut page));
+
+        // Putting the selection away lets it follow again.
+        page.event(click(MouseEventKind::Up(MouseButton::Left), (2, 1)), &paint);
+        assert!(page.selection.is_none());
+        assert_eq!(log_rows(&mut page), ["107", "108", "109"]);
+        assert!(is_following(&mut page));
+    }
+
+    #[test]
+    fn reporting_the_mouse_asks_for_drags_but_not_for_idle_motion() {
+        use ratatui::crossterm::Command;
+
+        let sequence = |on: bool| {
+            let mut out = String::new();
+            ReportMouse(on).write_ansi(&mut out).unwrap();
+            out
+        };
+        let on = sequence(true);
+        // Without button-event tracking a drag is never reported, and a
+        // selection could never grow past the cell it started on.
+        assert!(on.contains("\x1b[?1002h"), "no drags: {on:?}");
+        assert!(on.contains("\x1b[?1000h"), "no buttons or wheel: {on:?}");
+        assert!(on.contains("\x1b[?1006h"), "no SGR coordinates: {on:?}");
+        // Any-event tracking would report the pointer for the whole run.
+        assert!(!on.contains("1003"), "asked for idle motion: {on:?}");
+
+        // Everything asked for is given back, and nothing else is.
+        let off = sequence(false);
+        for mode in ["1000", "1002", "1006"] {
+            assert!(on.contains(&format!("?{mode}h")), "{mode} not set: {on:?}");
+            assert!(
+                off.contains(&format!("?{mode}l")),
+                "{mode} not unset: {off:?}"
+            );
+        }
+        assert_eq!(on.matches('\x1b').count(), off.matches('\x1b').count());
+    }
+
+    #[test]
+    fn a_release_away_from_the_press_selects_even_with_no_drags_reported() {
+        // A terminal that reports the buttons but not the motion between them
+        // still says where the release was, and that is the far end.
+        let paint = OneStep::default();
+        let mut view = View::default();
+        view.event(
+            click(MouseEventKind::Down(MouseButton::Left), (4, 2)),
+            &paint,
+        );
+        view.event(
+            click(MouseEventKind::Up(MouseButton::Left), (30, 5)),
+            &paint,
+        );
+
+        let selection = view.selection.expect("nothing selected");
+        assert_eq!((selection.anchor, selection.head), ((4, 2), (30, 5)));
+        assert!(selection.copy && !selection.dragging);
+    }
+
     // -- fitting the width --------------------------------------------------
 
     #[test]
@@ -2164,6 +3083,37 @@ mod tests {
         }
         assert!(hint_text(false, true, 200).starts_with("  esc back"));
         assert!(columns(&hint_text(false, true, 40)) <= 40);
+
+        // The longer tiers are written across two source lines, and a string
+        // continuation that did not eat its indentation would show up as a gap
+        // in the middle of the line.
+        for list in [true, false] {
+            for width in [200, 120, 95, 80, 50, 20] {
+                let hint = hint_text(list, false, width);
+                assert!(!hint.trim_start().contains("  "), "{width}: {hint}");
+            }
+        }
+
+        // The mouse is reported on both pages, so both own up to `shift`
+        // wherever there is room for more than the keys themselves.
+        for list in [true, false] {
+            for done in [true, false] {
+                for width in [200, 120, 100, 95, 80, 63, 50, 40] {
+                    let hint = hint_text(list, done, width);
+                    assert!(columns(&hint) <= width, "{list} {width}: {hint}");
+                    assert!(hint.contains("drag copies"), "{list} {width}: {hint}");
+                    // Nothing offers to cancel a run that is already over.
+                    assert!(!done || !hint.contains("cancel"), "{width}: {hint}");
+                }
+            }
+            assert!(hint_text(list, false, 200).contains("wheel"));
+
+            // Below that, the keys are all that fits — the list holds on a
+            // little longer, having fewer of them to list.
+            let floor = if list { 35 } else { 39 };
+            assert!(hint_text(list, false, floor).contains("drag copies"));
+            assert!(!hint_text(list, false, floor - 1).contains("drag"));
+        }
     }
 
     #[test]

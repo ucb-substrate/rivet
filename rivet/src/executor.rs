@@ -74,8 +74,13 @@ impl ExecuteConfig {
         self
     }
 
-    /// Whether to draw the live progress display. When disabled (or when stderr
-    /// is not a terminal) the run falls back to plain line logging.
+    /// Whether to draw the live progress display. Defaults to on.
+    ///
+    /// The display takes the screen for the whole run and is where the run is
+    /// controlled from: steps under a cursor, their logs a key away, `q` to
+    /// cancel. Turn it off for a run that should just report, one line per
+    /// event, and leave the terminal alone — which is also what happens when
+    /// stderr is not a terminal.
     pub fn progress(mut self, progress: bool) -> Self {
         self.progress = progress;
         self
@@ -477,16 +482,29 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
     let graph = Graph::flatten(roots);
     let total = graph.nodes.len();
 
-    let label_width = graph
-        .nodes
-        .iter()
-        .map(|node| node.label.chars().count())
-        .max()
-        .unwrap_or(0);
     // Before the reporter, so `rivet.log` opens with the run it describes.
     let _run_log = log::start_run(&config.log_dir, config.logging);
 
-    let reporter = Reporter::new(total, label_width, config.progress);
+    // The display is told the whole plan up front, so that it can show what is
+    // still to come as well as what is running. A step that is not run this
+    // time still has a log to offer: the one the last run to run it left.
+    let plan = graph
+        .nodes
+        .iter()
+        .map(|node| progress::Planned {
+            label: node.label.clone(),
+            pinned: node.pinned,
+            deps: node.deps.clone(),
+            log: node
+                .step
+                .read()
+                .log_dir()
+                .map(|dir| log::step_log_path(&dir, &node.label)),
+        })
+        .collect();
+    let workers = config.concurrency.max(1).min(total.max(1));
+    let log_dir = config.logging.then(|| config.log_dir.clone());
+    let reporter = Reporter::new(plan, workers, log_dir, config.progress);
     progress::set_active_reporter(Some(Arc::clone(&reporter)));
 
     let unfinished_deps: Vec<usize> = graph.nodes.iter().map(|node| node.deps.len()).collect();
@@ -504,7 +522,6 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
     });
     let condvar = Condvar::new();
 
-    let workers = config.concurrency.max(1).min(total.max(1));
     let started = Instant::now();
     tracing::info!(steps = total, workers, "run started");
 
@@ -588,7 +605,7 @@ fn worker(
         drop(guard);
 
         let node = &graph.nodes[index];
-        let outcome = run_node(node, reporter, logging);
+        let outcome = run_node(index, node, reporter, logging);
 
         let mut guard = shared.lock().unwrap();
         guard.in_flight -= 1;
@@ -624,15 +641,20 @@ fn worker(
 
         for index in dropped {
             let blocked = &graph.nodes[index];
-            reporter.block(&blocked.label, &node.label, previous_log(blocked));
+            reporter.block(index, &node.label);
             tracing::warn!(step = %blocked.label, blame = %node.label, "blocked by a failed dependency");
         }
     }
 }
 
-fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), StepFailure> {
+fn run_node(
+    index: usize,
+    node: &Node,
+    reporter: &Arc<Reporter>,
+    logging: bool,
+) -> Result<(), StepFailure> {
     if node.pinned {
-        reporter.skip(&node.label, "pinned", previous_log(node));
+        reporter.skip(index);
         tracing::info!(step = %node.label, "pinned, so not run");
         return Ok(());
     }
@@ -645,7 +667,7 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), 
         None
     };
 
-    let handle = reporter.start(&node.label, log::open_step_log(log_dir, &node.label));
+    let handle = reporter.start(index, log::open_step_log(log_dir, &node.label));
     // Guards, because there are several ways out of this function: the step
     // stops being the current one, and its events stop being logged as its own,
     // whichever one is taken.
@@ -693,18 +715,6 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), 
         status: handle.status().map(|status| status.describe()),
         substep: handle.substep().map(|substep| substep.describe()),
     })
-}
-
-/// Where a step that is not being run this time left its log last time, if it
-/// has anywhere to have left one.
-///
-/// Offered to the display so that a pinned step's log can still be read: the
-/// step is being taken as up to date, and its log is how it got that way.
-fn previous_log(node: &Node) -> Option<PathBuf> {
-    node.step
-        .read()
-        .log_dir()
-        .map(|dir| log::step_log_path(&dir, &node.label))
 }
 
 // ---------------------------------------------------------------------------

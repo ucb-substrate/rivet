@@ -211,7 +211,7 @@ impl Step for GenusStep {
             ])
             .current_dir(self.work_dir.clone());
 
-        crate::no_stack_trace_collector(&mut command);
+        crate::kill_on_fatal_signal(&mut command, &self.work_dir)?;
 
         progress::status(format!("running genus (log: {}.syn.out)", self.module));
         let status = exec::run_logged_in(

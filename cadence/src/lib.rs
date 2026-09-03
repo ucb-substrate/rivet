@@ -6,30 +6,81 @@ use indoc::formatdoc;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as FmtWrite;
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Keep a Cadence tool's crash handler from outliving the crash.
+/// The script `GDB` is pointed at. Written into the step's work directory,
+/// beside the tcl, so it needs no packaging and no path known ahead of time.
+const KILL_ON_CRASH: &str = r#"#!/bin/sh
+# Stand-in for `gdb`, pointed at by $GDB when a Cadence tool runs. See
+# `kill_on_fatal_signal` for why this exists and why here.
+#
+# The tool's crash handler forks `.pstk`, which runs `/bin/pstack <pid>`, which
+# runs us: tool -> .pstk (csh) -> pstack (bash) -> here. So the tool is our
+# great-grandparent, and `.pstk`'s live PPid names it.
+ppid() { awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
+tool=$(ppid "$(ppid "$PPID")")
+told=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | awk '{ print $NF }')
+
+# Kill only if the live parent of `.pstk` is the very pid pstack was told to
+# trace. While the tool lives it is blocked in wait4() on this chain, so it
+# cannot exit, so its pid cannot be reused, and the two agree. If it has
+# already died -- a second collector run after the first one killed it --
+# `.pstk` has been reparented and they do not, whoever holds the pid now.
+# Any other shape of chain also fails this test, and we do nothing, which
+# leaves the tool to carry on exactly as it would without us.
+if [ -n "$tool" ] && [ "$tool" = "$told" ] && [ "$tool" -gt 1 ] 2>/dev/null; then
+    kill -9 "$tool"
+fi
+exit 0
+"#;
+
+/// Make a fatal signal actually end a Cadence tool.
 ///
 /// On a fatal signal the tool prints its own stack trace and then forks
-/// `etc/innovus/.pstk`, which runs `/bin/pstack` — a `gdb` wrapper on RHEL —
-/// against itself. That attach ptrace-stops every one of the tool's threads,
-/// including the one draining its own stdout pipe, and `gdb` then blocks
-/// writing the backtrace into that same pipe. Whichever of the two wins the
-/// race decides whether the tool dies or sits there frozen with the run waiting
-/// on it, which is no way to find out that a stage has crashed.
+/// `etc/innovus/.pstk`, which runs `/bin/pstack <pid>` — on RHEL a shell script
+/// that runs whatever `$GDB` names, unchecked. Two things follow.
 ///
-/// `gstack` honours `GDB` and `.pstk` honours `NO_GDB`, so between them the
-/// collector becomes a no-op and the signal always kills the tool. The stack
-/// trace is not lost with it — that comes from the tool's own handler, before
-/// the fork — and the collector's `pstack` dump was never symbolised anyway.
+/// The first is that the collector must not be a real debugger. `gstack`'s gdb
+/// attaches by ptrace, stopping every one of the tool's threads including the
+/// one draining its own stdout pipe, and gdb then blocks writing the backtrace
+/// into that pipe — a deadlock leaving the process alive with the run waiting
+/// on it.
 ///
-/// Both are read by shell scripts inside the tool's own installation, so a
-/// version that stops consulting them would quietly stop being covered here.
-/// Nothing depends on it having worked: a tool that hangs anyway is still
-/// reported, by the quiet-output warning in `rivet::exec`.
-pub fn no_stack_trace_collector(command: &mut Command) -> &mut Command {
-    command.env("GDB", "/bin/true").env("NO_GDB", "1")
+/// The second is that being `$GDB` is a precise signal. `.pstk` is forked from
+/// the crash handler and nowhere else, so a script in that position is called
+/// exactly once, at the moment the tool has decided it is dying. That matters
+/// more than not deadlocking, because the tool does not reliably die on its
+/// own: its handler calls `exit()`, and the atexit path runs `seiCleanupLog`
+/// into `mm_fre_rare`, the tool's own allocator, which after a crash that
+/// damaged the heap can spin on one core indefinitely with every other thread
+/// parked behind it. That, not the debugger, is why a crashed step could hang
+/// for hours.
+///
+/// So `GDB` names a script that SIGKILLs the tool. It runs before the handler
+/// reaches `exit()`, so that loop is never entered: 192ms to a status of 137,
+/// against 5s for a small design that unwinds cleanly and forever for one that
+/// does not. What is given up is the tail of the tool's own shutdown — the AAE
+/// memory dump and the license summary — which a crash of this kind never
+/// reaches anyway. The stack trace is already printed by then.
+///
+/// `NO_GDB` covers `.pstk`'s second half, which runs only on a machine with no
+/// `pstack` at all; there `.pstk` picks its own debugger with a csh `set`,
+/// shadowing the environment, so `NO_GDB` is the only lever there.
+///
+/// Neither variable is documented, and both are read by shell scripts inside
+/// the tool's own installation, so a version that stops consulting them stops
+/// being covered here. Nothing depends on it having worked: a tool that hangs
+/// anyway is still reported by the quiet-output warning in `rivet::exec`.
+pub fn kill_on_fatal_signal(command: &mut Command, work_dir: &Path) -> io::Result<()> {
+    let script = work_dir.join("kill_on_crash.sh");
+    fs::write(&script, KILL_ON_CRASH)?;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+    command.env("GDB", &script).env("NO_GDB", "1");
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

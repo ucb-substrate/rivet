@@ -486,7 +486,7 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
     // Before the reporter, so `rivet.log` opens with the run it describes.
     let _run_log = log::start_run(&config.log_dir, config.logging);
 
-    let reporter = Reporter::new(total, label_width, config.concurrency, config.progress);
+    let reporter = Reporter::new(total, label_width, config.progress);
     progress::set_active_reporter(Some(Arc::clone(&reporter)));
 
     let unfinished_deps: Vec<usize> = graph.nodes.iter().map(|node| node.deps.len()).collect();
@@ -623,16 +623,16 @@ fn worker(
         drop(guard);
 
         for index in dropped {
-            let label = &graph.nodes[index].label;
-            reporter.block(label, &node.label);
-            tracing::warn!(step = %label, blame = %node.label, "blocked by a failed dependency");
+            let blocked = &graph.nodes[index];
+            reporter.block(&blocked.label, &node.label, previous_log(blocked));
+            tracing::warn!(step = %blocked.label, blame = %node.label, "blocked by a failed dependency");
         }
     }
 }
 
 fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), StepFailure> {
     if node.pinned {
-        reporter.skip(&node.label, "pinned");
+        reporter.skip(&node.label, "pinned", previous_log(node));
         tracing::info!(step = %node.label, "pinned, so not run");
         return Ok(());
     }
@@ -693,6 +693,18 @@ fn run_node(node: &Node, reporter: &Arc<Reporter>, logging: bool) -> Result<(), 
         status: handle.status().map(|status| status.describe()),
         substep: handle.substep().map(|substep| substep.describe()),
     })
+}
+
+/// Where a step that is not being run this time left its log last time, if it
+/// has anywhere to have left one.
+///
+/// Offered to the display so that a pinned step's log can still be read: the
+/// step is being taken as up to date, and its log is how it got that way.
+fn previous_log(node: &Node) -> Option<PathBuf> {
+    node.step
+        .read()
+        .log_dir()
+        .map(|dir| log::step_log_path(&dir, &node.label))
 }
 
 // ---------------------------------------------------------------------------

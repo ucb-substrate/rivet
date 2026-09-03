@@ -254,7 +254,8 @@ fn main() {
         "   pinned steps are skipped; drc, lvs and merge run together once par is done.\n\
          \x20  `decoder par` shows a Rust status on the left and tool substeps on the right.\n\
          \x20  ↑/↓ or j/k move the cursor between the steps, finished ones included;\n\
-         \x20  enter copies a command for following that step's log in another terminal."
+         \x20  enter opens a step to read its log as it is written, esc comes back,\n\
+         \x20  and q leaves the display once you are done looking."
     );
     match ExecuteConfig::new()
         .concurrency(4)

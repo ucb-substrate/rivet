@@ -318,6 +318,16 @@ pub(crate) fn open_step_log(dir: Option<PathBuf>, label: &str) -> Option<Arc<Log
     LogFile::open(&dir, &name).map(Arc::new)
 }
 
+/// Where the log file for a step working in `dir` is, whether or not this run
+/// writes it.
+///
+/// For a step that is not run this time — pinned, or blocked by a failure —
+/// this is where the last run that did run it left its log, which is the only
+/// log there is to offer for it.
+pub(crate) fn step_log_path(dir: &Path, label: &str) -> PathBuf {
+    dir.join(step_log_name(label))
+}
+
 /// What a step's log file is called.
 ///
 /// A label is a display string, not a file name: it usually has a space in it

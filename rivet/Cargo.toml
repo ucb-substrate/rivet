@@ -33,10 +33,10 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 tracing-appender = "0.2"
 
 # Both already come with `ratatui`'s crossterm, so neither adds a crate to the
-# build. `rustix` puts back the signal keys that raw mode turns off, and
-# `signal-hook` catches the interrupt so the terminal can be handed back before
-# the run ends. See `src/tui.rs`.
+# build. `rustix` puts back the signal keys that raw mode turns off and sends
+# the interrupt that cancels a run, and `signal-hook` catches the interrupt so
+# the terminal can be handed back before the run ends. See `src/tui.rs`.
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "0.38", features = ["termios"] }
+rustix = { version = "0.38", features = ["termios", "process"] }
 signal-hook = "0.3"
 

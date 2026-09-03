@@ -14,14 +14,22 @@
 //! keypress away — instead of turning into terminal history the moment it
 //! ends. `q` gives the screen back, and the run's record is left in the
 //! ordinary scrollback then: one line per step, in the order things happened,
-//! so the terminal still shows what the run did. `q` before the run is over
-//! does the same and leaves the run going, reporting plainly from then on.
+//! so the terminal still shows what the run did.
 //!
-//! There are two pages. The list is every step, in the order they started,
-//! with a cursor on one of them; `enter` opens that step, which is its log as
-//! it is written, with the step's own line and the run's summary underneath;
-//! `esc` closes it again. The step's files — the output of the tool it is
-//! running, and its own log — are a `tab` apart.
+//! While the run is going, the display is where it is controlled from: `q`
+//! cancels it, after asking, by sending the run the same interrupt `^C` would
+//! — to the whole process group, so the tools the steps are running die with
+//! it — and the run ends as an interrupted one. A run that is not wanted on
+//! screen at all is started with the display turned off
+//! ([`ExecuteConfig::progress`](crate::ExecuteConfig::progress)), and reports
+//! plainly instead.
+//!
+//! There are two pages. The list is every step in the run — pinned, finished,
+//! running, and greyed, still to come — with a cursor on one of them; `enter`
+//! opens that step, which is its log as it is written, with the step's own line
+//! and the run's summary underneath; `esc` closes it again. The step's files —
+//! the output of the tool it is running, and its own log — are a `tab` apart,
+//! and `y` copies a command to open them in a terminal of one's own.
 //!
 //! Because the display owns the whole screen, it can be redrawn from nothing at
 //! any moment. The terminal being resized redraws it, and so does `^L`, for
@@ -34,9 +42,11 @@
 //! `cfmakeraw`, which turns off the signal keys along with everything else.
 //! That would be wrong here: `^C` has to stay a signal, because the terminal
 //! sends it to the whole foreground process group and the tools a step is
-//! running are in that group. Interrupting a run must keep killing them. So
-//! `ISIG` is put back immediately afterwards, and `^C` and `^Z` go on meaning
-//! what they always did.
+//! running are in that group. Interrupting a run must keep killing them — at
+//! once, and whatever state the display is in, which is what makes `^C` the
+//! way out of a display that has stopped answering. So `ISIG` is put back
+//! immediately afterwards, and `^C` and `^Z` go on meaning what they always
+//! did. `q` asks before it cancels, and then sends the group the same signal.
 //!
 //! What is then left to do is tidy up after them. [`signal_hook`] notices the
 //! interrupt, the display gives the terminal back, and the run exits; a second
@@ -87,11 +97,21 @@ const FLASH_FOR: Duration = Duration::from_secs(4);
 /// Longer, for a message that has to be read rather than glanced at.
 const FLASH_LONG: Duration = Duration::from_secs(12);
 
-/// How much of a step's log a copied command shows before it starts following.
-const TAIL_LINES: usize = 100;
-
 /// Most notes kept on screen under the list.
 const MAX_NOTES: usize = 3;
+
+/// The name over the list, three rows of block letters.
+const WORDMARK: [&str; 3] = [
+    "█▀▄ █ █ █ █▀▀ ▀█▀",
+    "█▀▄ █ ▀▄▀ █▀▀  █ ",
+    "▀ ▀ ▀  ▀  ▀▀▀  ▀ ",
+];
+
+/// Fewest rows a terminal needs before the banner gets the wordmark; below
+/// this it is one line, and below [`TITLE_ROWS`] nothing at all. The list is
+/// what the screen is for, and the banner is not to crowd it out.
+const BANNER_ROWS: u16 = 16;
+const TITLE_ROWS: u16 = 8;
 
 /// Columns the continuation rows of a wrapped step line are indented by: the
 /// width of the cursor and the glyph, so the text lines up under itself.
@@ -124,9 +144,22 @@ pub(crate) enum Motion {
     Last,
 }
 
+/// The run, as the banner over the list describes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct About {
+    /// The steps the run was asked for, which nothing else waits on.
+    pub targets: Vec<String>,
+    pub steps: usize,
+    pub workers: usize,
+    /// Where `rivet.log` is being written, if it is.
+    pub log_dir: Option<PathBuf>,
+}
+
 /// The list page: every step so far, and how the run is going.
 #[derive(Default)]
 pub(crate) struct Screen {
+    /// The run itself, for the banner.
+    pub about: About,
     /// One line per step, in the order they are drawn.
     pub steps: Vec<StepLine>,
     /// Which of them the cursor is on. The list scrolls to keep it in view.
@@ -158,12 +191,14 @@ pub(crate) struct Detail {
     pub line: Line<'static>,
     /// Every file the step has written or is writing, the most useful first.
     pub files: Vec<PathBuf>,
-    /// What a command to follow the step should follow: the files the tool it is
-    /// running is writing now, or its own log until it runs one.
+    /// What a command to read the step's log should open: the files the tool it
+    /// is running is writing now, or its own log until it runs one.
     pub follow: Vec<PathBuf>,
     /// Whether the step is still going, which is what decides whether a file
     /// that is not there yet is worth waiting for.
     pub running: bool,
+    /// Whether the step has yet to start, which is why it has no files.
+    pub pending: bool,
 }
 
 /// What the display draws, and what it does when a key is typed.
@@ -171,11 +206,15 @@ pub(crate) struct Detail {
 /// Implemented by [`crate::progress::Reporter`], and held weakly: the drawing
 /// must not be what keeps a finished run alive.
 pub(crate) trait Paint: Send + Sync {
-    /// What the list page should show now.
-    fn screen(&self) -> Screen;
+    /// What the list page should show now, on a terminal `width` columns wide.
+    ///
+    /// The width is for fitting: a line that fits is drawn as it is, and one
+    /// that does not is made to.
+    fn screen(&self, width: usize) -> Screen;
 
-    /// One step, by the id its line in the list carried, for its own page.
-    fn detail(&self, id: usize) -> Option<Detail>;
+    /// One step, by the id its line in the list carried, for its own page on a
+    /// terminal `width` columns wide.
+    fn detail(&self, id: usize, width: usize) -> Option<Detail>;
 
     /// Move the cursor through the list.
     fn move_cursor(&self, motion: Motion);
@@ -453,6 +492,12 @@ fn run_loop(stage: &Stage, painter: &Weak<dyn Paint>) {
                             stage.close(record);
                             return;
                         }
+                        // The interrupt reaches this process too, and is dealt
+                        // with at the top of the loop like any other.
+                        Action::Cancel => {
+                            tracing::warn!("run cancelled from the display");
+                            signals::interrupt_run(&stage.interrupted);
+                        }
                     }
                     // Drawn at once, so the key is seen to land.
                     next_frame = Instant::now();
@@ -484,10 +529,12 @@ enum Action {
     None,
     /// Draw everything again from nothing.
     Redraw,
-    /// Copy a command to follow these files.
+    /// Copy a command to read these files.
     Copy(Vec<PathBuf>),
-    /// Give the screen back.
+    /// Give the screen back, the run being over.
     Quit,
+    /// Cancel the run, confirmed.
+    Cancel,
 }
 
 /// Everything about the display that is not the run: which page is open, how
@@ -498,10 +545,16 @@ struct View {
     list: ListState,
     /// Rows the list had last frame, which is how far a page key moves.
     list_rows: usize,
+    /// Whether the list had a scrollbar last frame, which takes a column off
+    /// what its lines can use.
+    list_scrollbar: bool,
     /// The step under the cursor as of the last frame, by id.
     selected: Option<usize>,
     /// Something to say on the hint line, until the moment it expires.
     flash: Option<(Line<'static>, Instant)>,
+    /// `q` was pressed while the run was going, and the next key decides
+    /// whether the run is cancelled.
+    confirming: bool,
 }
 
 #[derive(Default)]
@@ -526,9 +579,25 @@ impl View {
         use KeyCode::*;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+        // The answer to "cancel the run?": `y` (or `q` again) does, and any
+        // other key is a no that is otherwise ignored.
+        if self.confirming {
+            self.confirming = false;
+            return match key.code {
+                Char('y') | Char('Y') | Char('q') | Enter => Action::Cancel,
+                _ => Action::None,
+            };
+        }
+
         match key.code {
             Char('l') if ctrl => return Action::Redraw,
-            Char('q') => return Action::Quit,
+            // Once the run is over there is nothing to cancel, and `q` is just
+            // the way out. Before that, it is a question first.
+            Char('q') if paint.done() => return Action::Quit,
+            Char('q') => {
+                self.confirming = true;
+                return Action::None;
+            }
             _ => {}
         }
 
@@ -552,7 +621,7 @@ impl View {
                     Char('y') => {
                         let files = self
                             .selected
-                            .and_then(|id| paint.detail(id))
+                            .and_then(|id| paint.detail(id, usize::MAX))
                             .map(|detail| detail.follow)
                             .unwrap_or_default();
                         return Action::Copy(files);
@@ -591,20 +660,21 @@ impl View {
         Action::None
     }
 
-    /// Copy a command for reading `files` as they are written.
+    /// Copy a command for reading `files` in full.
     ///
-    /// What someone watching a step wants beyond this screen is the same log
-    /// in a terminal of their own, and this hands over the command for it.
+    /// This screen shows the end of a log as it grows. What someone wants
+    /// beyond that is the whole of it, in a terminal of their own, and this
+    /// hands over the command for it.
     fn copy(&mut self, stage: &Stage, files: &[PathBuf]) {
         if files.is_empty() {
             self.flash(
-                Line::from(span("  nothing to follow yet", Style::new().yellow())),
+                Line::from(span("  nothing to read yet", Style::new().yellow())),
                 FLASH_FOR,
             );
             return;
         }
-        let command = follow_command(files);
-        tracing::info!(%command, "copied a command to follow the log");
+        let command = view_command(files);
+        tracing::info!(%command, "copied a command to read the log");
 
         // Held still while it writes: asking the terminal to copy is an escape
         // sequence on the same stream the display draws on.
@@ -637,34 +707,31 @@ impl View {
         self.flash = Some((line, Instant::now() + for_));
     }
 
-    /// The bottom line: what was just done, or what the keys do.
-    fn hint(&mut self, done: bool) -> Line<'static> {
+    /// The bottom line: the question being asked, what was just done, or what
+    /// the keys do.
+    fn hint(&mut self, done: bool, width: usize) -> Line<'static> {
+        if self.confirming {
+            return Line::from(span(confirm_text(width), Style::new().yellow().bold()));
+        }
         if let Some((line, until)) = &self.flash {
             if Instant::now() < *until {
                 return line.clone();
             }
             self.flash = None;
         }
-        let quit = if done {
-            "q quit"
-        } else {
-            "q leave the display (the run goes on)"
-        };
-        let keys = match self.page {
-            Page::List => {
-                format!("  ↑/↓ or j/k move · enter open a step · y copy a tail command · {quit}")
-            }
-            Page::Detail(_) => {
-                format!("  esc back · ↑/↓ scroll · G follow · tab next file · y copy a tail command · {quit}")
-            }
-        };
-        Line::from(span(keys, Style::new().dim()))
+        let list = matches!(self.page, Page::List);
+        Line::from(span(hint_text(list, done, width), Style::new().dim()))
     }
 
     fn draw(&mut self, terminal: &mut Term, paint: &dyn Paint) {
-        let screen = paint.screen();
+        let width = terminal
+            .size()
+            .map(|size| size.width as usize)
+            .unwrap_or(80)
+            .max(1);
+        let screen = paint.screen(width - usize::from(self.list_scrollbar));
         let detail = match &self.page {
-            Page::Detail(watch) => Some(paint.detail(watch.id)),
+            Page::Detail(watch) => Some(paint.detail(watch.id, width)),
             Page::List => None,
         };
         let _ = terminal.draw(|frame| match detail {
@@ -673,16 +740,20 @@ impl View {
         });
     }
 
-    /// The list page: the steps, the last few notes, the summary, the hint.
+    /// The list page: the banner, the steps, the last few notes, the summary,
+    /// the hint.
     fn draw_list(&mut self, frame: &mut Frame, screen: Screen) {
+        let banner = banner_lines(&screen.about, frame.area().height);
         let notes = screen.notes.len().min(MAX_NOTES);
-        let [list_area, notes_area, summary_area, hint_area] = Layout::vertical([
+        let [banner_area, list_area, notes_area, summary_area, hint_area] = Layout::vertical([
+            Constraint::Length(banner.len() as u16),
             Constraint::Fill(1),
             Constraint::Length(notes as u16),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(frame.area());
+        frame.render_widget(Paragraph::new(Text::from(banner)), banner_area);
 
         self.list_rows = list_area.height as usize;
         self.selected = screen
@@ -701,7 +772,7 @@ impl View {
             }
         });
         frame.render_stateful_widget(List::new(items), list_area, &mut self.list);
-        scrollbar(frame, list_area, count, self.list.offset());
+        self.list_scrollbar = scrollbar(frame, list_area, count, self.list.offset());
 
         let recent = screen.notes.len() - notes;
         frame.render_widget(
@@ -709,7 +780,7 @@ impl View {
             notes_area,
         );
         frame.render_widget(Paragraph::new(screen.summary), summary_area);
-        let hint = self.hint(screen.done);
+        let hint = self.hint(screen.done, hint_area.width as usize);
         frame.render_widget(Paragraph::new(hint), hint_area);
     }
 
@@ -746,15 +817,133 @@ impl View {
             ),
         }
         frame.render_widget(Paragraph::new(screen.summary), summary_area);
-        let hint = self.hint(screen.done);
+        let hint = self.hint(screen.done, hint_area.width as usize);
         frame.render_widget(Paragraph::new(hint), hint_area);
     }
 }
 
+/// The banner over the list, for a terminal `height` rows tall: the wordmark
+/// with the run's facts beside it, a single line where there is less room,
+/// nothing where there is none.
+fn banner_lines(about: &About, height: u16) -> Vec<Line<'static>> {
+    let targets = if about.targets.is_empty() {
+        "nothing to run".to_string()
+    } else {
+        about.targets.join(", ")
+    };
+    let counts = format!(
+        "{} step{} · {} worker{}",
+        about.steps,
+        if about.steps == 1 { "" } else { "s" },
+        about.workers,
+        if about.workers == 1 { "" } else { "s" },
+    );
+    let logs = match &about.log_dir {
+        Some(dir) => format!("logs in {}", dir.display()),
+        None => "logging off".to_string(),
+    };
+
+    if height >= BANNER_ROWS {
+        let facts = [
+            span(targets, Style::new().bold()),
+            span(counts, Style::new()),
+            span(logs, Style::new().dim()),
+        ];
+        let mut lines: Vec<Line<'static>> = WORDMARK
+            .iter()
+            .zip(facts)
+            .map(|(row, fact)| {
+                Line::from(vec![
+                    span(format!("  {row}   "), Style::new().cyan().bold()),
+                    fact,
+                ])
+            })
+            .collect();
+        // A blank row, so the list does not sit right under it.
+        lines.push(Line::default());
+        lines
+    } else if height >= TITLE_ROWS {
+        vec![Line::from(vec![
+            span("  rivet", Style::new().cyan().bold()),
+            span(format!(" · {targets} · {counts}"), Style::new()),
+        ])]
+    } else {
+        Vec::new()
+    }
+}
+
+/// What the keys do, said at whatever length fits in `width` columns: in full
+/// where there is room, and more tersely where there is not.
+fn hint_text(list: bool, done: bool, width: usize) -> String {
+    let quit = if done { "q quit" } else { "q cancel the run" };
+    let quit_short = if done { "q quit" } else { "q cancel" };
+    let tiers = if list {
+        [
+            format!("  ↑/↓ or j/k move · enter open a step · y copy a less command · {quit}"),
+            format!("  ↑/↓ move · enter open · y copy less command · {quit_short}"),
+            "  ↑/↓ · enter · y · q".to_string(),
+        ]
+    } else {
+        [
+            format!(
+                "  esc back · ↑/↓ scroll · G follow · tab next file · y copy a less command · {quit}"
+            ),
+            format!("  esc back · ↑/↓ scroll · G follow · tab file · y copy · {quit_short}"),
+            "  esc · ↑/↓ · G · tab · y · q".to_string(),
+        ]
+    };
+    tiers
+        .iter()
+        .find(|tier| columns(tier) <= width)
+        .unwrap_or(&tiers[2])
+        .clone()
+}
+
+/// The question `q` asks while the run is going, at whatever length fits.
+fn confirm_text(width: usize) -> String {
+    let tiers = [
+        "  cancel the run? this kills the tools it is running · y cancels · any other key keeps going",
+        "  cancel the run and kill its tools? y cancels · any other key keeps going",
+        "  cancel the run? y/n",
+    ];
+    tiers
+        .iter()
+        .find(|tier| columns(tier) <= width)
+        .unwrap_or(&tiers[2])
+        .to_string()
+}
+
+/// How many columns `text` takes.
+fn columns(text: &str) -> usize {
+    text.chars().map(|c| c.width().unwrap_or(0)).sum()
+}
+
+/// `text` cut to `max` columns from the left, with an ellipsis for what went:
+/// for a path, whose end is the part that tells one from another.
+fn shorten_left(text: &str, max: usize) -> String {
+    if columns(text) <= max {
+        return text.to_string();
+    }
+    let room = max.saturating_sub(1);
+    let mut kept: Vec<char> = Vec::new();
+    let mut used = 0;
+    for c in text.chars().rev() {
+        let w = c.width().unwrap_or(0);
+        if used + w > room {
+            break;
+        }
+        kept.push(c);
+        used += w;
+    }
+    let tail: String = kept.into_iter().rev().collect();
+    format!("…{tail}")
+}
+
 /// A scrollbar down the right of `area`, if `count` items do not fit in it.
-fn scrollbar(frame: &mut Frame, area: Rect, count: usize, offset: usize) {
+/// Says whether there was one.
+fn scrollbar(frame: &mut Frame, area: Rect, count: usize, offset: usize) -> bool {
     if count <= area.height as usize {
-        return;
+        return false;
     }
     let mut state = ScrollbarState::new(count).position(offset);
     frame.render_stateful_widget(
@@ -764,6 +953,7 @@ fn scrollbar(frame: &mut Frame, area: Rect, count: usize, offset: usize) {
         area,
         &mut state,
     );
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +1002,7 @@ impl Watch {
 
     /// Switch to the next (or previous) of the step's files.
     fn next_file(&mut self, by: isize, paint: &dyn Paint) {
-        let Some(files) = paint.detail(self.id).map(|detail| detail.files) else {
+        let Some(files) = paint.detail(self.id, usize::MAX).map(|detail| detail.files) else {
             return;
         };
         if files.is_empty() {
@@ -865,15 +1055,20 @@ impl Watch {
             None => {
                 title.push(span(" no log ", Style::new().dim()));
                 Text::from(span(
-                    "  this step has no files: it has no directory of its own (Step::log_dir)",
+                    if detail.pending {
+                        "  this step has not started"
+                    } else {
+                        "  this step has no files: it has no directory of its own (Step::log_dir)"
+                    },
                     Style::new().dim(),
                 ))
             }
             Some(log) => {
-                title.push(span(
-                    format!(" {} ", log.tail.path.display()),
-                    Style::new().dim(),
-                ));
+                // The path gives way to the label, from the left: its end is
+                // what tells one file from another.
+                let room = (area.width as usize).saturating_sub(columns(&detail.label) + 4);
+                let path = shorten_left(&log.tail.path.display().to_string(), room);
+                title.push(span(format!(" {path} "), Style::new().dim()));
                 if detail.files.len() > 1 {
                     let index = detail
                         .files
@@ -1374,17 +1569,17 @@ fn identity(_: &Metadata) -> (u64, u64) {
 }
 
 // ---------------------------------------------------------------------------
-// Following a log elsewhere
+// Reading a log elsewhere
 // ---------------------------------------------------------------------------
 
-/// `tail` over the files a step is writing.
+/// `less` over the files a step has written or is writing.
 ///
-/// `-F` rather than `-f`, so the command works pasted into a terminal before
-/// the file exists — a step that has not reached that tool yet — and keeps
-/// working when a tool replaces its log rather than appending to it.
-fn follow_command(files: &[PathBuf]) -> String {
+/// The whole log, rather than a tail of it: the tail is what this screen
+/// already shows. Given several files, `less` opens the first and moves to the
+/// next with `:n`.
+fn view_command(files: &[PathBuf]) -> String {
     let files: Vec<String> = files.iter().map(|file| quote(&full_path(file))).collect();
-    format!("tail -n {TAIL_LINES} -F {}", files.join(" "))
+    format!("less {}", files.join(" "))
 }
 
 /// A path as it has to be to be pasted somewhere else, which is not necessarily
@@ -1487,27 +1682,6 @@ mod signals {
     #[cfg(not(unix))]
     pub(super) type Id = ();
 
-    /// Put back the signal keys that raw mode took away.
-    ///
-    /// See the module docs: `^C` has to reach the tools a step is running, and
-    /// only the terminal can send it to them.
-    #[cfg(unix)]
-    pub(super) fn keep_keys() {
-        use rustix::termios::{tcgetattr, tcsetattr, LocalModes, OptionalActions};
-
-        // The display draws on stderr, which has already been found to be a
-        // terminal, and a terminal's mode belongs to the device rather than to
-        // any one of the handles open on it.
-        let tty = std::io::stderr();
-        if let Ok(mut mode) = tcgetattr(&tty) {
-            mode.local_modes |= LocalModes::ISIG;
-            let _ = tcsetattr(&tty, OptionalActions::Now, &mode);
-        }
-    }
-
-    #[cfg(not(unix))]
-    pub(super) fn keep_keys() {}
-
     /// Notice an interrupt, so the terminal can be handed back before the run
     /// ends; a `^Z`, so it can be handed back before the process stops; and
     /// coming back from one.
@@ -1557,6 +1731,49 @@ mod signals {
 
     #[cfg(not(unix))]
     pub(super) fn stop_now() {}
+
+    /// Put back the signal keys that raw mode took away.
+    ///
+    /// See the module docs: `^C` has to reach the tools a step is running, and
+    /// only the terminal can send it to them at once.
+    #[cfg(unix)]
+    pub(super) fn keep_keys() {
+        use rustix::termios::{tcgetattr, tcsetattr, LocalModes, OptionalActions};
+
+        // The display draws on stderr, which has already been found to be a
+        // terminal, and a terminal's mode belongs to the device rather than to
+        // any one of the handles open on it.
+        let tty = std::io::stderr();
+        if let Ok(mut mode) = tcgetattr(&tty) {
+            mode.local_modes |= LocalModes::ISIG;
+            let _ = tcsetattr(&tty, OptionalActions::Now, &mode);
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn keep_keys() {}
+
+    /// Interrupt the run, as a `^C` would have: the whole process group gets
+    /// the signal, this process included, so the tools the steps are running
+    /// die with it and the run ends as an interrupted one.
+    ///
+    /// The flag is left to the signal to set. Setting it here as well would
+    /// make the signal look like a second interrupt, and a second interrupt
+    /// exits on the spot, terminal and all. Only if the signal cannot be sent
+    /// is the flag set by hand, so that the display still ends.
+    #[cfg(unix)]
+    pub(super) fn interrupt_run(interrupted: &AtomicBool) {
+        use std::sync::atomic::Ordering;
+        if rustix::process::kill_current_process_group(rustix::process::Signal::Int).is_err() {
+            interrupted.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn interrupt_run(interrupted: &AtomicBool) {
+        use std::sync::atomic::Ordering;
+        interrupted.store(true, Ordering::SeqCst);
+    }
 
     /// Stop taking an interest, now that the run has the terminal no longer.
     #[cfg(unix)]
@@ -1609,7 +1826,10 @@ mod tests {
         let line = Line::from(vec![
             span("✖ ", Style::new().red()),
             span("decoder lvs", Style::new().red().bold()),
-            span("  did not match; see build/decoder.lvs.out", Style::new().red()),
+            span(
+                "  did not match; see build/decoder.lvs.out",
+                Style::new().red(),
+            ),
         ]);
         let rows = wrap_line(&line, 20, 4);
         let text: Vec<String> = rows.iter().map(plain).collect();
@@ -1862,20 +2082,122 @@ mod tests {
         assert!(!view.render(80, 2).following);
     }
 
+    // -- the banner ---------------------------------------------------------
+
+    #[test]
+    fn the_banner_shrinks_with_the_terminal() {
+        let about = About {
+            targets: vec!["decoder signoff".into()],
+            steps: 7,
+            workers: 4,
+            log_dir: Some(PathBuf::from("/build")),
+        };
+
+        // Tall: the wordmark, the facts beside it, and a blank row under.
+        let tall = banner_lines(&about, 40);
+        assert_eq!(tall.len(), WORDMARK.len() + 1);
+        let text: Vec<String> = tall.iter().map(plain).collect();
+        assert!(text[0].ends_with("decoder signoff"), "{:?}", text[0]);
+        assert!(text[1].ends_with("7 steps · 4 workers"), "{:?}", text[1]);
+        assert!(text[2].ends_with("logs in /build"), "{:?}", text[2]);
+        assert_eq!(text[3], "");
+        // The wordmark's rows are all the same width, so the facts line up.
+        let marks: Vec<usize> = WORDMARK.iter().map(|row| columns(row)).collect();
+        assert!(marks.iter().all(|&width| width == marks[0]), "{marks:?}");
+
+        // Shorter: one line with the essentials.
+        let short = banner_lines(&about, 12);
+        assert_eq!(short.len(), 1);
+        assert_eq!(
+            plain(&short[0]),
+            "  rivet · decoder signoff · 7 steps · 4 workers"
+        );
+
+        // Too short for anything.
+        assert!(banner_lines(&about, 6).is_empty());
+
+        // Two targets, one worker, no logging.
+        let about = About {
+            targets: vec!["drc".into(), "lvs".into()],
+            steps: 1,
+            workers: 1,
+            log_dir: None,
+        };
+        let text: Vec<String> = banner_lines(&about, 40).iter().map(plain).collect();
+        assert!(text[0].ends_with("drc, lvs"), "{:?}", text[0]);
+        assert!(text[1].ends_with("1 step · 1 worker"), "{:?}", text[1]);
+        assert!(text[2].ends_with("logging off"), "{:?}", text[2]);
+    }
+
+    // -- fitting the width --------------------------------------------------
+
+    #[test]
+    fn the_hint_is_said_at_the_longest_length_that_fits() {
+        let long = hint_text(true, false, 200);
+        assert!(long.contains("enter open a step"), "{long}");
+        assert_eq!(hint_text(true, false, columns(&long)), long);
+
+        let medium = hint_text(true, false, columns(&long) - 1);
+        assert!(columns(&medium) < columns(&long));
+        assert!(medium.contains("enter open"), "{medium}");
+        assert!(medium.contains("q cancel"), "{medium}");
+
+        let short = hint_text(true, false, 30);
+        assert!(columns(&short) <= 30, "{short}");
+        assert!(short.ends_with("· q"), "{short}");
+        // Narrower than even the shortest: the shortest, for the terminal to
+        // cut.
+        assert_eq!(hint_text(true, false, 3), short);
+
+        // Once the run is done, `q` quits, at every length.
+        for width in [200, 60] {
+            assert!(hint_text(true, true, width).ends_with("q quit"));
+            assert!(!hint_text(true, true, width).contains("cancel"));
+        }
+
+        // The question `q` asks, at every length, says what `y` does.
+        for width in [200, 80, 20, 3] {
+            let question = confirm_text(width);
+            assert!(question.contains("cancel the run"), "{question}");
+            assert!(question.contains('y'), "{question}");
+            assert!(columns(&question) <= width || width < 25, "{question}");
+        }
+        assert!(hint_text(false, true, 200).starts_with("  esc back"));
+        assert!(columns(&hint_text(false, true, 40)) <= 40);
+    }
+
+    #[test]
+    fn a_long_path_is_cut_from_the_left() {
+        assert_eq!(
+            shorten_left("/build/decoder.par.out", 30),
+            "/build/decoder.par.out"
+        );
+        assert_eq!(
+            shorten_left("/build/decoder.par.out", 22),
+            "/build/decoder.par.out"
+        );
+        assert_eq!(
+            shorten_left("/build/decoder.par.out", 21),
+            "…uild/decoder.par.out"
+        );
+        assert_eq!(shorten_left("/build/decoder.par.out", 8), "…par.out");
+        assert_eq!(shorten_left("漢字表", 3), "…表");
+    }
+
     // -- what y copies ------------------------------------------------------
 
     #[test]
-    fn the_follow_command_tails_every_file_it_is_given() {
+    fn the_copied_command_opens_every_file_it_is_given_in_less() {
         assert_eq!(
-            follow_command(&[PathBuf::from("/build/decoder par.rivet.log")]),
-            r"tail -n 100 -F '/build/decoder par.rivet.log'"
+            view_command(&[PathBuf::from("/build/decoder par.rivet.log")]),
+            r"less '/build/decoder par.rivet.log'"
         );
         assert_eq!(
-            follow_command(&[
+            view_command(&[
                 PathBuf::from("/build/decoder.par.out"),
                 PathBuf::from("/build/decoder.par.err"),
             ]),
-            "tail -n 100 -F /build/decoder.par.out /build/decoder.par.err"
+            "less /build/decoder.par.out /build/decoder.par.err"
         );
     }
 

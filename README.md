@@ -114,8 +114,8 @@ whatever progress it reports (see below) while it runs, and afterwards how it
 ended — `✔` (executed), `⏭` (pinned), `⊘` (blocked by a failure) or `✖`
 (failed). The lines are a list on a screen of their own, the terminal's
 alternate screen, the way an editor takes it: the list holds every step in the
-order they started and scrolls under the cursor once there are more than fit,
-with the run's summary and the key hints at the bottom. The screen stays up
+run and scrolls under the cursor once there are more than fit, with the run's
+summary and the key hints at the bottom. The screen stays up
 when the run is over, so a finished run can be looked through — every step
 under the cursor, a failure's log a keypress away — instead of turning into
 terminal history the moment it ends. `q` gives the terminal back, and leaves
@@ -187,20 +187,35 @@ clear the banner. Each half is omitted entirely until something fills it.
 
 ### Reading a step's log
 
-Every step is under a cursor, moved between them with `↑`/`↓` or `j`/`k` (and
-`PgUp`/`PgDn`, `g`/`G` for the ends):
+Every step in the run has a line from the start, and is under a cursor, moved
+between them with `↑`/`↓` or `j`/`k` (and `PgUp`/`PgDn`, `g`/`G` for the ends).
+Over the list, a banner says what the run is: its targets, how many steps and
+workers it has, and where its logs go — shrunk to a line on a short terminal,
+and gone on a very short one:
 
 ```text
+  █▀▄ █ █ █ █▀▀ ▀█▀   decoder signoff
+  █▀▄ █ ▀▄▀ █▀▀  █    7 steps · 4 workers
+  ▀ ▀ ▀  ▀  ▀▀▀  ▀    logs in build
+
   ⏭ sram compile     pinned
   ✔ decoder syn      1m14s
   ✖ decoder lvs      2m01s  during compare (2/2)  lvs did not match; see build/decoder.lvs.out
+  ⊘ decoder signoff  blocked by decoder lvs
   ⠹ decoder drc      1m02s ━━━╸────── 1/3 density
 ❯ ⠹ decoder par     12m08s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
-  ⊘ decoder signoff  blocked by decoder lvs
+  ○ decoder merge    waits for decoder par
 
   ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed
-  ↑/↓ or j/k move · enter open a step · y copy a tail command · q leave the display (the run goes on)
+  ↑/↓ or j/k move · enter open a step · y copy a less command · q cancel the run
 ```
+
+The list is in four groups: the pinned steps, which are over before the run
+begins; the steps that have finished, in the order they finished; the steps
+running now, in the order they started; and, greyed, the steps still to come,
+in the order the run is expected to take them, each naming the steps it is
+still waiting for. A step moves up from group to group as the run goes — from
+waiting to running when it starts, and into the finished steps when it ends.
 
 A finished step keeps its colour: it is as much there to be opened as a
 running one. A failure carries the substep it died in and its message, and
@@ -239,14 +254,17 @@ now, first — the `.out` and `.err` that `exec::run_logged` is writing — then
 output of tools it ran earlier, then the step's own `{step}.rivet.log`. A step
 driving a tool some other way says what it is writing with
 `StepHandle::set_output_files`. A pinned or blocked step, which did not run this
-time, offers its `{step}.rivet.log` from the run that last ran it. `esc` comes
-back to the list, on the step that was open.
+time, offers its `{step}.rivet.log` from the run that last ran it; a step that
+has not started yet offers nothing until it does, since the log at its path is
+the last run's and about to be replaced. `esc` comes back to the list, on the
+step that was open.
 
-`y` copies a `tail` command for the same files to the clipboard, for a terminal
-of your own:
+`y` copies a `less` command for the same files to the clipboard, for a terminal
+of your own — the whole log, since the tail of it is what the page already
+shows:
 
 ```text
-tail -n 100 -F /build/decoder/par/decoder.par.out /build/decoder/par/decoder.par.err
+less /build/decoder/par/decoder.par.out /build/decoder/par/decoder.par.err
 ```
 
 The copy is asked for with OSC 52, which is the terminal's own way of doing it
@@ -255,22 +273,38 @@ machine the person is watching from, not the compute server the flow is running
 on. A local `wl-copy`, `xclip`, `xsel` or `pbcopy` is asked as well, if the
 environment suggests one would work.
 
+On a terminal too narrow for a line, the line gives up what it can best spare
+before anything is cut: the hint is said more tersely, the summary's bar is
+squeezed before its counts are, a running step's line drops its bars (the
+`3/12` beside each says as much) and is then cut with an ellipsis, the label
+column is squeezed only if a running line still has no room, and a long path on
+a step's page is cut from the left so its file name stays. A terminal wide
+enough for everything draws everything, exactly as it would have.
+
 Because the display owns the whole screen, it can be redrawn from nothing at
 any time: resizing the terminal redraws it, and so does `^L`, for when
 something has written over it — a stray `println!` in flow code lands on the
-alternate screen, and is gone with it. `q` before the run is over leaves the
-display without stopping anything: the record so far is left in the terminal,
-and the rest of the run is reported there plainly as it happens.
+alternate screen, and is gone with it.
+
+While the run is going, the display is where it is controlled from. `q` cancels
+the run — after asking, since the answer kills every tool the run has going —
+by sending the same interrupt `^C` would, to the whole process group; the run
+ends as an interrupted one, exit code `130`, with its record so far left in the
+terminal. `^C` itself cancels at once, without asking: it is a signal, not a
+key, so it works whatever the display is doing. Once the run is over, `q`
+simply quits. A run that is not wanted on screen at all is started with the
+display turned off, `ExecuteConfig::progress(false)`, and reports plainly
+instead.
 
 While the display is up, the terminal hands over keys as they are typed rather
 than collecting whole lines, and stops echoing them. The signal keys are put
 back afterwards, so `^C` and `^Z` mean exactly what they always did — `^C` in
 particular has to keep reaching the tools a step is running, which are in the
-same process group. An interrupt is caught only so that the terminal can be
-handed back before the run ends, and the run exits `130`; a second one gives up
-on being tidy and exits at once. `^Z` is caught the same way, so that the
-screen is put away before the process stops and taken again when it is
-continued.
+same process group, and has to keep working when the display itself is not
+answering. An interrupt is caught only so that the terminal can be handed back
+before the run ends, and the run exits `130`; a second one gives up on being
+tidy and exits at once. `^Z` is caught the same way, so that the screen is put
+away before the process stops and taken again when it is continued.
 
 Only stderr has to be a terminal, since that is the stream the display draws
 on; the keys and the terminal's size come from the controlling terminal itself.

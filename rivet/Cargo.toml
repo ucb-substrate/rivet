@@ -14,10 +14,12 @@ indoc = "2"
 rust_decimal = "1"
 rust_decimal_macros = "1"
 by_address = "1.2.1"
-# The live display: an inline viewport at the bottom of the ordinary terminal,
-# with finished steps pushed above it into the scrollback. `crossterm` comes
-# with it, and is used through `ratatui::crossterm` so there is only ever one.
+# The live display, on the terminal's alternate screen. `crossterm` comes with
+# it, and is used through `ratatui::crossterm` so there is only ever one.
 ratatui = "0.29"
+# For wrapping a log's lines by column. The same version ratatui pins, so it
+# adds nothing to the build.
+unicode-width = "0.2"
 tracing = "0.1"
 # No `ansi`: these layers write to files, never to a terminal. `tracing-log`
 # catches anything a dependency logs through the `log` crate, which would

@@ -24,8 +24,9 @@
 //! ([`ExecuteConfig::progress`](crate::ExecuteConfig::progress)), and reports
 //! plainly instead.
 //!
-//! There are two pages. The list is every step in the run — pinned, finished,
-//! running, and greyed, still to come — with a cursor on one of them; `enter`
+//! There are two pages. The list is every step in the run, in the order the run
+//! is expected to take them and staying in it, with a cursor on one of them;
+//! `enter`
 //! opens that step, which is its log as it is written, with the step's own line
 //! and the run's summary underneath; `esc` closes it again. The files a step's
 //! page can read — the output of the tool it is running, its own log, and the

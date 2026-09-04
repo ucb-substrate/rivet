@@ -14,11 +14,15 @@
 //!
 //! # The list
 //!
-//! Every step in the run has a line from the start, in four groups: the pinned
-//! steps, which are over before the run begins; the steps that have finished,
-//! in the order they finished; the steps running now; and, greyed, the steps
-//! still to come, in the order the run is expected to take them, each naming
-//! what it waits for. A step moves up from group to group as the run goes.
+//! Every step in the run has a line from the start, in the order the run is
+//! expected to take them: a step below everything it waits for, and beside the
+//! steps that will be running when it is. A step still to come is greyed and
+//! names what it is waiting for; one that has started has a spinner; one that
+//! has stopped says how it went.
+//!
+//! The order never changes. A step becomes what it becomes without moving, and
+//! without moving anything else, so that a run can be watched by looking at
+//! the same row — or left, and come back to. See [`plan_order`].
 //!
 //! # The cursor
 //!
@@ -801,12 +805,79 @@ fn pad(label: &str, width: usize) -> String {
     format!("{label:<width$}")
 }
 
-/// Where each step comes in the order the run is expected to take: a step
-/// after everything it waits for, and the targets last.
+/// Where each step comes in the order the run is expected to take, as a rank
+/// per step.
 ///
-/// Steps that have not started are listed in this order, so that the list
-/// reads downwards as the run will go. Given as a rank per step.
+/// By how deep into the run a step can start: a step is one deeper than the
+/// deepest thing it waits for, and everything at a depth could run at once. A
+/// walk of the graph from each target would put a step above things it waits
+/// for — never above its own, but above the ones another target waits for, so
+/// a hierarchical flow lists the whole of the top block before any of the
+/// child block whose output it is waiting on. Depth interleaves them the way
+/// the run will.
+///
+/// Steps at the same depth keep the order the walk found them in, which keeps
+/// each target's own steps together.
+///
+/// Worked out once, from the plan. A list that is watched for hours should not
+/// rearrange itself while it is being watched, so nothing here depends on how
+/// the run is going.
 fn plan_order(plan: &[Planned]) -> Vec<usize> {
+    let found = found_order(plan);
+    let depths = depths(plan);
+    let mut order: Vec<usize> = (0..plan.len()).collect();
+    order.sort_by_key(|&id| (depths[id], found[id]));
+
+    let mut ranks = vec![0; plan.len()];
+    for (rank, id) in order.into_iter().enumerate() {
+        ranks[id] = rank;
+    }
+    ranks
+}
+
+/// How deep into the run each step is: one more than the deepest step it waits
+/// for, and zero for a step that waits for nothing.
+///
+/// A step in a cycle waits, however indirectly, for itself, and has no depth to
+/// find. The walk stops rather than recurring, so every step still gets one.
+fn depths(plan: &[Planned]) -> Vec<usize> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Unseen,
+        Waiting,
+        Placed,
+    }
+
+    fn depth(plan: &[Planned], id: usize, state: &mut [State], depths: &mut [usize]) -> usize {
+        match state[id] {
+            State::Placed => return depths[id],
+            State::Waiting => return 0,
+            State::Unseen => {}
+        }
+        state[id] = State::Waiting;
+        let mut deepest = 0;
+        for index in 0..plan[id].deps.len() {
+            let dep = plan[id].deps[index];
+            if dep < plan.len() && dep != id {
+                deepest = deepest.max(depth(plan, dep, state, depths) + 1);
+            }
+        }
+        depths[id] = deepest;
+        state[id] = State::Placed;
+        deepest
+    }
+
+    let mut state = vec![State::Unseen; plan.len()];
+    let mut depths = vec![0; plan.len()];
+    for id in 0..plan.len() {
+        depth(plan, id, &mut state, &mut depths);
+    }
+    depths
+}
+
+/// Where a walk of the graph from the targets reaches each step, which is what
+/// tells apart two steps that could start at the same moment.
+fn found_order(plan: &[Planned]) -> Vec<usize> {
     fn visit(plan: &[Planned], id: usize, seen: &mut [bool], order: &mut Vec<usize>) {
         if std::mem::replace(&mut seen[id], true) {
             return;
@@ -829,7 +900,7 @@ fn plan_order(plan: &[Planned]) -> Vec<usize> {
     }
     let mut seen = vec![false; plan.len()];
     let mut order = Vec::with_capacity(plan.len());
-    // The targets first, so that each target's own steps are listed together;
+    // The targets first, so that each target's own steps are found together;
     // then anything a cycle kept out of reach.
     for id in (0..plan.len()).filter(|&id| !waited_for[id]) {
         visit(plan, id, &mut seen, &mut order);
@@ -838,23 +909,31 @@ fn plan_order(plan: &[Planned]) -> Vec<usize> {
         visit(plan, id, &mut seen, &mut order);
     }
 
-    let mut ranks = vec![0; plan.len()];
-    for (rank, id) in order.into_iter().enumerate() {
-        ranks[id] = rank;
+    let mut found = vec![0; plan.len()];
+    for (at, id) in order.into_iter().enumerate() {
+        found[id] = at;
     }
-    ranks
+    found
 }
 
 /// Which step the display's cursor is on.
 ///
-/// The rows are every step in the run, in four groups: the pinned steps, which
-/// are over before it starts; the steps that have finished, in the order they
-/// finished; the steps running now, in the order they started; and the steps
-/// still to come, in the order the run is expected to take them. A step moves
-/// up from group to group as the run goes — from waiting to running to
-/// finished — and stays for as long as the display does: the log worth reading
-/// is usually one belonging to a step that has already stopped, and a failed
-/// step that vanished the moment it failed would take its log with it.
+/// The rows are every step in the run, in the order the run is expected to
+/// take them — see [`plan_order`] — and they stay in it. A step changes as it
+/// goes, from waiting to running to however it ended, but it changes where it
+/// is: nothing is moved to a different part of the list for having started or
+/// stopped, and nothing else shifts to make room.
+///
+/// That is worth more than collecting the finished work in one place. A run
+/// watched for hours is watched by looking at the same row, or by leaving the
+/// cursor on a step and coming back to it; a list that rearranged itself under
+/// that every time a step ended would be a list nobody could keep their place
+/// in. Steps that run at the same time are neighbours anyway, being at the same
+/// depth in the plan, so what is running is not scattered.
+///
+/// Every step stays for as long as the display does: the log worth reading is
+/// usually one belonging to a step that has already stopped, and a failed step
+/// that vanished the moment it failed would take its log with it.
 ///
 /// # The cursor stays put
 ///
@@ -900,8 +979,8 @@ struct Ended {
     at: Instant,
 }
 
-/// Where a step is in the run, which is where it is in the list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Where a step is in the run: what its line says, not where its line is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Group {
     Pinned,
     Finished,
@@ -942,7 +1021,6 @@ impl Cursor {
             self.on = Some(id);
             self.parked = false;
         }
-        self.sort();
     }
 
     /// Record how a step ended.
@@ -962,23 +1040,16 @@ impl Cursor {
                 None => self.parked = true,
             }
         }
-        self.sort();
     }
 
-    /// Put the rows in their groups, and in order within each: see [`Cursor`].
+    /// Put the rows in the order the run is expected to take them, which is
+    /// the order they keep: see [`Cursor`] and [`plan_order`].
     ///
-    /// Stable, so that steps the clock cannot tell apart stay as they were.
+    /// Nothing here reads how the run is going, so this says the same thing
+    /// every time it is asked. It is done as the rows arrive and never needs
+    /// doing again.
     fn sort(&mut self) {
-        self.rows.sort_by(|a, b| {
-            a.group().cmp(&b.group()).then_with(|| match a.group() {
-                Group::Pinned | Group::Pending => a.rank.cmp(&b.rank),
-                Group::Finished => {
-                    let at = |row: &Row| row.ended.as_ref().map(|ended| ended.at);
-                    at(a).cmp(&at(b))
-                }
-                Group::Running => a.started.cmp(&b.started),
-            })
-        });
+        self.rows.sort_by_key(|row| row.rank);
     }
 
     fn has_ended(&self, id: usize) -> bool {
@@ -1035,10 +1106,14 @@ impl Cursor {
         }
     }
 
+    /// The step that started most recently and is still going.
     fn newest_running(&self) -> Option<usize> {
         self.rows
             .iter()
-            .rposition(|row| row.group() == Group::Running)
+            .enumerate()
+            .filter(|(_, row)| row.group() == Group::Running)
+            .max_by_key(|(_, row)| row.started)
+            .map(|(index, _)| index)
     }
 
     #[cfg(test)]
@@ -2411,6 +2486,19 @@ mod tests {
         // A step finishing elsewhere is none of its business.
         end(&mut cursor, 2, Outcome::Completed);
         assert_eq!(cursor.on, Some(3));
+
+        // Newest by the clock, not by the list: the list is in the plan's
+        // order, so the step that started last can be one further up it.
+        let mut cursor = Cursor::new();
+        for id in 1..=3 {
+            cursor.insert(pending(id));
+        }
+        let at = Instant::now();
+        cursor.start(3, at, None);
+        cursor.start(1, at + Duration::from_secs(1), None);
+        assert_eq!(cursor.on, Some(3), "the first to start took the cursor");
+        end(&mut cursor, 3, Outcome::Completed);
+        assert_eq!(cursor.on, Some(1), "not the newest thing running");
     }
 
     #[test]
@@ -2449,10 +2537,11 @@ mod tests {
         // the log most worth reading.
         let mut cursor = filled(3);
         end(&mut cursor, 2, Outcome::Failed);
-        // The failure moved up above the running steps; the cursor, on step 1,
-        // is one below it.
-        assert_eq!(listed(&cursor), [2, 1, 3]);
-        cursor.step(Motion::Up(1));
+        // Where it was: the list is the plan's order, and a step failing does
+        // not take it out of it.
+        assert_eq!(listed(&cursor), [1, 2, 3]);
+        cursor.step(Motion::First);
+        cursor.step(Motion::Down(1));
         assert_eq!(cursor.on, Some(2));
 
         // Nothing that happens to the run moves it — not even everything else
@@ -2584,7 +2673,7 @@ mod tests {
     // -- the order of the list ----------------------------------------------
 
     #[test]
-    fn the_list_is_pinned_then_finished_then_running_then_waiting() {
+    fn the_list_is_in_the_plans_order_and_stays_in_it() {
         let mut cursor = Cursor::new();
         // A plan: a pinned step, and four to run in rank order 1, 2, 3, 4 —
         // planned in another order, to show it is the rank that counts.
@@ -2602,25 +2691,20 @@ mod tests {
         // Nothing has started, so nothing is watched yet.
         assert_eq!(cursor.on, None);
 
-        // Steps move up as they start, in the order they start…
+        // Steps starting, in an order of their own, moves none of them.
         cursor.start(2, Instant::now(), None);
         cursor.start(1, Instant::now(), None);
-        assert_eq!(listed(&cursor), [0, 2, 1, 3, 4]);
+        assert_eq!(listed(&cursor), [0, 1, 2, 3, 4]);
         assert_eq!(cursor.on, Some(2), "the first to start takes the cursor");
 
-        // …and up again as they finish, in the order they finish, above what
-        // is still running.
+        // Nor does finishing, in any order, or failing, or being skipped
+        // without ever having started.
         end(&mut cursor, 1, Outcome::Completed);
-        assert_eq!(listed(&cursor), [0, 1, 2, 3, 4]);
         cursor.start(3, Instant::now(), None);
         end(&mut cursor, 3, Outcome::Failed);
-        assert_eq!(listed(&cursor), [0, 1, 3, 2, 4]);
         end(&mut cursor, 2, Outcome::Completed);
-        assert_eq!(listed(&cursor), [0, 1, 3, 2, 4]);
-
-        // A step blocked without ever starting is finished too, when it is.
         end(&mut cursor, 4, Outcome::Skipped);
-        assert_eq!(listed(&cursor), [0, 1, 3, 2, 4]);
+        assert_eq!(listed(&cursor), [0, 1, 2, 3, 4]);
         assert!(cursor.rows.iter().all(|row| row.group() != Group::Pending));
     }
 
@@ -2701,6 +2785,76 @@ mod tests {
         let ranks = plan_order(&plan);
         assert_eq!(ranks.len(), 2);
         assert_ne!(ranks[0], ranks[1]);
+    }
+
+    /// The case the depth is for: a hierarchical flow, where the top block's
+    /// steps wait on the child block's and the child's own signoff does not
+    /// wait on the top's at all.
+    #[test]
+    fn a_blocks_steps_are_listed_among_the_other_blocks_not_after_them() {
+        // As the executor interns it, from the targets down: the top block's
+        // signoff first, then what it waits for, then the child's signoff.
+        let labels = [
+            "top drc",      // 0
+            "top fill",     // 1
+            "top synpar",   // 2
+            "child synpar", // 3
+            "gen rtl",      // 4
+            "top lvs",      // 5
+            "top v2lvs",    // 6
+            "child v2lvs",  // 7
+            "child drc",    // 8
+            "child fill",   // 9
+            "child lvs",    // 10
+        ];
+        let mut plan = planned(&labels);
+        plan[0].deps = vec![1];
+        plan[1].deps = vec![2];
+        plan[2].deps = vec![3, 4];
+        plan[3].deps = vec![4];
+        plan[5].deps = vec![6, 1];
+        plan[6].deps = vec![2, 7];
+        plan[7].deps = vec![3];
+        plan[8].deps = vec![9];
+        plan[9].deps = vec![3];
+        plan[10].deps = vec![7, 9];
+
+        let ranks = plan_order(&plan);
+        let mut by_rank: Vec<(usize, &str)> = ranks.iter().copied().zip(labels).collect();
+        by_rank.sort();
+        let order: Vec<&str> = by_rank.into_iter().map(|(_, label)| label).collect();
+
+        // The child's fill and v2lvs run while the top is still in synpar, and
+        // are listed there rather than after everything the top does.
+        assert_eq!(
+            order,
+            [
+                "gen rtl",
+                "child synpar",
+                "top synpar",
+                "child v2lvs",
+                "child fill",
+                "top fill",
+                "top v2lvs",
+                "child drc",
+                "child lvs",
+                "top drc",
+                "top lvs",
+            ]
+        );
+
+        // Whatever else it does, nothing is ever listed above something it is
+        // waiting for.
+        for (id, step) in plan.iter().enumerate() {
+            for &dep in &step.deps {
+                assert!(
+                    ranks[dep] < ranks[id],
+                    "{} before {}",
+                    labels[id],
+                    labels[dep]
+                );
+            }
+        }
     }
 
     #[test]

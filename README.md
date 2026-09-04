@@ -210,22 +210,29 @@ and gone on a very short one:
 
   ⏭ sram compile     pinned
   ✔ decoder syn      1m14s
-  ✖ decoder lvs      2m01s  during compare (2/2)  lvs did not match; see build/decoder.lvs.out
-  ⊘ decoder signoff  blocked by decoder lvs
-  ⠹ decoder drc      1m02s ━━━╸────── 1/3 density
 ❯ ⠹ decoder par     12m08s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+  ⠹ decoder drc      1m02s ━━━╸────── 1/3 density
+  ✖ decoder lvs      2m01s  during compare (2/2)  lvs did not match; see build/decoder.lvs.out
   ○ decoder merge    waits for decoder par
+  ⊘ decoder signoff  blocked by decoder lvs
 
   ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed · ⚠ 3
   ↑/↓ or j/k move · enter open a step · L run log · drag copies · q cancel the run
 ```
 
-The list is in four groups: the pinned steps, which are over before the run
-begins; the steps that have finished, in the order they finished; the steps
-running now, in the order they started; and, greyed, the steps still to come,
-in the order the run is expected to take them, each naming the steps it is
-still waiting for. A step moves up from group to group as the run goes — from
-waiting to running when it starts, and into the finished steps when it ends.
+The list is every step in the run, in the order the run is expected to take
+them: a step below everything it waits for, and beside the steps that will be
+running when it is. That order is worked out from the plan before the run
+starts — by how deep into it each step can begin — and it never changes. A step
+becomes what it becomes where it is: greyed with what it is waiting for, then a
+spinner, then how it went. Nothing moves for having started or stopped, and
+nothing else shifts to make room, so a run can be watched by looking at the
+same row of the screen, or left and come back to.
+
+That is worth more than collecting the finished work in one place, on a list
+someone is going to be looking at for hours. Steps that run at the same time
+are neighbours anyway, being the same depth into the plan, so what is running
+is not scattered through it.
 
 A finished step keeps its colour: it is as much there to be opened as a
 running one. A failure carries the substep it died in and its message, and

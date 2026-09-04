@@ -187,6 +187,13 @@ impl Executor {
         self
     }
 
+    /// [`Executor::target`] for several steps at once, as a flow hands them
+    /// out: `Executor::new().targets(block.signoff()).run()`.
+    pub fn targets(mut self, steps: impl IntoIterator<Item = StepRef<dyn Step>>) -> Self {
+        self.targets.extend(steps);
+        self
+    }
+
     /// Run every target that was added, and everything they depend on.
     pub fn run(self) -> Result<Summary, ExecuteError> {
         run(&self.config, self.targets)
@@ -808,6 +815,10 @@ mod tests {
             self.pinned
         }
 
+        fn set_pinned(&mut self, pinned: bool) {
+            self.pinned = pinned;
+        }
+
         fn execute(&self) -> StepResult {
             (self.action)()
         }
@@ -1232,6 +1243,9 @@ mod tests {
             }
             fn pinned(&self) -> bool {
                 false
+            }
+            fn set_pinned(&mut self, _pinned: bool) {
+                unreachable!("nothing pins a Plain")
             }
             fn execute(&self) -> StepResult {
                 Ok(())

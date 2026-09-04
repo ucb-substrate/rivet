@@ -106,7 +106,7 @@ impl GenusStep {
             )?;
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
-                let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
+                let checkpoint_file = self.checkpoint_path(&step.name);
 
                 writeln!(tcl_file, "write_db -to_file {}", checkpoint_file.display())?;
             }
@@ -166,12 +166,28 @@ impl GenusStep {
         self.work_dir.join(format!("{}.mapped.v", self.module))
     }
 
-    /// Assigns the starting checkpoint of the synthesis flow
+    /// Restore `checkpoint_path` at the start of the run and continue with the
+    /// substeps after `name`; see [`GenusStep::resume_from`] for the case
+    /// where the two correspond.
     pub fn add_checkpoint(&mut self, name: &str, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
             name: name.to_string(),
             path: checkpoint_path,
         });
+    }
+
+    /// The db a checkpointed substep writes: `post_<substep>` in the work
+    /// directory.
+    pub fn checkpoint_path(&self, substep: &str) -> PathBuf {
+        self.work_dir.join(format!("post_{substep}"))
+    }
+
+    /// Restore the db `substep` wrote on an earlier run and continue with the
+    /// substeps after it. `substep` must be checkpointed, or there is nothing
+    /// to restore.
+    pub fn resume_from(&mut self, substep: &str) {
+        let path = self.checkpoint_path(substep);
+        self.add_checkpoint(substep, path);
     }
 
     pub fn add_endpoint(&mut self, name: &str) {
@@ -250,6 +266,10 @@ impl Step for GenusStep {
 
     fn pinned(&self) -> bool {
         self.pinned
+    }
+
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
     }
 
     fn log_dir(&self) -> Option<PathBuf> {

@@ -83,11 +83,12 @@ pub fn run_logged(
     // nothing about whether it is getting anywhere. A tool can stop dead with
     // its process alive and healthy-looking — waiting on a license, wedged in
     // a crash handler, blocked on a filesystem — and the only sign is that it
-    // has stopped writing. Say so, once, when it has been quiet too long.
-    // Said again each time the wait doubles — 10m, 20m, 40m and so on. How long
-    // it has been is the whole content of the warning and it keeps growing, so
-    // one line at the threshold would be stale within the hour; doubling keeps
-    // the number current without filling the scrollback over a long stall.
+    // has stopped writing. Watch for it, and say so when it has been quiet too
+    // long. Said again each time the wait doubles — 10m, 20m, 40m and so on.
+    // How long it has been is the whole content of the warning and it keeps
+    // growing, so one line at the threshold would be stale within the hour;
+    // doubling keeps the number current without repeating itself for hours
+    // over a long stall.
     let mut say_at = progress::QUIET_AFTER;
     while both_ended.recv_timeout(QUIET_CHECK) != Err(mpsc::RecvTimeoutError::Disconnected) {
         let Some(handle) = &handle else { continue };
@@ -109,8 +110,11 @@ pub fn run_logged(
             progress::fmt_duration(quiet),
             stdout_log.display()
         );
-        tracing::warn!(quiet_secs = quiet.as_secs(), "{message}");
-        progress::note(message);
+        // On screen the step's own line says it, in yellow, and takes it back
+        // the moment the tool writes again. What this adds is the log, and the
+        // plain output of a run with no display to say it on — both of which
+        // `progress::warn` does, and neither of which goes stale.
+        progress::warn(message);
     }
 
     let _ = out_thread.join();

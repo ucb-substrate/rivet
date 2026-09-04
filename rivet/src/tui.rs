@@ -143,9 +143,6 @@ const FLASH_FOR: Duration = Duration::from_secs(4);
 /// Longer, for a message that has to be read rather than glanced at.
 const FLASH_LONG: Duration = Duration::from_secs(12);
 
-/// Most notes kept on screen under the list.
-const MAX_NOTES: usize = 3;
-
 /// The name over the list, three rows of block letters.
 const WORDMARK: [&str; 3] = [
     "█▀▄ █ █ █ █▀▀ ▀█▀",
@@ -213,8 +210,6 @@ pub(crate) struct Screen {
     pub steps: Vec<StepLine>,
     /// Which of them the cursor is on. The list scrolls to keep it in view.
     pub selected: Option<usize>,
-    /// Things said during the run that are not steps, most recent last.
-    pub notes: Vec<Line<'static>>,
     /// The bar and counts.
     pub summary: Line<'static>,
     /// Whether the run is over, and the display only waiting to be dismissed.
@@ -729,6 +724,25 @@ enum Page {
     #[default]
     List,
     Detail(Box<Watch>),
+    /// The run's own log, `rivet.log`: what the run said about itself, which
+    /// belongs to no one step.
+    Run(Box<Pane>),
+}
+
+/// The keys that move within a log, which both pages that read one share.
+fn scroll_key(code: KeyCode, ctrl: bool, page: isize, pane: &mut Pane) {
+    use KeyCode::*;
+    match code {
+        Up | Char('k') => pane.scroll(-1),
+        Down | Char('j') => pane.scroll(1),
+        PageUp => pane.scroll(-page),
+        PageDown => pane.scroll(page),
+        Char('u') if ctrl => pane.scroll(-(page / 2).max(1)),
+        Char('d') if ctrl => pane.scroll((page / 2).max(1)),
+        Home | Char('g') => pane.scroll_to_top(),
+        End | Char('G') => pane.follow(),
+        _ => {}
+    }
 }
 
 impl View {
@@ -764,16 +778,14 @@ impl View {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = mouse.kind == MouseEventKind::ScrollUp;
                 self.deselect();
-                match &mut self.page {
-                    Page::List => paint.move_cursor(if up {
+                let by = WHEEL as isize;
+                match self.pane() {
+                    Some(pane) => pane.scroll(if up { -by } else { by }),
+                    None => paint.move_cursor(if up {
                         Motion::Up(WHEEL)
                     } else {
                         Motion::Down(WHEEL)
                     }),
-                    Page::Detail(watch) => {
-                        let by = WHEEL as isize;
-                        watch.scroll(if up { -by } else { by });
-                    }
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -781,8 +793,8 @@ impl View {
                 // selection, so it is held where it is until the selection is
                 // done with.
                 self.deselect();
-                if let Page::Detail(watch) = &mut self.page {
-                    watch.pin();
+                if let Some(pane) = self.pane() {
+                    pane.pin();
                 }
                 self.selection = Some(Selection::new(at));
             }
@@ -819,9 +831,18 @@ impl View {
     /// Put a selection away, and let a log follow its end again.
     fn deselect(&mut self) {
         if self.selection.take().is_some() {
-            if let Page::Detail(watch) = &mut self.page {
-                watch.unpin();
+            if let Some(pane) = self.pane() {
+                pane.unpin();
             }
+        }
+    }
+
+    /// The log on the open page, if the page is reading one.
+    fn pane(&mut self) -> Option<&mut Pane> {
+        match &mut self.page {
+            Page::List => None,
+            Page::Detail(watch) => Some(&mut watch.pane),
+            Page::Run(pane) => Some(pane),
         }
     }
 
@@ -845,6 +866,15 @@ impl View {
 
         match key.code {
             Char('l') if ctrl => return Action::Redraw,
+            // The run's log, from either page: what the run says about itself
+            // belongs to no one step, and is as much worth reading beside a
+            // tool's output as from the list. Already open, it stays open.
+            Char('L') => {
+                if !matches!(self.page, Page::Run(_)) {
+                    self.page = Page::Run(Box::default());
+                }
+                return Action::None;
+            }
             // Once the run is over there is nothing to cancel, and `q` is just
             // the way out. Before that, it is a question first.
             Char('q') if paint.done() => return Action::Quit,
@@ -884,7 +914,7 @@ impl View {
                 }
             }
             Page::Detail(watch) => {
-                let page = watch.rows.max(1) as isize;
+                let page = watch.pane.page();
                 match key.code {
                     Esc | Backspace | Left | Char('h') => {
                         // Back to where the list was left, on the step that
@@ -893,21 +923,20 @@ impl View {
                         paint.select(watch.id);
                         self.page = Page::List;
                     }
-                    Up | Char('k') => watch.scroll(-1),
-                    Down | Char('j') => watch.scroll(1),
-                    PageUp => watch.scroll(-page),
-                    PageDown => watch.scroll(page),
-                    Char('u') if ctrl => watch.scroll(-(page / 2).max(1)),
-                    Char('d') if ctrl => watch.scroll((page / 2).max(1)),
-                    Home | Char('g') => watch.scroll_to_top(),
-                    End | Char('G') => watch.follow(),
                     Tab | Char(']') => watch.next_file(1, paint),
                     BackTab | Char('[') => watch.next_file(-1, paint),
-                    Char('y') => {
-                        let files = watch.log.as_ref().map(|log| vec![log.tail.path.clone()]);
-                        return Action::Copy(files.unwrap_or_default());
-                    }
-                    _ => {}
+                    Char('y') => return Action::Copy(watch.pane.files()),
+                    code => scroll_key(code, ctrl, page, &mut watch.pane),
+                }
+            }
+            Page::Run(pane) => {
+                let page = pane.page();
+                match key.code {
+                    // Back to the list, whichever page `L` was pressed on: the
+                    // step that was open is still under the cursor there.
+                    Esc | Backspace | Left | Char('h') => self.page = Page::List,
+                    Char('y') => return Action::Copy(pane.files()),
+                    code => scroll_key(code, ctrl, page, pane),
                 }
             }
         }
@@ -1007,8 +1036,12 @@ impl View {
             }
             self.flash = None;
         }
-        let list = matches!(self.page, Page::List);
-        Line::from(span(hint_text(list, done, width), Style::new().dim()))
+        let page = match self.page {
+            Page::List => Hint::List,
+            Page::Detail(_) => Hint::Step,
+            Page::Run(_) => Hint::Run,
+        };
+        Line::from(span(hint_text(page, done, width), Style::new().dim()))
     }
 
     /// Draw a frame, and hand back any text the selection on it has just been
@@ -1026,13 +1059,15 @@ impl View {
         let screen = paint.screen(width - usize::from(self.list_scrollbar));
         let detail = match &self.page {
             Page::Detail(watch) => Some(paint.detail(watch.id, width)),
-            Page::List => None,
+            Page::List | Page::Run(_) => None,
         };
+        let run = matches!(self.page, Page::Run(_));
         let mut copied = None;
         let _ = terminal.draw(|frame| {
             match detail {
-                None => self.draw_list(frame, screen),
                 Some(detail) => self.draw_detail(frame, screen, detail),
+                None if run => self.draw_run(frame, screen),
+                None => self.draw_list(frame, screen),
             }
             let skip = self.scrollbar;
             if let Some(selection) = &mut self.selection {
@@ -1042,15 +1077,12 @@ impl View {
         copied
     }
 
-    /// The list page: the banner, the steps, the last few notes, the summary,
-    /// the hint.
+    /// The list page: the banner, the steps, the summary, the hint.
     fn draw_list(&mut self, frame: &mut Frame, screen: Screen) {
         let banner = banner_lines(&screen.about, frame.area().height);
-        let notes = screen.notes.len().min(MAX_NOTES);
-        let [banner_area, list_area, notes_area, summary_area, hint_area] = Layout::vertical([
+        let [banner_area, list_area, summary_area, hint_area] = Layout::vertical([
             Constraint::Length(banner.len() as u16),
             Constraint::Fill(1),
-            Constraint::Length(notes as u16),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
@@ -1077,11 +1109,6 @@ impl View {
         self.scrollbar = scrollbar(frame, list_area, count, self.list.offset());
         self.list_scrollbar = self.scrollbar.is_some();
 
-        let recent = screen.notes.len() - notes;
-        frame.render_widget(
-            Paragraph::new(Text::from(screen.notes[recent..].to_vec())),
-            notes_area,
-        );
         frame.render_widget(Paragraph::new(screen.summary), summary_area);
         let hint = self.hint(screen.done, hint_area.width as usize);
         frame.render_widget(Paragraph::new(hint), hint_area);
@@ -1127,6 +1154,65 @@ impl View {
         let hint = self.hint(screen.done, hint_area.width as usize);
         frame.render_widget(Paragraph::new(hint), hint_area);
     }
+
+    /// The run's page: `rivet.log` as it is written, with the run's summary
+    /// under it.
+    ///
+    /// No step line over it, unlike a step's page: this log is the run's, and
+    /// what it is about is already in every line of it.
+    fn draw_run(&mut self, frame: &mut Frame, screen: Screen) {
+        let [log_area, summary_area, hint_area] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area());
+
+        let path = run_log(&screen.about);
+
+        if let Page::Run(pane) = &mut self.page {
+            let border = log_border();
+            let inner = border.inner(log_area);
+            pane.measure(inner);
+            pane.sync(path.as_deref());
+
+            let mut title = vec![span(" run log ", Style::new().bold())];
+            let mut footer = Vec::new();
+            let mut scroll = None;
+            let body = match &mut pane.log {
+                None => Text::from(span(
+                    "  this run is not logging: no log directory was given                      (ExecuteConfig::log_dir)",
+                    Style::new().dim(),
+                )),
+                Some(log) => {
+                    // As on a step's page, cut from the left: the end of a
+                    // path is what says which file it is.
+                    let room = (log_area.width as usize).saturating_sub(columns(" run log ") + 3);
+                    let shown = shorten_left(&log.tail.path.display().to_string(), room);
+                    title.push(span(format!(" {shown} "), Style::new().dim()));
+                    let (body, where_) =
+                        log_body(log, inner, "waiting for the log to be written", &mut footer);
+                    scroll = where_;
+                    body
+                }
+            };
+            draw_framed(frame, log_area, inner, border, title, footer, body);
+            self.scrollbar = scroll.and_then(|(count, top)| scrollbar(frame, inner, count, top));
+        }
+
+        frame.render_widget(Paragraph::new(screen.summary), summary_area);
+        let hint = self.hint(screen.done, hint_area.width as usize);
+        frame.render_widget(Paragraph::new(hint), hint_area);
+    }
+}
+
+/// The run's own log, where the run said it was logging — which is where the
+/// banner says it is. A run told not to log has none.
+fn run_log(about: &About) -> Option<PathBuf> {
+    about
+        .log_dir
+        .as_ref()
+        .map(|dir| dir.join(crate::log::RUN_LOG))
 }
 
 /// The banner over the list, for a terminal `height` rows tall: the wordmark
@@ -1179,6 +1265,15 @@ fn banner_lines(about: &About, height: u16) -> Vec<Line<'static>> {
     }
 }
 
+/// Which page's keys the hint line is saying, which is all the pages differ by
+/// as far as it is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hint {
+    List,
+    Step,
+    Run,
+}
+
 /// What the keys do, said at whatever length fits in `width` columns: in full
 /// where there is room, and more tersely where there is not.
 ///
@@ -1188,35 +1283,52 @@ fn banner_lines(about: &About, height: u16) -> Vec<Line<'static>> {
 /// a thing that simply stopped working. It outlasts most of the keys on the
 /// way down: only the narrowest terminal, with room for nothing but the keys
 /// themselves, goes without it.
-fn hint_text(list: bool, done: bool, width: usize) -> String {
+fn hint_text(page: Hint, done: bool, width: usize) -> String {
     let quit = if done { "q quit" } else { "q cancel the run" };
     let quit_short = if done { "q quit" } else { "q cancel" };
-    let tiers: Vec<String> = if list {
-        vec![
+    let tiers: Vec<String> = match page {
+        Hint::List => vec![
             format!(
-                "  ↑/↓ or wheel move · enter open a step · drag copies · \
+                "  ↑/↓ or wheel move · enter open a step · L run log · drag copies · \
                  y copy a less command · {quit}"
             ),
-            format!("  ↑/↓/wheel move · enter open · drag copies · y copy · {quit_short}"),
-            format!("  ↑/↓/wheel · enter · drag copies · y · {quit_short}"),
+            format!(
+                "  ↑/↓/wheel move · enter open · L run log · drag copies · y copy · {quit_short}"
+            ),
+            format!("  ↑/↓/wheel · enter · L log · drag copies · y · {quit_short}"),
             "  ↑/↓ · enter · drag copies · y · q".to_string(),
             "  ↑/↓ · enter · y · q".to_string(),
-        ]
-    } else {
-        vec![
+        ],
+        Hint::Step => vec![
             format!(
-                "  esc back · ↑/↓ or wheel scroll · G follow · tab next file · drag copies · \
-                 y copy a less command · {quit}"
+                "  esc back · ↑/↓ or wheel scroll · G follow · tab next file · L run log · \
+                 drag copies · y copy a less command · {quit}"
             ),
             format!(
-                "  esc back · ↑/↓ or wheel scroll · G follow · tab file · drag copies · \
-                 y copy · {quit_short}"
+                "  esc back · ↑/↓ or wheel scroll · G follow · tab file · L run log · \
+                 drag copies · y copy · {quit_short}"
             ),
-            format!("  esc back · ↑/↓/wheel · G follow · tab file · drag copies · {quit_short}"),
+            format!(
+                "  esc back · ↑/↓/wheel · G follow · tab file · L log · drag copies · {quit_short}"
+            ),
             format!("  esc · ↑/↓/wheel · G · tab · drag copies · {quit_short}"),
             "  esc · ↑/↓ · G · tab · drag copies · q".to_string(),
             "  esc · ↑/↓ · G · tab · y · q".to_string(),
-        ]
+        ],
+        // No `tab`: this page has the one file, and no `L` either, being it.
+        Hint::Run => vec![
+            format!(
+                "  esc back · ↑/↓ or wheel scroll · G follow · drag copies · \
+                 y copy a less command · {quit}"
+            ),
+            format!(
+                "  esc back · ↑/↓ or wheel scroll · G follow · drag copies · y copy · {quit_short}"
+            ),
+            format!("  esc back · ↑/↓/wheel · G follow · drag copies · {quit_short}"),
+            format!("  esc · ↑/↓/wheel · G · drag copies · {quit_short}"),
+            "  esc · ↑/↓ · G · drag copies · q".to_string(),
+            "  esc · ↑/↓ · G · y · q".to_string(),
+        ],
     };
     tiers
         .iter()
@@ -1421,56 +1533,64 @@ struct Watch {
     /// The file picked with `tab`, or `None` to read whichever the step most
     /// wants read — which changes as it starts tools.
     chosen: Option<PathBuf>,
+    pane: Pane,
+}
+
+/// A log on a page: the file being read, and the size of the area it was last
+/// drawn in, which is what the keys that scroll by a page need.
+///
+/// Both pages that read a file have one of these. What differs is which file:
+/// a step's page follows the step, and the run's page reads `rivet.log`.
+struct Pane {
     /// The file being read, once there is one.
     log: Option<LogView>,
-    /// The size of the log's area last frame, for the keys that scroll by it.
     columns: u16,
     rows: u16,
 }
 
-impl Watch {
-    fn new(id: usize) -> Self {
+impl Default for Pane {
+    fn default() -> Self {
         Self {
-            id,
-            chosen: None,
             log: None,
             columns: 80,
             rows: 24,
         }
     }
+}
 
-    /// Read the file this page should be reading, given what the step has.
-    fn sync(&mut self, files: &[PathBuf]) {
-        let wanted = match &self.chosen {
-            Some(chosen) if files.contains(chosen) => Some(chosen),
-            _ => files.first(),
-        };
-        match wanted {
-            Some(wanted) => {
-                if self.log.as_ref().map(|log| &log.tail.path) != Some(wanted) {
-                    self.log = Some(LogView::new(wanted.clone()));
+impl Pane {
+    /// Read `path`, starting again if it is not the file being read already.
+    fn sync(&mut self, path: Option<&Path>) {
+        match path {
+            Some(path) => {
+                if self.log.as_ref().map(|log| log.tail.path.as_path()) != Some(path) {
+                    self.log = Some(LogView::new(path.to_path_buf()));
                 }
             }
             None => self.log = None,
         }
     }
 
-    /// Switch to the next (or previous) of the step's files.
-    fn next_file(&mut self, by: isize, paint: &dyn Paint) {
-        let Some(files) = paint.detail(self.id, usize::MAX).map(|detail| detail.files) else {
-            return;
-        };
-        if files.is_empty() {
-            return;
-        }
-        let current = self
-            .log
+    /// How far the keys that move by a screenful move.
+    fn page(&self) -> isize {
+        self.rows.max(1) as isize
+    }
+
+    /// The file being read, for the `less` command `y` copies.
+    fn files(&self) -> Vec<PathBuf> {
+        self.log
             .as_ref()
-            .and_then(|log| files.iter().position(|file| *file == log.tail.path))
-            .unwrap_or(0) as isize;
-        let next = (current + by).rem_euclid(files.len() as isize) as usize;
-        self.chosen = Some(files[next].clone());
-        self.sync(&files);
+            .map(|log| vec![log.tail.path.clone()])
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// The area the log was last drawn in, which the scrolling keys measure
+    /// themselves against.
+    fn measure(&mut self, inner: Rect) {
+        self.columns = inner.width;
+        self.rows = inner.height;
     }
 
     fn scroll(&mut self, by: isize) {
@@ -1506,23 +1626,58 @@ impl Watch {
             log.follow();
         }
     }
+}
+
+impl Watch {
+    fn new(id: usize) -> Self {
+        Self {
+            id,
+            chosen: None,
+            pane: Pane::default(),
+        }
+    }
+
+    /// Read the file this page should be reading, given what the step has.
+    fn sync(&mut self, files: &[PathBuf]) {
+        let wanted = match &self.chosen {
+            Some(chosen) if files.contains(chosen) => Some(chosen),
+            _ => files.first(),
+        };
+        self.pane.sync(wanted.map(PathBuf::as_path));
+    }
+
+    /// Switch to the next (or previous) of the step's files.
+    fn next_file(&mut self, by: isize, paint: &dyn Paint) {
+        let Some(files) = paint.detail(self.id, usize::MAX).map(|detail| detail.files) else {
+            return;
+        };
+        if files.is_empty() {
+            return;
+        }
+        let current = self
+            .pane
+            .log
+            .as_ref()
+            .and_then(|log| files.iter().position(|file| *file == log.tail.path))
+            .unwrap_or(0) as isize;
+        let next = (current + by).rem_euclid(files.len() as isize) as usize;
+        self.chosen = Some(files[next].clone());
+        self.sync(&files);
+    }
 
     /// The log, framed: the step and the file above it, where in the file
     /// below.
     fn draw(&mut self, frame: &mut Frame, area: Rect, detail: &Detail) -> Option<u16> {
-        let border = Block::new()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(Style::new().dim());
+        let border = log_border();
         let inner = border.inner(area);
-        self.columns = inner.width;
-        self.rows = inner.height;
+        self.pane.measure(inner);
 
         let mut title = vec![span(format!(" {} ", detail.label), Style::new().bold())];
         let mut footer = Vec::new();
         // Which lines the scrollbar stands for, and where it is in them.
         let mut scroll = None;
 
-        let body = match &mut self.log {
+        let body = match &mut self.pane.log {
             None => {
                 title.push(span(" no log ", Style::new().dim()));
                 Text::from(span(
@@ -1552,51 +1707,93 @@ impl Watch {
                     ));
                 }
 
-                log.poll();
-                match &log.tail.state {
-                    TailState::Waiting if detail.running => {
-                        Text::from(span("  waiting for the file to appear", Style::new().dim()))
-                    }
-                    TailState::Waiting => Text::from(span("  no such file", Style::new().dim())),
-                    TailState::Failed(error) => {
-                        Text::from(span(format!("  cannot read: {error}"), Style::new().red()))
-                    }
-                    TailState::Reading if log.tail.count() == 0 => {
-                        Text::from(span("  (empty)", Style::new().dim()))
-                    }
-                    TailState::Reading => {
-                        let shown = log.render(inner.width, inner.height);
-                        // Numbered within what is here to read, which is the
-                        // whole file unless it was too long to keep.
-                        let of = if log.tail.truncated() {
-                            format!("the last {}", log.tail.kept())
-                        } else {
-                            log.tail.kept().to_string()
-                        };
-                        footer.push(span(
-                            if shown.following {
-                                format!(" following · {of} lines ")
-                            } else {
-                                format!(" line {} of {of} ", shown.bottom + 1 - log.tail.first())
-                            },
-                            Style::new().dim(),
-                        ));
-                        let top = shown.top.line.saturating_sub(log.tail.first()) as usize;
-                        scroll = Some((log.tail.lines.len(), top));
-                        Text::from(shown.rows)
-                    }
-                }
+                let waiting = if detail.running {
+                    "waiting for the file to appear"
+                } else {
+                    "no such file"
+                };
+                let (body, where_) = log_body(log, inner, waiting, &mut footer);
+                scroll = where_;
+                body
             }
         };
 
-        frame.render_widget(
-            border
-                .title(Line::from(title))
-                .title_bottom(Line::from(footer).right_aligned()),
-            area,
-        );
-        frame.render_widget(Paragraph::new(body), inner);
+        draw_framed(frame, area, inner, border, title, footer, body);
         scroll.and_then(|(count, top)| scrollbar(frame, inner, count, top))
+    }
+}
+
+/// The frame a log is read in: a rule above it and below, with what it is over
+/// the top and where in it under the bottom.
+fn log_border() -> Block<'static> {
+    Block::new()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::new().dim())
+}
+
+fn draw_framed(
+    frame: &mut Frame,
+    area: Rect,
+    inner: Rect,
+    border: Block<'static>,
+    title: Vec<Span<'static>>,
+    footer: Vec<Span<'static>>,
+    body: Text<'static>,
+) {
+    frame.render_widget(
+        border
+            .title(Line::from(title))
+            .title_bottom(Line::from(footer).right_aligned()),
+        area,
+    );
+    frame.render_widget(Paragraph::new(body), inner);
+}
+
+/// What a log shows for whatever state its file is in, and — appended to
+/// `footer` — where in the file the screen is. The lines the scrollbar stands
+/// for come back with it.
+///
+/// `waiting` is what to say while the file is not there: whether that is worth
+/// waiting for is the page's business rather than the log's.
+fn log_body(
+    log: &mut LogView,
+    inner: Rect,
+    waiting: &str,
+    footer: &mut Vec<Span<'static>>,
+) -> (Text<'static>, Option<(usize, usize)>) {
+    log.poll();
+    match &log.tail.state {
+        TailState::Waiting => (
+            Text::from(span(format!("  {waiting}"), Style::new().dim())),
+            None,
+        ),
+        TailState::Failed(error) => (
+            Text::from(span(format!("  cannot read: {error}"), Style::new().red())),
+            None,
+        ),
+        TailState::Reading if log.tail.count() == 0 => {
+            (Text::from(span("  (empty)", Style::new().dim())), None)
+        }
+        TailState::Reading => {
+            let shown = log.render(inner.width, inner.height);
+            // Numbered within what is here to read, which is the whole file
+            // unless it was too long to keep.
+            let of = if log.tail.truncated() {
+                format!("the last {}", log.tail.kept())
+            } else {
+                log.tail.kept().to_string()
+            };
+            footer.push(span(
+                if shown.following {
+                    format!(" following · {of} lines ")
+                } else {
+                    format!(" line {} of {of} ", shown.bottom + 1 - log.tail.first())
+                },
+                Style::new().dim(),
+            ));
+            let top = shown.top.line.saturating_sub(log.tail.first()) as usize;
+            (Text::from(shown.rows), Some((log.tail.lines.len(), top)))
+        }
     }
 }
 
@@ -2687,9 +2884,9 @@ mod tests {
     /// A step's page, open on a log of `count` one-row lines, three rows tall.
     fn page(count: usize) -> View {
         let mut watch = Watch::new(7);
-        watch.log = Some(view(count));
-        watch.columns = 80;
-        watch.rows = 3;
+        watch.pane.log = Some(view(count));
+        watch.pane.columns = 80;
+        watch.pane.rows = 3;
         View {
             page: Page::Detail(Box::new(watch)),
             ..View::default()
@@ -2701,14 +2898,14 @@ mod tests {
         let Page::Detail(watch) = &mut page.page else {
             panic!("not a step's page");
         };
-        shown(watch.log.as_mut().unwrap(), 3)
+        shown(watch.pane.log.as_mut().unwrap(), 3)
     }
 
     fn is_following(page: &mut View) -> bool {
         let Page::Detail(watch) = &mut page.page else {
             panic!("not a step's page");
         };
-        watch.log.as_mut().unwrap().render(80, 3).following
+        watch.pane.log.as_mut().unwrap().render(80, 3).following
     }
 
     #[test]
@@ -2810,6 +3007,134 @@ mod tests {
         assert!(matches!(view.page, Page::Detail(_)));
         view.key(press(KeyCode::Esc), &paint);
         assert!(matches!(view.page, Page::List));
+    }
+
+    /// The run's page, open on a log of `count` one-row lines, three rows tall.
+    fn run_page(count: usize) -> View {
+        View {
+            page: Page::Run(Box::new(Pane {
+                log: Some(view(count)),
+                columns: 80,
+                rows: 3,
+            })),
+            ..View::default()
+        }
+    }
+
+    /// What the log on an open run page is showing.
+    fn run_rows(page: &mut View) -> Vec<String> {
+        let Page::Run(pane) = &mut page.page else {
+            panic!("not the run's page");
+        };
+        shown(pane.log.as_mut().unwrap(), 3)
+    }
+
+    #[test]
+    fn the_run_log_opens_from_either_page_and_closes_to_the_list() {
+        let paint = OneStep::default();
+        let mut view = View {
+            selected: Some(7),
+            ..View::default()
+        };
+
+        // From the list, and back to it.
+        view.key(press(KeyCode::Char('L')), &paint);
+        assert!(matches!(view.page, Page::Run(_)));
+        view.key(press(KeyCode::Esc), &paint);
+        assert!(matches!(view.page, Page::List));
+
+        // From a step's page — the run's log is not the step's, so `esc` from
+        // it goes back to the list rather than to the step.
+        view.key(press(KeyCode::Enter), &paint);
+        assert!(matches!(view.page, Page::Detail(_)));
+        view.key(press(KeyCode::Char('L')), &paint);
+        assert!(matches!(view.page, Page::Run(_)));
+        view.key(press(KeyCode::Esc), &paint);
+        assert!(matches!(view.page, Page::List));
+    }
+
+    #[test]
+    fn pressing_the_run_logs_key_on_the_run_log_leaves_it_where_it_is() {
+        let paint = OneStep::default();
+        let mut page = run_page(100);
+        page.key(press(KeyCode::Char('k')), &paint);
+        assert_eq!(run_rows(&mut page), ["96", "97", "98"]);
+
+        // Not reopened from the top, which would throw away where it was read
+        // to: `L` is how it is opened, and `esc` how it is left.
+        page.key(press(KeyCode::Char('L')), &paint);
+        assert!(matches!(page.page, Page::Run(_)));
+        assert_eq!(run_rows(&mut page), ["96", "97", "98"]);
+    }
+
+    #[test]
+    fn the_run_log_scrolls_and_follows_the_way_a_steps_log_does() {
+        let paint = OneStep::default();
+        let mut page = run_page(100);
+        assert_eq!(run_rows(&mut page), ["97", "98", "99"]);
+
+        page.key(press(KeyCode::Char('k')), &paint);
+        page.key(press(KeyCode::Char('k')), &paint);
+        assert_eq!(run_rows(&mut page), ["95", "96", "97"]);
+
+        page.key(press(KeyCode::Home), &paint);
+        assert_eq!(run_rows(&mut page), ["0", "1", "2"]);
+
+        page.key(press(KeyCode::PageDown), &paint);
+        assert_eq!(run_rows(&mut page), ["3", "4", "5"]);
+
+        page.key(press(KeyCode::Char('G')), &paint);
+        assert_eq!(run_rows(&mut page), ["97", "98", "99"]);
+
+        // And the wheel, which reaches whichever log is open.
+        page.event(mouse(MouseEventKind::ScrollUp), &paint);
+        assert_eq!(run_rows(&mut page), ["94", "95", "96"]);
+
+        // `y` offers the file it is reading, so it can be read in full
+        // somewhere else.
+        let Action::Copy(files) = page.key(press(KeyCode::Char('y')), &paint) else {
+            panic!("y copies");
+        };
+        assert_eq!(files, [PathBuf::from("/nonexistent")]);
+    }
+
+    #[test]
+    fn the_run_page_reads_the_log_the_banner_names() {
+        let mut about = About {
+            targets: vec!["decoder signoff".into()],
+            steps: 7,
+            workers: 4,
+            log_dir: Some(PathBuf::from("/build")),
+        };
+        assert_eq!(run_log(&about), Some(PathBuf::from("/build/rivet.log")));
+
+        // A run that is not logging has nothing for the page to read, which is
+        // what it says instead of showing an empty one.
+        about.log_dir = None;
+        assert_eq!(run_log(&about), None);
+    }
+
+    #[test]
+    fn a_pane_reads_the_file_it_is_pointed_at_until_pointed_at_another() {
+        let mut pane = Pane::default();
+        assert!(pane.log.is_none());
+        assert!(pane.files().is_empty());
+
+        pane.sync(Some(Path::new("/build/rivet.log")));
+        assert_eq!(pane.files(), [PathBuf::from("/build/rivet.log")]);
+
+        // The same file again is the same read, not a fresh one from the top.
+        pane.log.as_mut().unwrap().tail.push("kept".into());
+        pane.sync(Some(Path::new("/build/rivet.log")));
+        assert_eq!(pane.log.as_ref().unwrap().tail.count(), 1);
+
+        // A different one starts again.
+        pane.sync(Some(Path::new("/build/other.log")));
+        assert_eq!(pane.log.as_ref().unwrap().tail.count(), 0);
+
+        // Nothing to read — a run that was told not to log.
+        pane.sync(None);
+        assert!(pane.log.is_none());
     }
 
     // -- selecting ----------------------------------------------------------
@@ -2986,7 +3311,7 @@ mod tests {
         };
         // ...so the lines that arrive during the drag do not carry it away.
         for n in 100..110 {
-            watch.log.as_mut().unwrap().tail.push(n.to_string());
+            watch.pane.log.as_mut().unwrap().tail.push(n.to_string());
         }
         assert_eq!(log_rows(&mut page), ["97", "98", "99"]);
         assert!(!is_following(&mut page));
@@ -3052,26 +3377,26 @@ mod tests {
 
     #[test]
     fn the_hint_is_said_at_the_longest_length_that_fits() {
-        let long = hint_text(true, false, 200);
+        let long = hint_text(Hint::List, false, 200);
         assert!(long.contains("enter open a step"), "{long}");
-        assert_eq!(hint_text(true, false, columns(&long)), long);
+        assert_eq!(hint_text(Hint::List, false, columns(&long)), long);
 
-        let medium = hint_text(true, false, columns(&long) - 1);
+        let medium = hint_text(Hint::List, false, columns(&long) - 1);
         assert!(columns(&medium) < columns(&long));
         assert!(medium.contains("enter open"), "{medium}");
         assert!(medium.contains("q cancel"), "{medium}");
 
-        let short = hint_text(true, false, 30);
+        let short = hint_text(Hint::List, false, 30);
         assert!(columns(&short) <= 30, "{short}");
         assert!(short.ends_with("· q"), "{short}");
         // Narrower than even the shortest: the shortest, for the terminal to
         // cut.
-        assert_eq!(hint_text(true, false, 3), short);
+        assert_eq!(hint_text(Hint::List, false, 3), short);
 
         // Once the run is done, `q` quits, at every length.
         for width in [200, 60] {
-            assert!(hint_text(true, true, width).ends_with("q quit"));
-            assert!(!hint_text(true, true, width).contains("cancel"));
+            assert!(hint_text(Hint::List, true, width).ends_with("q quit"));
+            assert!(!hint_text(Hint::List, true, width).contains("cancel"));
         }
 
         // The question `q` asks, at every length, says what `y` does.
@@ -3081,38 +3406,56 @@ mod tests {
             assert!(question.contains('y'), "{question}");
             assert!(columns(&question) <= width || width < 25, "{question}");
         }
-        assert!(hint_text(false, true, 200).starts_with("  esc back"));
-        assert!(columns(&hint_text(false, true, 40)) <= 40);
+        assert!(hint_text(Hint::Step, true, 200).starts_with("  esc back"));
+        assert!(columns(&hint_text(Hint::Step, true, 40)) <= 40);
+
+        // The run log is offered from the pages that are not it, and its own
+        // page says nothing about the `tab` it has no files to cycle.
+        assert!(hint_text(Hint::List, true, 200).contains("L run log"));
+        assert!(hint_text(Hint::Step, true, 200).contains("L run log"));
+        assert!(!hint_text(Hint::Run, true, 200).contains("run log"));
+        assert!(!hint_text(Hint::Run, true, 200).contains("tab"));
+        assert!(hint_text(Hint::Run, true, 200).starts_with("  esc back"));
 
         // The longer tiers are written across two source lines, and a string
         // continuation that did not eat its indentation would show up as a gap
         // in the middle of the line.
-        for list in [true, false] {
+        for page in [Hint::List, Hint::Step, Hint::Run] {
             for width in [200, 120, 95, 80, 50, 20] {
-                let hint = hint_text(list, false, width);
+                let hint = hint_text(page, false, width);
                 assert!(!hint.trim_start().contains("  "), "{width}: {hint}");
             }
         }
 
         // The mouse is reported on both pages, so both own up to `shift`
         // wherever there is room for more than the keys themselves.
-        for list in [true, false] {
+        for page in [Hint::List, Hint::Step, Hint::Run] {
             for done in [true, false] {
                 for width in [200, 120, 100, 95, 80, 63, 50, 40] {
-                    let hint = hint_text(list, done, width);
-                    assert!(columns(&hint) <= width, "{list} {width}: {hint}");
-                    assert!(hint.contains("drag copies"), "{list} {width}: {hint}");
+                    let hint = hint_text(page, done, width);
+                    assert!(columns(&hint) <= width, "{page:?} {width}: {hint}");
+                    assert!(hint.contains("drag copies"), "{page:?} {width}: {hint}");
                     // Nothing offers to cancel a run that is already over.
                     assert!(!done || !hint.contains("cancel"), "{width}: {hint}");
                 }
             }
-            assert!(hint_text(list, false, 200).contains("wheel"));
+            assert!(hint_text(page, false, 200).contains("wheel"));
 
-            // Below that, the keys are all that fits — the list holds on a
-            // little longer, having fewer of them to list.
-            let floor = if list { 35 } else { 39 };
-            assert!(hint_text(list, false, floor).contains("drag copies"));
-            assert!(!hint_text(list, false, floor - 1).contains("drag"));
+            // Below that, the keys are all that fits — the pages with fewer of
+            // them to list hold on a little longer.
+            let floor = match page {
+                Hint::List => 35,
+                Hint::Step => 39,
+                Hint::Run => 33,
+            };
+            assert!(
+                hint_text(page, false, floor).contains("drag copies"),
+                "{page:?}"
+            );
+            assert!(
+                !hint_text(page, false, floor - 1).contains("drag"),
+                "{page:?}"
+            );
         }
     }
 

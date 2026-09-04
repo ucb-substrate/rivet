@@ -197,9 +197,6 @@ struct Ui {
 struct UiState {
     /// The steps, and which of them the cursor is on.
     cursor: Cursor,
-    /// Lines that are not steps — notes, warnings — and when they were said,
-    /// so the record can put them where they happened.
-    notes: Vec<(Instant, Line<'static>)>,
     /// The display has been given up: everything from now on is plain output.
     detached: bool,
 }
@@ -273,7 +270,6 @@ impl Reporter {
             Ui {
                 state: Mutex::new(UiState {
                     cursor,
-                    notes: Vec::new(),
                     detached: false,
                 }),
                 tui: Mutex::new(None),
@@ -477,18 +473,21 @@ impl Reporter {
         }
     }
 
-    /// Say a line that is not a step: on screen under the list while the
-    /// display is up, and in the record afterwards, where it happened.
+    /// Say a line that is not a step, when there is anywhere to say it.
+    ///
+    /// Plain output only. While the display is up it owns the terminal and the
+    /// line is dropped: everything said this way is logged as well, and the
+    /// log is a file the display can be asked to show, which a line printed
+    /// once and left on screen could never keep up with.
     pub(crate) fn print(&self, line: Line<'static>) {
-        match self.display() {
-            Some(mut display) => display.notes.push((Instant::now(), line)),
-            // Nothing is drawing, so the line is just output. Written rather
-            // than printed because `eprintln!` panics if the write fails, and
-            // this runs on a worker: a run piped into something that stops
-            // reading — `| head`, or `| less` quit early — would otherwise take
-            // a step down with it.
-            None => write_line(&plain(&line)),
+        if self.drawing() {
+            return;
         }
+        // Written rather than printed because `eprintln!` panics if the write
+        // fails, and this runs on a worker: a run piped into something that
+        // stops reading — `| head`, or `| less` quit early — would otherwise
+        // take a step down with it.
+        write_line(&plain(&line));
     }
 
     /// The run is over: wait for the display to be dismissed, then print a
@@ -633,7 +632,7 @@ impl Reporter {
         let overflow = rows
             .iter()
             .filter(|row| row.group() == Group::Running)
-            .map(|row| row.running_line(false, full, spinner, false).width())
+            .map(|row| row.bare_width(full, spinner))
             .max()
             .unwrap_or(0)
             .saturating_sub(width);
@@ -682,14 +681,12 @@ impl Paint for Reporter {
                 running: row.ended.is_none(),
             })
             .collect();
-        let notes = display.notes.iter().map(|(_, line)| line.clone()).collect();
         drop(display);
 
         Screen {
             about: self.about.clone(),
             steps,
             selected,
-            notes,
             summary: self.summary(width),
             done: self.ended().is_some(),
         }
@@ -743,8 +740,11 @@ impl Paint for Reporter {
         }
         state.detached = true;
 
-        // The record: every step that has ended, and every note, in the order
-        // things happened — which is the order plain output would have had.
+        // The record: how each step that has ended went, in the order they
+        // ended, which is the order plain output would have had. A summary of
+        // the run and not a replay of it — what was logged along the way is in
+        // `rivet.log`, and putting it all back on the terminal would bury the
+        // one thing someone wants from a display that has just come down.
         // Steps still running have no line yet; they will be reported plainly
         // as they end.
         let mut record: Vec<(Instant, Line<'static>)> = state
@@ -757,7 +757,6 @@ impl Paint for Reporter {
                     .map(|ended| (ended.at, indent(ended.record.clone())))
             })
             .collect();
-        record.append(&mut state.notes);
         record.sort_by_key(|(at, _)| *at);
         record.into_iter().map(|(_, line)| line).collect()
     }
@@ -1057,7 +1056,13 @@ impl Row {
                 spans.extend(ended.record.spans.iter().cloned());
                 Line::from(spans)
             }
-            None if self.started.is_some() => self.running_line(selected, width, spinner, true),
+            None if self.started.is_some() => {
+                let mut line = self.running_line(selected, width, spinner, true);
+                // Last, after whatever the step and its tool had to say, so it
+                // reads as a remark on the line rather than displacing it.
+                line.spans.extend(self.quiet_remark());
+                line
+            }
             None => self.pending_line(selected, width, waiting),
         }
     }
@@ -1085,10 +1090,34 @@ impl Row {
             return fit_line(full, columns);
         }
         let bare = self.running_line(selected, width, spinner, false);
-        if bare.width() <= columns {
-            return bare;
-        }
-        fit_line(bare, columns)
+        let Some(remark) = self.quiet_remark() else {
+            return fit_line(bare, columns);
+        };
+        // A quiet tool is the one thing on the line worth interrupting someone
+        // over, and it sits at the end, where a plain cut would take it first.
+        // So it is what the line is fitted around: room is kept for it, and
+        // what the step and its tool are saying gives way instead.
+        let mut spans = fit_line(bare, columns.saturating_sub(remark.width())).spans;
+        spans.push(remark);
+        Line::from(spans)
+    }
+
+    /// The remark that says this step's tool has gone quiet, once it has been
+    /// quiet long enough to be worth saying. See [`StepState::quiet_for`].
+    fn quiet_remark(&self) -> Option<Span<'static>> {
+        let quiet = self.state.lock().unwrap().quiet_for(self.started?)?;
+        Some(span(
+            format!("  (quiet for {})", fmt_duration(quiet)),
+            Style::new().yellow(),
+        ))
+    }
+
+    /// How wide this step's line is with its bars given up: the width the label
+    /// column is squeezed against. The quiet remark counts towards it, because
+    /// [`Row::fit`] keeps that whatever else it has to cut.
+    fn bare_width(&self, width: usize, spinner: &str) -> usize {
+        self.running_line(false, width, spinner, false).width()
+            + self.quiet_remark().map_or(0, |remark| remark.width())
     }
 
     /// The line of a step that is running, with or without its bars.
@@ -1123,14 +1152,6 @@ impl Row {
             spans.extend(region.spans(bars));
         }
 
-        // Last, after whatever the step and its tool had to say, so it reads as
-        // a remark on the line rather than displacing it.
-        if let Some(quiet) = state.quiet_for(started) {
-            spans.push(span(
-                format!("  (quiet for {})", fmt_duration(quiet)),
-                Style::new().yellow(),
-            ));
-        }
         Line::from(spans)
     }
 
@@ -1402,9 +1423,10 @@ impl StepHandle {
     /// How long it has been since the step's tool wrote a line, once that is
     /// long enough to be worth saying. `None` while it is still writing.
     ///
-    /// See [`QUIET_AFTER`]. The display shows this on the step's line; it is
-    /// public so that whatever is waiting on the tool can say it out loud,
-    /// which is the only way a run with no live display hears about it.
+    /// See [`QUIET_AFTER`]. The display shows this on the step's line, in
+    /// yellow, for as long as it lasts. It is public so that whatever is
+    /// waiting on the tool can say it out loud as well — through [`note`] or
+    /// `tracing`, which is how a run with no live display hears about it.
     pub fn quiet_for(&self) -> Option<Duration> {
         self.state.lock().unwrap().quiet_for(self.started)
     }
@@ -1568,19 +1590,34 @@ pub(crate) fn set_active_reporter(reporter: Option<Arc<Reporter>>) {
     *ACTIVE.write().unwrap() = reporter;
 }
 
-/// Say something that is not a step: on screen under the list while the live
-/// display is up, in the run's record afterwards, or straight to stderr if no
-/// flow is running.
+/// Say something that is not a step: to `rivet.log` always, and to stderr as
+/// well when nothing is drawing on it.
 ///
 /// Use this instead of `println!` anywhere that might run inside a flow: see
-/// [the module docs](self#nothing-else-may-write-to-the-terminal).
-///
-/// The line is logged as well as shown, so a run's log holds everything the
-/// person watching it was told.
+/// [the module docs](self#nothing-else-may-write-to-the-terminal). A flow with
+/// the display up is not interrupted — the line goes to the log, which the
+/// display can be asked to show, and which is still there to read when the run
+/// is over.
 pub fn note(message: impl AsRef<str>) {
     let message = message.as_ref();
     tracing::info!(target: "rivet::note", "{message}");
+    say(message);
+}
 
+/// A [`note`] about something worth noticing, logged at `WARN`.
+///
+/// The level is the whole difference, and it is what tells a stalled tool from
+/// the chatter around it when the log is read back, searched, or narrowed with
+/// `RIVET_LOG`.
+pub fn warn(message: impl AsRef<str>) {
+    let message = message.as_ref();
+    tracing::warn!(target: "rivet::note", "{message}");
+    say(message);
+}
+
+/// The terminal half of [`note`] and [`warn`], which is nothing at all while
+/// the display is up: see [`Reporter::print`].
+fn say(message: &str) {
     // Cloned out so the lock is not held while drawing, which would block the
     // end of the run.
     let active = ACTIVE.read().unwrap().clone();
@@ -2145,6 +2182,47 @@ mod tests {
         assert_eq!(cut.width(), bare.width() - 4);
         assert!(text.ends_with("2/5 route_d…"), "{text}");
         assert!(text.starts_with("❯ ⠹ step 1"), "{text}");
+    }
+
+    /// A step whose tool has said nothing for long enough to be worth saying.
+    fn quiet_row() -> Row {
+        let row = busy_row();
+        row.state.lock().unwrap().last_output = Some(Instant::now() - QUIET_AFTER);
+        row
+    }
+
+    #[test]
+    fn a_quiet_tool_is_said_on_the_step_line_and_kept_when_the_line_is_cut() {
+        let row = quiet_row();
+        let full = row.line(true, 11, "⠹", &[]);
+        assert!(
+            plain(&full).ends_with("(quiet for 10m00s)"),
+            "{}",
+            plain(&full)
+        );
+
+        // Everything else on the line gives way to it first: the bars, then
+        // what the step and its tool are saying, cut back from the right.
+        for columns in [full.width() - 1, 40, 30] {
+            let cut = row.fit(true, 11, "⠹", columns, &[]);
+            let text = plain(&cut);
+            assert!(text.ends_with("(quiet for 10m00s)"), "{columns}: {text}");
+            assert!(cut.width() <= columns, "{columns}: {text}");
+        }
+
+        // And it is yellow, wherever the cut fell.
+        let cut = row.fit(true, 11, "⠹", 30, &[]);
+        assert_eq!(
+            cut.spans.last().unwrap().style.fg,
+            Some(ratatui::style::Color::Yellow)
+        );
+    }
+
+    #[test]
+    fn a_tool_that_is_still_writing_says_nothing_about_being_quiet() {
+        let row = busy_row();
+        assert!(!plain(&row.line(true, 11, "⠹", &[])).contains("quiet"));
+        assert!(!plain(&row.fit(true, 11, "⠹", 30, &[])).contains("quiet"));
     }
 
     #[test]

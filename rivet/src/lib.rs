@@ -95,7 +95,16 @@ pub type StepResult = Result<(), StepError>;
 
 pub trait Step: Debug + Any + Send + Sync {
     fn deps(&self) -> Vec<StepRef<dyn Step>>;
+
+    /// Whether the step is pinned: taken to be up to date, so neither it nor
+    /// anything it depends on is run.
     fn pinned(&self) -> bool;
+
+    /// Pin or unpin the step; see [`Step::pinned`].
+    ///
+    /// Once a step is in a flow it is reached through a [`StepRef`], where
+    /// [`StepRef::pin`] calls this without the lock dance.
+    fn set_pinned(&mut self, pinned: bool);
 
     /// Do the step's work.
     ///
@@ -208,6 +217,19 @@ impl<T: ?Sized> StepRef<T> {
     pub fn update<R>(&self, update_fn: impl FnOnce(&mut T) -> R) -> R {
         let mut inner = self.inner.write().unwrap();
         update_fn(&mut inner)
+    }
+}
+
+impl<T: Step + ?Sized> StepRef<T> {
+    /// Pin the step: it is taken to be up to date, so neither it nor anything
+    /// it depends on runs. Shorthand for `update(|step| step.set_pinned(true))`.
+    pub fn pin(&self) {
+        self.update(|step| step.set_pinned(true));
+    }
+
+    /// Undo [`StepRef::pin`].
+    pub fn unpin(&self) {
+        self.update(|step| step.set_pinned(false));
     }
 }
 

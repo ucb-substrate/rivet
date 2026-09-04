@@ -52,7 +52,17 @@ environment. Tools that hold licences or saturate a machine on their own are
 usually worth capping explicitly.
 
 A pinned step is treated as up to date: it is skipped, and its dependencies are
-neither walked nor run.
+neither walked nor run. Steps are held in `StepRef`s, shared handles that can
+be configured after the flow is built, so pinning is `sram.pin()`; a flow that
+hands out several steps at once can queue them together with
+`Executor::targets`:
+
+```rust
+flow.sram.pin();                                  // already compiled
+rivet::Executor::new()
+    .targets(flow.signoff())                      // e.g. [drc, lvs]
+    .run()?;
+```
 
 ### Failure
 

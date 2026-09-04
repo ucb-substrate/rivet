@@ -53,6 +53,10 @@ impl<F: Fn() -> StepResult + Send + Sync + 'static> Step for RustStep<F> {
         self.pinned
     }
 
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
+
     fn label(&self) -> String {
         self.name.clone().unwrap_or_else(|| "RustStep".to_string())
     }

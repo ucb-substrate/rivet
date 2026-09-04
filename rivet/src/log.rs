@@ -32,10 +32,10 @@
 //! one narrative of a run even with several steps in flight:
 //!
 //! ```text
-//! 2026-08-31T18:02:11.401Z  INFO rivet::executor: step{name="decoder par"}: started
-//! 2026-08-31T18:02:11.402Z  INFO rivet::exec: step{name="decoder par"}: running command="innovus" "-files" "par.tcl" stdout="build/decoder/par/decoder.par.out" stderr="build/decoder/par/decoder.par.err"
-//! 2026-08-31T18:06:12.884Z  INFO rivet::exec: step{name="decoder par"}: exited code=0 success=true
-//! 2026-08-31T18:06:13.002Z  INFO rivet::executor: step{name="decoder par"}: completed elapsed=4m1.6s
+//! 2026-08-31T18:02:11.401942Z  INFO step{name=decoder par}: rivet::executor: started
+//! 2026-08-31T18:02:11.402813Z  INFO step{name=decoder par}: rivet::exec: running command="innovus" "-files" "par.tcl" stdout=build/decoder/par/decoder.par.out stderr=build/decoder/par/decoder.par.err
+//! 2026-08-31T18:06:12.884406Z  INFO step{name=decoder par}: rivet::exec: exited code=0 success=true
+//! 2026-08-31T18:06:13.002115Z  INFO step{name=decoder par}: rivet::executor: completed elapsed=4m1.6s
 //! ```
 //!
 //! # What is logged
@@ -407,6 +407,54 @@ mod tests {
             false
         }
 
+        fn set_pinned(&mut self, _pinned: bool) {
+            unreachable!("nothing pins a Talker")
+        }
+
+        fn label(&self) -> String {
+            self.label.clone()
+        }
+
+        fn log_dir(&self) -> Option<PathBuf> {
+            Some(self.work_dir.clone())
+        }
+    }
+
+    /// A step that says something both ways round.
+    #[derive(Debug)]
+    struct Speaker {
+        label: String,
+        work_dir: PathBuf,
+    }
+
+    impl Speaker {
+        fn build(label: &str, work_dir: &Path) -> StepRef<Self> {
+            StepRef::new(Self {
+                label: label.to_string(),
+                work_dir: work_dir.to_path_buf(),
+            })
+        }
+    }
+
+    impl Step for Speaker {
+        fn execute(&self) -> StepResult {
+            crate::progress::note("said in passing");
+            crate::progress::warn("worth noticing");
+            Ok(())
+        }
+
+        fn deps(&self) -> Vec<StepRef<dyn Step>> {
+            Vec::new()
+        }
+
+        fn pinned(&self) -> bool {
+            false
+        }
+
+        fn set_pinned(&mut self, _pinned: bool) {
+            unreachable!("nothing pins a Speaker")
+        }
+
         fn label(&self) -> String {
             self.label.clone()
         }
@@ -434,6 +482,34 @@ mod tests {
 
         let step = fs::read_to_string(dir.join("talker.rivet.log")).expect("talker.rivet.log");
         assert!(step.contains("hello from the step"), "{step}");
+    }
+
+    /// What [`crate::progress::note`] and [`crate::progress::warn`] say is kept
+    /// here and nowhere else: they are not held in memory for the display to
+    /// show later, so a run that is not being watched — or one being watched on
+    /// a screen that has moved on — has this to read back.
+    #[test]
+    fn what_a_step_says_out_loud_is_kept_in_the_log() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_dir("notes");
+
+        crate::Executor::new()
+            .progress(false)
+            .log_dir(&dir)
+            .target(Speaker::build("speaker", &dir))
+            .run()
+            .expect("run");
+
+        let run = fs::read_to_string(dir.join(RUN_LOG)).expect("rivet.log");
+        assert!(run.contains("INFO"), "{run}");
+        assert!(run.contains("said in passing"), "{run}");
+        assert!(run.contains("WARN"), "{run}");
+        assert!(run.contains("worth noticing"), "{run}");
+
+        // Both are the step's own, so the step's log has them too.
+        let step = fs::read_to_string(dir.join("speaker.rivet.log")).expect("speaker.rivet.log");
+        assert!(step.contains("said in passing"), "{step}");
+        assert!(step.contains("worth noticing"), "{step}");
     }
 
     #[test]

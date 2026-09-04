@@ -156,6 +156,10 @@ impl Step for ToolStep {
         self.pinned
     }
 
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
+
     fn label(&self) -> String {
         self.name.clone()
     }
@@ -172,6 +176,7 @@ impl Step for ToolStep {
 struct MergeStep {
     files: Vec<&'static str>,
     deps: Vec<StepRef<dyn Step>>,
+    pinned: bool,
 }
 
 impl Step for MergeStep {
@@ -191,7 +196,11 @@ impl Step for MergeStep {
     }
 
     fn pinned(&self) -> bool {
-        false
+        self.pinned
+    }
+
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
     }
 
     fn label(&self) -> String {
@@ -237,6 +246,7 @@ fn flow(lvs_fails: bool) -> StepRef<dyn Step> {
     let merge = StepRef::new(MergeStep {
         files: vec!["decoder.gds", "sram22.gds", "sky130_fd_sc_hd.gds"],
         deps: vec![par],
+        pinned: false,
     })
     .into_dyn();
 

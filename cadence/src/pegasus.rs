@@ -188,6 +188,10 @@ impl Step for PegasusStep {
         self.pinned
     }
 
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
+
     fn log_dir(&self) -> Option<PathBuf> {
         Some(self.work_dir.clone())
     }

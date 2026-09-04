@@ -71,6 +71,10 @@ impl Step for BashStep {
         self.pinned
     }
 
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
+
     fn label(&self) -> String {
         format!("{} {}", self.block, self.name)
     }

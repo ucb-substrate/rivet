@@ -104,7 +104,7 @@ impl InnovusStep {
             )?;
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
-                let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
+                let checkpoint_file = self.checkpoint_path(&step.name);
 
                 writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
                 // Hammer-style pointer to the newest db: `latest` is repointed
@@ -195,12 +195,32 @@ impl InnovusStep {
         self.work_dir.join(format!("{}.gds", self.module))
     }
 
-    /// Assigns the starting checkpoint of the par flow
+    /// Restore `checkpoint_path` at the start of the run and continue with the
+    /// substeps after `name`.
+    ///
+    /// The db and the substep need not correspond: restoring `post_syn` and
+    /// naming `init_design` re-runs the floorplan on the synthesized design
+    /// without re-synthesizing. For the plain case — pick up right where a
+    /// substep left off — see [`InnovusStep::resume_from`].
     pub fn add_checkpoint(&mut self, name: &str, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
             name: name.to_string(),
             path: checkpoint_path,
         });
+    }
+
+    /// The db a checkpointed substep writes: `post_<substep>` in the work
+    /// directory, the same place `latest` points at after it.
+    pub fn checkpoint_path(&self, substep: &str) -> PathBuf {
+        self.work_dir.join(format!("post_{substep}"))
+    }
+
+    /// Restore the db `substep` wrote on an earlier run and continue with the
+    /// substeps after it. `substep` must be checkpointed, or there is nothing
+    /// to restore.
+    pub fn resume_from(&mut self, substep: &str) {
+        let path = self.checkpoint_path(substep);
+        self.add_checkpoint(substep, path);
     }
 
     pub fn add_endpoint(&mut self, name: &str) {
@@ -288,6 +308,10 @@ impl Step for InnovusStep {
 
     fn pinned(&self) -> bool {
         self.pinned
+    }
+
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
     }
 
     fn log_dir(&self) -> Option<PathBuf> {

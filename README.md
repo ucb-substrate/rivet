@@ -210,22 +210,29 @@ and gone on a very short one:
 
   ⏭ sram compile     pinned
   ✔ decoder syn      1m14s
-  ✖ decoder lvs      2m01s  during compare (2/2)  lvs did not match; see build/decoder.lvs.out
-  ⊘ decoder signoff  blocked by decoder lvs
-  ⠹ decoder drc      1m02s ━━━╸────── 1/3 density
 ❯ ⠹ decoder par     12m08s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+  ⠹ decoder drc      1m02s ━━━╸────── 1/3 density
+  ✖ decoder lvs      2m01s  during compare (2/2)  lvs did not match; see build/decoder.lvs.out
   ○ decoder merge    waits for decoder par
+  ⊘ decoder signoff  blocked by decoder lvs
 
-  ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed
-  ↑/↓ or j/k move · enter open a step · y copy a less command · q cancel the run
+  ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed · ⚠ 3
+  ↑/↓ or j/k move · enter open a step · L run log · drag copies · q cancel the run
 ```
 
-The list is in four groups: the pinned steps, which are over before the run
-begins; the steps that have finished, in the order they finished; the steps
-running now, in the order they started; and, greyed, the steps still to come,
-in the order the run is expected to take them, each naming the steps it is
-still waiting for. A step moves up from group to group as the run goes — from
-waiting to running when it starts, and into the finished steps when it ends.
+The list is every step in the run, in the order the run is expected to take
+them: a step below everything it waits for, and beside the steps that will be
+running when it is. That order is worked out from the plan before the run
+starts — by how deep into it each step can begin — and it never changes. A step
+becomes what it becomes where it is: greyed with what it is waiting for, then a
+spinner, then how it went. Nothing moves for having started or stopped, and
+nothing else shifts to make room, so a run can be watched by looking at the
+same row of the screen, or left and come back to.
+
+That is worth more than collecting the finished work in one place, on a list
+someone is going to be looking at for hours. Steps that run at the same time
+are neighbours anyway, being the same depth into the plan, so what is running
+is not scattered through it.
 
 A finished step keeps its colour: it is as much there to be opened as a
 running one. A failure carries the substep it died in and its message, and
@@ -250,19 +257,31 @@ underneath:
 #% Begin route_design (date=09/02 14:12:08, mem=4.2G)
 #Routing layer 4 of 6 ...
  ...
-────────────────────────────────────────────── 1/3 files (tab)  following · 4,120 lines
+──────────────────────────────────────── 1/4 files (tab)  line 84,201 of 1,204,880
   ⠹ decoder par     12m08s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
-  ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed
-  esc back · ↑/↓ scroll · G follow · tab next file · y copy a tail command · q quit
+  ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed · ⚠ 3
+  esc back · ↑/↓ scroll · / search · G follow · tab file · L run log · q quit
 ```
 
-The page follows the end of the file as it grows, the way `tail -F` does, and
-is scrolled back through with `↑`/`↓`, `PgUp`/`PgDn` and `g`; `G` goes back to
-following. Long lines wrap by column, so the end of a long line is there to be
-read. `tab` moves between the step's files: the output of the tool it is running
-now, first — the `.out` and `.err` that `exec::run_logged` is writing — then the
-output of tools it ran earlier, then the step's own `{step}.rivet.log`. A step
-driving a tool some other way says what it is writing with
+The page is a pager over the whole file, however long it is — a gigabyte of
+innovus log is scrolled back through to its first line as readily as its last,
+because none of it is held in memory. It follows the end as the file grows, the
+way `tail -F` does, until it is scrolled off it; `G` (or `F`) goes back to
+following, `g` goes to the top, `↑`/`↓`, `PgUp`/`PgDn`, `space` and `b` move
+about, and long lines wrap by column so the end of one is there to be read.
+
+`/` searches, `?` searches backwards, and `n` and `N` go on to the next match
+and back. A search covers the whole file rather than what is on screen, wraps
+round the end, and says in the footer while it is still looking — a long log
+takes more than a frame, and the display goes on drawing while it does. What
+matched is picked out wherever it appears on screen.
+
+`tab` moves between the files the page can read: the output of the tool the
+step is running now, first — the `.out` and `.err` that `exec::run_logged` is
+writing — then the output of tools it ran earlier, then the step's own
+`{step}.rivet.log`, and the run's `rivet.log` after them. `L` goes straight to
+the run's log, from a step's page or from the list, where it opens on a page of
+its own. A step driving a tool some other way says what it is writing with
 `StepHandle::set_output_files`. A pinned or blocked step, which did not run this
 time, offers its `{step}.rivet.log` from the run that last ran it; a step that
 has not started yet offers nothing until it does, since the log at its path is
@@ -356,10 +375,10 @@ Events are tagged with the step that emitted them, so `rivet.log` reads as one
 narrative even with several steps in flight:
 
 ```text
-18:02:11.401Z  INFO rivet::executor: step{name=decoder par}: started
-18:02:11.402Z  INFO rivet::exec: step{name=decoder par}: running command="innovus" "-files" "par.tcl" stdout="…/decoder.par.out" stderr="…/decoder.par.err"
-18:06:12.884Z  INFO rivet::exec: step{name=decoder par}: exited code=0 success=true
-18:06:13.002Z  INFO rivet::executor: step{name=decoder par}: completed elapsed=4m1.6s
+18:02:11.401Z  INFO step{name=decoder par}: rivet::executor: started
+18:02:11.402Z  INFO step{name=decoder par}: rivet::exec: running command="innovus" "-files" "par.tcl" stdout=…/decoder.par.out stderr=…/decoder.par.err
+18:06:12.884Z  INFO step{name=decoder par}: rivet::exec: exited code=0 success=true
+18:06:13.002Z  INFO step{name=decoder par}: rivet::executor: completed elapsed=4m1.6s
 ```
 
 `RIVET_LOG` sets what is kept, in the usual `EnvFilter` syntax — `RIVET_LOG=debug`,
@@ -369,6 +388,18 @@ or `RIVET_LOG=rivet=info,cadence=debug` to turn one plugin up. It defaults to
 Tool output is not folded in: there is far too much of it for a log meant to
 stay readable, and it is already captured in full next door. What rivet records
 is which command a step ran, where that output went, and how it ended.
+
+Anything a step wants to say that is not a step — `progress::note`, or
+`progress::warn` for something worth noticing — goes here too, and only here:
+the display never puts a line on screen that it cannot then take back, because
+one that is still there long after it stopped being true is worse than one that
+was never said. What it does instead is count the warnings, and say how many on
+the summary row (`⚠ 3`); `L` opens the log they are in. Not the ones the
+summary already gives in its own words — a step that failed, or one blocked
+because another did, is on the list in red and counted there — so the `⚠` is
+only ever something the display could not otherwise have shown you. With no display up — a
+run in CI, or one piped somewhere — there is nothing to take back, and both go
+to stderr as they happen.
 
 So there are three channels, and nothing writes to two of them:
 

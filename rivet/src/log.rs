@@ -76,12 +76,13 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 
 use tracing::Subscriber;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -239,11 +240,53 @@ pub fn layer<S>() -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    tracing_subscriber::fmt::layer()
+    let files = tracing_subscriber::fmt::layer()
         .with_writer(Fanout)
         // These are files, not a terminal.
         .with_ansi(false)
-        .with_filter(filter())
+        .with_filter(filter());
+    // Filtered the same way, so that what is counted is what was written: a
+    // warning nobody kept is not one the display should send anyone looking
+    // for.
+    files.and_then(Counter(&WARNINGS).with_filter(filter()))
+}
+
+/// How many warnings the run has logged.
+static WARNINGS: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts warnings as they are logged, so the display can say there are some.
+///
+/// The display never shows what is logged — that is the whole arrangement —
+/// which leaves it no way to say that anything was wrong beyond the steps that
+/// failed. A tool that warned and carried on says nothing at all otherwise.
+struct Counter(&'static AtomicUsize);
+
+impl<S: Subscriber> Layer<S> for Counter {
+    fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+        // Not what the display already says: a step that failed, and a step
+        // blocked because one did, are on the list in red and counted under
+        // it. Counting them again here would mean a run could never fail
+        // without a warning beside it saying the same thing.
+        if event.metadata().target() == OUTCOMES {
+            return;
+        }
+        // `Level` sorts the other way round: `WARN` and worse are `<=` it.
+        if *event.metadata().level() <= tracing::Level::WARN {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Where a step's own outcome is logged, which the summary counts for itself.
+const OUTCOMES: &str = "rivet::executor";
+
+/// How many warnings this run has logged, for the display to point at.
+///
+/// Counted only while rivet's logging is installed, and only for what its
+/// filter kept: with logging turned off there is nothing to count and nowhere
+/// to send anyone to read it.
+pub fn warnings() -> usize {
+    WARNINGS.load(Ordering::Relaxed)
 }
 
 /// Install rivet's logging as the process-wide subscriber.
@@ -267,6 +310,9 @@ pub fn install() -> bool {
 /// The sink is process-wide, like the subscriber it feeds: runs in the same
 /// process share it rather than nesting.
 pub(crate) fn start_run(dir: &Path, enabled: bool) -> RunLog {
+    // This run's warnings, not the last one's: runs in the same process share
+    // the sink, and the count is about the run on screen.
+    WARNINGS.store(0, Ordering::Relaxed);
     if !enabled {
         return RunLog { active: false };
     }
@@ -510,6 +556,44 @@ mod tests {
         let step = fs::read_to_string(dir.join("speaker.rivet.log")).expect("speaker.rivet.log");
         assert!(step.contains("said in passing"), "{step}");
         assert!(step.contains("worth noticing"), "{step}");
+    }
+
+    /// The count the display puts a `⚠` on the summary for.
+    ///
+    /// Counted on a subscriber of this test's own, because the process-wide
+    /// one is shared with every other test running at the same time and their
+    /// warnings are not this test's business.
+    #[test]
+    fn warnings_and_worse_are_counted_and_nothing_else_is() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let counted: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
+        let subscriber = tracing_subscriber::registry().with(Counter(counted));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("nothing wrong with this");
+            tracing::debug!("nor this");
+            tracing::warn!("something odd");
+            tracing::error!("something worse");
+            // How a step's own outcome is logged, which the summary counts on
+            // its own and in its own words.
+            tracing::warn!(target: OUTCOMES, "blocked by a failed dependency");
+            tracing::error!(target: OUTCOMES, "the tool exited 1");
+        });
+        assert_eq!(counted.load(Ordering::Relaxed), 2);
+    }
+
+    /// The count is the run's, not the process's: a second run in the same
+    /// process starts again, as the two in the `parallel` example do.
+    #[test]
+    fn a_run_starts_its_warnings_from_none() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_dir("reset");
+
+        WARNINGS.store(9, Ordering::Relaxed);
+        let _run = start_run(&dir, true);
+        // Below what it was: another test's run may have logged something of
+        // its own in between, but this run's count did not carry over.
+        assert!(warnings() < 9, "{}", warnings());
     }
 
     #[test]

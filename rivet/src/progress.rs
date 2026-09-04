@@ -541,6 +541,16 @@ impl Reporter {
                 Style::new().red(),
             ));
         }
+        let warnings = crate::log::warnings();
+        if warnings > 0 {
+            spans.push(span(
+                format!(
+                    " · {warnings} warning{}",
+                    if warnings == 1 { "" } else { "s" }
+                ),
+                Style::new().yellow(),
+            ));
+        }
         spans.push(span(
             format!(" · {}", fmt_duration(elapsed)),
             Style::new().dim(),
@@ -575,6 +585,13 @@ impl Reporter {
     /// both it is squeezed, down to a limit, and only then are the counts cut.
     /// A terminal wide enough for everything gets the full bar.
     fn summary(&self, width: usize) -> Line<'static> {
+        self.summary_of(width, crate::log::warnings())
+    }
+
+    /// The summary, given how many warnings there are to mention: taken apart
+    /// from [`Reporter::summary`] because the count is process-wide and a test
+    /// should not have to arrange one.
+    fn summary_of(&self, width: usize, warnings: usize) -> Line<'static> {
         let counts = self.counts();
         let mut spans = vec![span(
             format!(
@@ -600,6 +617,12 @@ impl Reporter {
                 format!(" · {} failed", counts.failed),
                 Style::new().red(),
             ));
+        }
+        // A count rather than the warnings themselves: what they said is in
+        // the log, which `L` opens, and a count cannot go stale the way a line
+        // of it repeated here would.
+        if warnings > 0 {
+            spans.push(span(format!(" · ⚠ {warnings}"), Style::new().yellow()));
         }
         if self.ended().is_some() {
             spans.push(span(" · done", Style::new().bold()));
@@ -2102,6 +2125,18 @@ mod tests {
         assert!(summary.contains("3/7 steps"), "{summary}");
         assert!(summary.contains("2 running"), "{summary}");
         assert!(summary.contains("1 failed"), "{summary}");
+    }
+
+    #[test]
+    fn warnings_are_counted_on_the_summary_for_the_log_to_be_read_for() {
+        let reporter = reporter_of(&["one", "two"]);
+        // None to mention, so nothing is said.
+        assert!(!plain(&reporter.summary_of(80, 0)).contains('⚠'));
+
+        let text = plain(&reporter.summary_of(80, 3));
+        assert!(text.contains("⚠ 3"), "{text}");
+        // After what the run did, which is what the row is mostly about.
+        assert!(text.find("steps") < text.find('⚠'), "{text}");
     }
 
     #[test]

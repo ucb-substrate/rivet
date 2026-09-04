@@ -27,9 +27,24 @@
 //! There are two pages. The list is every step in the run — pinned, finished,
 //! running, and greyed, still to come — with a cursor on one of them; `enter`
 //! opens that step, which is its log as it is written, with the step's own line
-//! and the run's summary underneath; `esc` closes it again. The step's files —
-//! the output of the tool it is running, and its own log — are a `tab` apart,
-//! and `y` copies a command to open them in a terminal of one's own.
+//! and the run's summary underneath; `esc` closes it again. The files a step's
+//! page can read — the output of the tool it is running, its own log, and the
+//! run's `rivet.log` after them — are a `tab` apart, `L` goes straight to the
+//! run's, and `y` copies a command to open one in a terminal of one's own.
+//! `L` from the list opens the run's log on a page of its own.
+//!
+//! # Reading a log
+//!
+//! Whichever log is open, all of it is there to read, however long it is: a
+//! page is a pager, not the last few thousand lines of one. It follows the end
+//! as the file grows until it is scrolled off it, and `G` (or `F`) goes back to
+//! following; `g` goes to the first line, `space` and `b` move by the screen,
+//! and `/` searches — `?` backwards, `n` and `N` on to the next match and back.
+//! A search reads the whole file, wrapping round the end, and says in the
+//! footer while it is still looking or if it found nothing. What matched is
+//! picked out wherever it is on screen.
+//!
+//! None of this holds the file in memory: see [`Source`].
 //!
 //! Because the display owns the whole screen, it can be redrawn from nothing at
 //! any moment. The terminal being resized redraws it, and so does `^L`, for
@@ -166,16 +181,32 @@ const MAX_STEP_ROWS: usize = 6;
 /// Rows a log scrolls, or steps the cursor moves, per notch of the wheel.
 const WHEEL: usize = 3;
 
-/// Most lines of a log kept in memory to scroll back through.
-const MAX_LINES: usize = 10_000;
+/// How many lines apart a log's index puts its anchors. Reaching a line costs
+/// a seek to the anchor at or before it and a scan of at most this many lines
+/// on from there, so it trades the index's size off against that scan.
+const INDEX_EVERY: u64 = 256;
 
-/// Most of a file read in one go. A log that is further behind than this — one
-/// that was already large when opened, or a tool writing faster than it can be
-/// read — is picked up from this close to its end, and says so.
-const BACKLOG: u64 = 2 * 1024 * 1024;
+/// How many lines of a log are held decoded around the part being read. Enough
+/// that scrolling crosses the edge of it rarely, and that a screen's worth is
+/// always in it.
+const WINDOW: usize = 4 * INDEX_EVERY as usize;
+
+/// Most of a line kept. A tool that writes a megabyte without a newline has
+/// not written a line, and nobody is going to read the end of it on a screen.
+const LINE_BYTES: usize = 64 * 1024;
+
+/// Most bytes of a log indexed in one poll: enough that anything of an
+/// ordinary size is done before its first frame, little enough that a very
+/// long one costs no single frame more than that.
+const INDEX_BUDGET: u64 = 64 * 1024 * 1024;
 
 /// How much of a file is read at a time.
 const CHUNK: usize = 64 * 1024;
+
+/// How many lines are searched per frame. A search of a long log is spread
+/// over as many frames as it takes rather than holding one up; this is how
+/// much of it each frame does.
+const SEARCH_LINES: u64 = 50_000;
 
 // ---------------------------------------------------------------------------
 // What the display is told
@@ -692,6 +723,12 @@ enum Action {
     Cancel,
 }
 
+/// A search being typed, which is what the hint line says while it is.
+struct Prompt {
+    text: String,
+    backwards: bool,
+}
+
 /// Everything about the display that is not the run: which page is open, how
 /// far the list has scrolled, what the hint line is saying.
 #[derive(Default)]
@@ -717,32 +754,51 @@ struct View {
     confirming: bool,
     /// Text being selected with the mouse, or just selected.
     selection: Option<Selection>,
+    /// A search being typed, which has the keyboard until it is done.
+    prompt: Option<Prompt>,
 }
 
 #[derive(Default)]
 enum Page {
     #[default]
     List,
-    Detail(Box<Watch>),
-    /// The run's own log, `rivet.log`: what the run said about itself, which
-    /// belongs to no one step.
-    Run(Box<Pane>),
+    /// A log being read: a step's, or the run's own.
+    Log(Box<Pager>),
 }
 
-/// The keys that move within a log, which both pages that read one share.
-fn scroll_key(code: KeyCode, ctrl: bool, page: isize, pane: &mut Pane) {
+/// The keys that move within a log or search it, which both pages that read
+/// one share. `less`'s, where `less` has one.
+///
+/// Returns the search to open a prompt for, if the key asked for one: the
+/// prompt belongs to the display rather than to the page under it.
+fn log_key(code: KeyCode, ctrl: bool, page: isize, pane: &mut Pane) -> Option<Prompt> {
     use KeyCode::*;
     match code {
         Up | Char('k') => pane.scroll(-1),
         Down | Char('j') => pane.scroll(1),
-        PageUp => pane.scroll(-page),
-        PageDown => pane.scroll(page),
+        PageUp | Char('b') => pane.scroll(-page),
+        PageDown | Char(' ') => pane.scroll(page),
         Char('u') if ctrl => pane.scroll(-(page / 2).max(1)),
         Char('d') if ctrl => pane.scroll((page / 2).max(1)),
         Home | Char('g') => pane.scroll_to_top(),
-        End | Char('G') => pane.follow(),
+        End | Char('G') | Char('F') => pane.follow(),
+        Char('n') => pane.again(true),
+        Char('N') => pane.again(false),
+        Char('/') => {
+            return Some(Prompt {
+                text: String::new(),
+                backwards: false,
+            })
+        }
+        Char('?') => {
+            return Some(Prompt {
+                text: String::new(),
+                backwards: true,
+            })
+        }
         _ => {}
     }
+    None
 }
 
 impl View {
@@ -841,8 +897,7 @@ impl View {
     fn pane(&mut self) -> Option<&mut Pane> {
         match &mut self.page {
             Page::List => None,
-            Page::Detail(watch) => Some(&mut watch.pane),
-            Page::Run(pane) => Some(pane),
+            Page::Log(pager) => Some(&mut pager.pane),
         }
     }
 
@@ -853,6 +908,31 @@ impl View {
         // Whatever the key turns out to do, typing means the selection on
         // screen is finished with.
         self.deselect();
+
+        // A search being typed has the keyboard: every key is the pattern,
+        // until `enter` runs it or `esc` puts it away.
+        if let Some(prompt) = &mut self.prompt {
+            match key.code {
+                Esc => self.prompt = None,
+                Enter => {
+                    let prompt = self.prompt.take().expect("a prompt is open");
+                    if let Some(pane) = self.pane() {
+                        pane.look(&prompt.text, prompt.backwards);
+                    }
+                }
+                Backspace => {
+                    prompt.text.pop();
+                    // Backspacing away the last of it is a way of changing
+                    // one's mind, as it is in a shell.
+                    if prompt.text.is_empty() {
+                        self.prompt = None;
+                    }
+                }
+                Char(c) if !ctrl => prompt.text.push(c),
+                _ => {}
+            }
+            return Action::None;
+        }
 
         // The answer to "cancel the run?": `y` (or `q` again) does, and any
         // other key is a no that is otherwise ignored.
@@ -866,12 +946,14 @@ impl View {
 
         match key.code {
             Char('l') if ctrl => return Action::Redraw,
-            // The run's log, from either page: what the run says about itself
+            // The run's log, from wherever: what the run says about itself
             // belongs to no one step, and is as much worth reading beside a
-            // tool's output as from the list. Already open, it stays open.
+            // tool's output as from the list. On a page that can already
+            // reach it, this is the key that goes straight to it.
             Char('L') => {
-                if !matches!(self.page, Page::Run(_)) {
-                    self.page = Page::Run(Box::default());
+                match &mut self.page {
+                    Page::Log(pager) => pager.open_run(),
+                    Page::List => self.page = Page::Log(Box::new(Pager::run())),
                 }
                 return Action::None;
             }
@@ -899,7 +981,7 @@ impl View {
                     End | Char('G') => paint.move_cursor(Motion::Last),
                     Enter | Right | Char('l') => {
                         if let Some(id) = self.selected {
-                            self.page = Page::Detail(Box::new(Watch::new(id)));
+                            self.page = Page::Log(Box::new(Pager::step(id)));
                         }
                     }
                     Char('y') => {
@@ -913,30 +995,22 @@ impl View {
                     _ => {}
                 }
             }
-            Page::Detail(watch) => {
-                let page = watch.pane.page();
+            Page::Log(pager) => {
+                let page = pager.pane.page();
                 match key.code {
                     Esc | Backspace | Left | Char('h') => {
                         // Back to where the list was left, on the step that
                         // was open: the cursor may have moved on by itself in
                         // the meantime, if that step finished.
-                        paint.select(watch.id);
+                        if let Some(id) = pager.step {
+                            paint.select(id);
+                        }
                         self.page = Page::List;
                     }
-                    Tab | Char(']') => watch.next_file(1, paint),
-                    BackTab | Char('[') => watch.next_file(-1, paint),
-                    Char('y') => return Action::Copy(watch.pane.files()),
-                    code => scroll_key(code, ctrl, page, &mut watch.pane),
-                }
-            }
-            Page::Run(pane) => {
-                let page = pane.page();
-                match key.code {
-                    // Back to the list, whichever page `L` was pressed on: the
-                    // step that was open is still under the cursor there.
-                    Esc | Backspace | Left | Char('h') => self.page = Page::List,
-                    Char('y') => return Action::Copy(pane.files()),
-                    code => scroll_key(code, ctrl, page, pane),
+                    Tab | Char(']') => pager.next_file(1),
+                    BackTab | Char('[') => pager.next_file(-1),
+                    Char('y') => return Action::Copy(pager.pane.files()),
+                    code => self.prompt = log_key(code, ctrl, page, &mut pager.pane),
                 }
             }
         }
@@ -1036,10 +1110,19 @@ impl View {
             }
             self.flash = None;
         }
-        let page = match self.page {
+        // A search being typed is what the line is for while it is being
+        // typed: the keys it would otherwise list all belong to the pattern.
+        if let Some(prompt) = &self.prompt {
+            let mark = if prompt.backwards { '?' } else { '/' };
+            return Line::from(vec![
+                span(format!("  {mark}{}", prompt.text), Style::new()),
+                span("▌", Style::new().dim()),
+            ]);
+        }
+        let page = match &self.page {
             Page::List => Hint::List,
-            Page::Detail(_) => Hint::Step,
-            Page::Run(_) => Hint::Run,
+            Page::Log(pager) if pager.step.is_some() => Hint::Step,
+            Page::Log(_) => Hint::Run,
         };
         Line::from(span(hint_text(page, done, width), Style::new().dim()))
     }
@@ -1057,17 +1140,19 @@ impl View {
             .unwrap_or(80)
             .max(1);
         let screen = paint.screen(width - usize::from(self.list_scrollbar));
+        // For a step's page, what the step says about itself — `None` for the
+        // run's page, which is nobody's step, and `Some(None)` for a step that
+        // is no longer in the run.
         let detail = match &self.page {
-            Page::Detail(watch) => Some(paint.detail(watch.id, width)),
-            Page::List | Page::Run(_) => None,
+            Page::Log(pager) => pager.step.map(|id| paint.detail(id, width)),
+            Page::List => None,
         };
-        let run = matches!(self.page, Page::Run(_));
+        let log = matches!(self.page, Page::Log(_));
         let mut copied = None;
         let _ = terminal.draw(|frame| {
-            match detail {
-                Some(detail) => self.draw_detail(frame, screen, detail),
-                None if run => self.draw_run(frame, screen),
-                None => self.draw_list(frame, screen),
+            match log {
+                true => self.draw_log(frame, screen, detail),
+                false => self.draw_list(frame, screen),
             }
             let skip = self.scrollbar;
             if let Some(selection) = &mut self.selection {
@@ -1114,90 +1199,52 @@ impl View {
         frame.render_widget(Paragraph::new(hint), hint_area);
     }
 
-    /// A step's page: its log, with its own line and the run's summary under it.
-    fn draw_detail(&mut self, frame: &mut Frame, screen: Screen, detail: Option<Detail>) {
-        let Page::Detail(watch) = &mut self.page else {
-            return;
-        };
+    /// A log's page: the log itself, the step's line under it if it is a
+    /// step's page, and the run's summary under that.
+    fn draw_log(&mut self, frame: &mut Frame, screen: Screen, detail: Option<Option<Detail>>) {
         // The step's line in full, wrapped, however long a failure's message
         // made it — within reason, so the log keeps most of the screen.
         let width = frame.area().width as usize;
-        let step_rows = detail
+        let step_rows: Vec<Line<'static>> = detail
             .as_ref()
+            .and_then(|detail| detail.as_ref())
             .map(|detail| wrap_line(&detail.line, width, HANG))
-            .unwrap_or_default();
-        let step_rows: Vec<Line<'static>> = step_rows.into_iter().take(MAX_STEP_ROWS).collect();
+            .unwrap_or_default()
+            .into_iter()
+            .take(MAX_STEP_ROWS)
+            .collect();
+        // A step's page keeps the row even when the step has gone, to say so.
+        let step_height = match detail.is_some() {
+            true => step_rows.len().max(1) as u16,
+            false => 0,
+        };
         let [log_area, step_area, summary_area, hint_area] = Layout::vertical([
             Constraint::Fill(1),
-            Constraint::Length(step_rows.len().max(1) as u16),
+            Constraint::Length(step_height),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(frame.area());
 
-        match detail {
-            Some(detail) => {
-                watch.sync(&detail.files);
-                let column = watch.draw(frame, log_area, &detail);
-                frame.render_widget(Paragraph::new(Text::from(step_rows)), step_area);
-                self.scrollbar = column;
-            }
-            None => {
-                frame.render_widget(
-                    Paragraph::new(span("  no such step", Style::new().dim())),
-                    log_area,
-                );
-                self.scrollbar = None;
-            }
-        }
-        frame.render_widget(Paragraph::new(screen.summary), summary_area);
-        let hint = self.hint(screen.done, hint_area.width as usize);
-        frame.render_widget(Paragraph::new(hint), hint_area);
-    }
-
-    /// The run's page: `rivet.log` as it is written, with the run's summary
-    /// under it.
-    ///
-    /// No step line over it, unlike a step's page: this log is the run's, and
-    /// what it is about is already in every line of it.
-    fn draw_run(&mut self, frame: &mut Frame, screen: Screen) {
-        let [log_area, summary_area, hint_area] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(frame.area());
-
-        let path = run_log(&screen.about);
-
-        if let Page::Run(pane) = &mut self.page {
-            let border = log_border();
-            let inner = border.inner(log_area);
-            pane.measure(inner);
-            pane.sync(path.as_deref());
-
-            let mut title = vec![span(" run log ", Style::new().bold())];
-            let mut footer = Vec::new();
-            let mut scroll = None;
-            let body = match &mut pane.log {
-                None => Text::from(span(
-                    "  this run is not logging: no log directory was given                      (ExecuteConfig::log_dir)",
-                    Style::new().dim(),
-                )),
-                Some(log) => {
-                    // As on a step's page, cut from the left: the end of a
-                    // path is what says which file it is.
-                    let room = (log_area.width as usize).saturating_sub(columns(" run log ") + 3);
-                    let shown = shorten_left(&log.tail.path.display().to_string(), room);
-                    title.push(span(format!(" {shown} "), Style::new().dim()));
-                    let (body, where_) =
-                        log_body(log, inner, "waiting for the log to be written", &mut footer);
-                    scroll = where_;
-                    body
+        let run = run_log(&screen.about);
+        if let Page::Log(pager) = &mut self.page {
+            let detail = detail.flatten();
+            let files = detail.as_ref().map(|detail| &*detail.files).unwrap_or(&[]);
+            pager.sync(files, run);
+            match (&detail, pager.step) {
+                // A step's page whose step is no longer in the run.
+                (None, Some(_)) => {
+                    frame.render_widget(
+                        Paragraph::new(span("  no such step", Style::new().dim())),
+                        log_area,
+                    );
+                    self.scrollbar = None;
                 }
-            };
-            draw_framed(frame, log_area, inner, border, title, footer, body);
-            self.scrollbar = scroll.and_then(|(count, top)| scrollbar(frame, inner, count, top));
+                _ => {
+                    self.scrollbar = pager.draw(frame, log_area, detail.as_ref());
+                    frame.render_widget(Paragraph::new(Text::from(step_rows)), step_area);
+                }
+            }
         }
 
         frame.render_widget(Paragraph::new(screen.summary), summary_area);
@@ -1301,15 +1348,15 @@ fn hint_text(page: Hint, done: bool, width: usize) -> String {
         ],
         Hint::Step => vec![
             format!(
-                "  esc back · ↑/↓ or wheel scroll · G follow · tab next file · L run log · \
-                 drag copies · y copy a less command · {quit}"
+                "  esc back · ↑/↓ or wheel scroll · / search · G follow · tab next file · \
+                 L run log · drag copies · y copy a less command · {quit}"
             ),
             format!(
-                "  esc back · ↑/↓ or wheel scroll · G follow · tab file · L run log · \
+                "  esc back · ↑/↓ or wheel · / search · G follow · tab file · L run log · \
                  drag copies · y copy · {quit_short}"
             ),
             format!(
-                "  esc back · ↑/↓/wheel · G follow · tab file · L log · drag copies · {quit_short}"
+                "  esc back · ↑/↓/wheel · / search · G follow · tab file · drag copies · {quit_short}"
             ),
             format!("  esc · ↑/↓/wheel · G · tab · drag copies · {quit_short}"),
             "  esc · ↑/↓ · G · tab · drag copies · q".to_string(),
@@ -1318,13 +1365,13 @@ fn hint_text(page: Hint, done: bool, width: usize) -> String {
         // No `tab`: this page has the one file, and no `L` either, being it.
         Hint::Run => vec![
             format!(
-                "  esc back · ↑/↓ or wheel scroll · G follow · drag copies · \
+                "  esc back · ↑/↓ or wheel scroll · / search · G follow · drag copies · \
                  y copy a less command · {quit}"
             ),
             format!(
-                "  esc back · ↑/↓ or wheel scroll · G follow · drag copies · y copy · {quit_short}"
+                "  esc back · ↑/↓ or wheel · / search · G follow · drag copies · y copy · {quit_short}"
             ),
-            format!("  esc back · ↑/↓/wheel · G follow · drag copies · {quit_short}"),
+            format!("  esc back · ↑/↓/wheel · / search · G follow · drag copies · {quit_short}"),
             format!("  esc · ↑/↓/wheel · G · drag copies · {quit_short}"),
             "  esc · ↑/↓ · G · drag copies · q".to_string(),
             "  esc · ↑/↓ · G · y · q".to_string(),
@@ -1528,8 +1575,15 @@ impl Selection {
 // ---------------------------------------------------------------------------
 
 /// One step's page: which of its files is being read, and where in it.
-struct Watch {
-    id: usize,
+struct Pager {
+    /// The step whose page this is, or `None` for the run's own log, which is
+    /// nobody's step.
+    step: Option<usize>,
+    /// What this page can read, as of the last frame: the step's files, and
+    /// the run's log after them.
+    files: Vec<PathBuf>,
+    /// Where the run's log is among them, for the key that jumps to it.
+    run: Option<PathBuf>,
     /// The file picked with `tab`, or `None` to read whichever the step most
     /// wants read — which changes as it starts tools.
     chosen: Option<PathBuf>,
@@ -1563,7 +1617,7 @@ impl Pane {
     fn sync(&mut self, path: Option<&Path>) {
         match path {
             Some(path) => {
-                if self.log.as_ref().map(|log| log.tail.path.as_path()) != Some(path) {
+                if self.log.as_ref().map(|log| log.source.path.as_path()) != Some(path) {
                     self.log = Some(LogView::new(path.to_path_buf()));
                 }
             }
@@ -1580,7 +1634,7 @@ impl Pane {
     fn files(&self) -> Vec<PathBuf> {
         self.log
             .as_ref()
-            .map(|log| vec![log.tail.path.clone()])
+            .map(|log| vec![log.source.path.clone()])
             .into_iter()
             .flatten()
             .collect()
@@ -1626,59 +1680,114 @@ impl Pane {
             log.follow();
         }
     }
+
+    /// Look for `pattern` from where the screen is.
+    fn look(&mut self, pattern: &str, backwards: bool) {
+        let (columns, rows) = (self.columns as usize, self.rows as usize);
+        if let Some(log) = &mut self.log {
+            log.look(pattern, backwards, columns, rows);
+        }
+    }
+
+    /// Look for the same thing again, the same way round or the other one.
+    fn again(&mut self, same_way: bool) {
+        let (columns, rows) = (self.columns as usize, self.rows as usize);
+        if let Some(log) = &mut self.log {
+            log.again(same_way, columns, rows);
+        }
+    }
 }
 
-impl Watch {
-    fn new(id: usize) -> Self {
+impl Pager {
+    /// A step's page.
+    fn step(id: usize) -> Self {
         Self {
-            id,
+            step: Some(id),
+            ..Self::run()
+        }
+    }
+
+    /// The run's own page, which is over the one file.
+    fn run() -> Self {
+        Self {
+            step: None,
+            files: Vec::new(),
+            run: None,
             chosen: None,
             pane: Pane::default(),
         }
     }
 
-    /// Read the file this page should be reading, given what the step has.
-    fn sync(&mut self, files: &[PathBuf]) {
+    /// Take in what there is to read — the step's files, and the run's log
+    /// after them — and read whichever of them this page is on.
+    ///
+    /// Done every frame, because a step picks up files as it starts tools.
+    fn sync(&mut self, files: &[PathBuf], run: Option<PathBuf>) {
+        self.files = files.to_vec();
+        if let Some(run) = &run {
+            if !self.files.contains(run) {
+                self.files.push(run.clone());
+            }
+        }
+        self.run = run;
         let wanted = match &self.chosen {
-            Some(chosen) if files.contains(chosen) => Some(chosen),
-            _ => files.first(),
+            Some(chosen) if self.files.contains(chosen) => Some(chosen),
+            _ => self.files.first(),
         };
         self.pane.sync(wanted.map(PathBuf::as_path));
     }
 
-    /// Switch to the next (or previous) of the step's files.
-    fn next_file(&mut self, by: isize, paint: &dyn Paint) {
-        let Some(files) = paint.detail(self.id, usize::MAX).map(|detail| detail.files) else {
-            return;
-        };
-        if files.is_empty() {
+    /// Switch to the next (or previous) of the files this page can read.
+    fn next_file(&mut self, by: isize) {
+        if self.files.is_empty() {
             return;
         }
-        let current = self
-            .pane
-            .log
-            .as_ref()
-            .and_then(|log| files.iter().position(|file| *file == log.tail.path))
-            .unwrap_or(0) as isize;
-        let next = (current + by).rem_euclid(files.len() as isize) as usize;
-        self.chosen = Some(files[next].clone());
-        self.sync(&files);
+        let current = self.at().unwrap_or(0) as isize;
+        let next = (current + by).rem_euclid(self.files.len() as isize) as usize;
+        self.choose(self.files[next].clone());
     }
 
-    /// The log, framed: the step and the file above it, where in the file
-    /// below.
-    fn draw(&mut self, frame: &mut Frame, area: Rect, detail: &Detail) -> Option<u16> {
+    /// Read the run's log, wherever in the list it is.
+    fn open_run(&mut self) {
+        if let Some(run) = self.run.clone() {
+            self.choose(run);
+        }
+    }
+
+    fn choose(&mut self, file: PathBuf) {
+        self.chosen = Some(file);
+        let (files, run) = (self.files.clone(), self.run.clone());
+        self.sync(&files, run);
+    }
+
+    /// Which of the files is being read.
+    fn at(&self) -> Option<usize> {
+        let log = self.pane.log.as_ref()?;
+        self.files.iter().position(|file| *file == log.source.path)
+    }
+
+    /// The log, framed: what it is above it, where in it below.
+    ///
+    /// `detail` is the step this page is for, if it is for one and the step is
+    /// still there to describe.
+    fn draw(&mut self, frame: &mut Frame, area: Rect, detail: Option<&Detail>) -> Option<u16> {
         let border = log_border();
         let inner = border.inner(area);
         self.pane.measure(inner);
 
-        let mut title = vec![span(format!(" {} ", detail.label), Style::new().bold())];
+        let name = match detail {
+            Some(detail) => detail.label.clone(),
+            None => "run log".to_string(),
+        };
+        let mut title = vec![span(format!(" {name} "), Style::new().bold())];
         let mut footer = Vec::new();
         // Which lines the scrollbar stands for, and where it is in them.
         let mut scroll = None;
+        let at = self.at();
+        let files = self.files.len();
 
-        let body = match &mut self.pane.log {
-            None => {
+        let body = match (&mut self.pane.log, detail) {
+            (None, Some(detail)) => {
                 title.push(span(" no log ", Style::new().dim()));
                 Text::from(span(
                     if detail.pending {
@@ -1689,28 +1798,27 @@ impl Watch {
                     Style::new().dim(),
                 ))
             }
-            Some(log) => {
-                // The path gives way to the label, from the left: its end is
+            (None, None) => Text::from(span(
+                "  this run is not logging: no log directory was given (ExecuteConfig::log_dir)",
+                Style::new().dim(),
+            )),
+            (Some(log), detail) => {
+                // The path gives way to the name, from the left: its end is
                 // what tells one file from another.
-                let room = (area.width as usize).saturating_sub(columns(&detail.label) + 4);
-                let path = shorten_left(&log.tail.path.display().to_string(), room);
+                let room = (area.width as usize).saturating_sub(columns(&name) + 4);
+                let path = shorten_left(&log.source.path.display().to_string(), room);
                 title.push(span(format!(" {path} "), Style::new().dim()));
-                if detail.files.len() > 1 {
-                    let index = detail
-                        .files
-                        .iter()
-                        .position(|file| *file == log.tail.path)
-                        .map_or(0, |index| index + 1);
+                if files > 1 {
                     footer.push(span(
-                        format!(" {index}/{} files (tab) ", detail.files.len()),
+                        format!(" {}/{files} files (tab) ", at.map_or(0, |at| at + 1)),
                         Style::new().dim(),
                     ));
                 }
 
-                let waiting = if detail.running {
-                    "waiting for the file to appear"
-                } else {
-                    "no such file"
+                let waiting = match detail {
+                    Some(detail) if !detail.running => "no such file",
+                    Some(_) => "waiting for the file to appear",
+                    None => "waiting for the log to be written",
                 };
                 let (body, where_) = log_body(log, inner, waiting, &mut footer);
                 scroll = where_;
@@ -1721,6 +1829,30 @@ impl Watch {
         draw_framed(frame, area, inner, border, title, footer, body);
         scroll.and_then(|(count, top)| scrollbar(frame, inner, count, top))
     }
+}
+
+/// How a search of this log is going, for the footer to say: still looking,
+/// or nothing to find, or found something round the far end of the file.
+///
+/// Nothing while a search has simply found what it was looking for: the
+/// highlight on screen says that better than the footer could.
+fn searching(log: &LogView, count: u64) -> Option<Span<'static>> {
+    let find = log.find.as_ref()?;
+    if find.next.is_some() {
+        let done = 100 - (find.left * 100 / count.max(1)).min(100);
+        return Some(span(
+            format!(" searching {}… {done}% ", find.pattern),
+            Style::new().dim(),
+        ));
+    }
+    if find.missing {
+        return Some(span(
+            format!(" no match for {} ", find.pattern),
+            Style::new().yellow(),
+        ));
+    }
+    find.wrapped
+        .then(|| span(" wrapped ", Style::new().yellow()))
 }
 
 /// The frame a log is read in: a rule above it and below, with what it is over
@@ -1762,37 +1894,43 @@ fn log_body(
     footer: &mut Vec<Span<'static>>,
 ) -> (Text<'static>, Option<(usize, usize)>) {
     log.poll();
-    match &log.tail.state {
-        TailState::Waiting => (
+    match &log.source.state {
+        SourceState::Waiting => (
             Text::from(span(format!("  {waiting}"), Style::new().dim())),
             None,
         ),
-        TailState::Failed(error) => (
+        SourceState::Failed(error) => (
             Text::from(span(format!("  cannot read: {error}"), Style::new().red())),
             None,
         ),
-        TailState::Reading if log.tail.count() == 0 => {
+        SourceState::Reading if log.source.count() == 0 => {
             (Text::from(span("  (empty)", Style::new().dim())), None)
         }
-        TailState::Reading => {
+        SourceState::Reading => {
             let shown = log.render(inner.width, inner.height);
-            // Numbered within what is here to read, which is the whole file
-            // unless it was too long to keep.
-            let of = if log.tail.truncated() {
-                format!("the last {}", log.tail.kept())
+            let count = log.source.count();
+            // Said while the index is still catching up, because the count is
+            // of what it has reached rather than of the file.
+            let indexing = if log.source.indexing() {
+                " · indexing"
             } else {
-                log.tail.kept().to_string()
+                ""
             };
             footer.push(span(
                 if shown.following {
-                    format!(" following · {of} lines ")
+                    format!(" following · {count} lines{indexing} ")
                 } else {
-                    format!(" line {} of {of} ", shown.bottom + 1 - log.tail.first())
+                    format!(" line {} of {count}{indexing} ", shown.bottom + 1)
                 },
                 Style::new().dim(),
             ));
-            let top = shown.top.line.saturating_sub(log.tail.first()) as usize;
-            (Text::from(shown.rows), Some((log.tail.lines.len(), top)))
+            if let Some(note) = searching(log, count) {
+                footer.push(note);
+            }
+            (
+                Text::from(shown.rows),
+                Some((count as usize, shown.top.line as usize)),
+            )
         }
     }
 }
@@ -1803,7 +1941,9 @@ fn log_body(
 
 /// A file being read as it is written, and where in it the reader is.
 struct LogView {
-    tail: Tail,
+    source: Source,
+    /// What is being looked for in it, once anything has been.
+    find: Option<Find>,
     /// The first row on screen, or `None` to follow the end as it grows.
     top: Option<Top>,
     /// Whether the end is to be followed no further, whatever [`Self::top`]
@@ -1815,6 +1955,31 @@ struct LogView {
     /// still is the selection's doing, not something that was asked for, so it
     /// is not left behind once the selection is gone.
     resume: bool,
+}
+
+/// A search over a log: what is being looked for, which way, and how far the
+/// looking has got.
+///
+/// Scanned a slice at a time from [`LogView::poll`] rather than run to the
+/// end: a long log takes longer to search than a frame is worth, and a display
+/// that stopped drawing until it had an answer would be worse than one that
+/// takes a moment to give it.
+struct Find {
+    pattern: String,
+    /// Matched regardless of case, unless the pattern has a capital in it —
+    /// which is how a search that is typed in a hurry is meant to behave.
+    fold: bool,
+    backwards: bool,
+    /// The line the last match was on.
+    at: Option<u64>,
+    /// The line to look at next, while there is still looking to do.
+    next: Option<u64>,
+    /// Lines still to look at before every one has been looked at once.
+    left: u64,
+    /// Whether the looking has come round past an end of the file.
+    wrapped: bool,
+    /// Whether it went all the way round and found nothing.
+    missing: bool,
 }
 
 /// A place in a wrapped file: a line, and a row within it once wrapped.
@@ -1836,7 +2001,8 @@ struct Shown {
 impl LogView {
     fn new(path: PathBuf) -> Self {
         Self {
-            tail: Tail::new(path),
+            source: Source::new(path),
+            find: None,
             top: None,
             pinned: false,
             resume: false,
@@ -1844,7 +2010,88 @@ impl LogView {
     }
 
     fn poll(&mut self) {
-        self.tail.poll();
+        self.source.poll();
+        self.step();
+    }
+
+    /// Look for `pattern` from the top of the screen, whichever way.
+    fn look(&mut self, pattern: &str, backwards: bool, width: usize, height: usize) {
+        let count = self.source.count();
+        let top = self.top(width, height).0.line;
+        // From the line after the one on top, so that a search does not keep
+        // finding what is already on screen — and round the far end of the
+        // file if that was the last line there was.
+        let (from, wrapped) = beyond(top, backwards, count);
+        self.start(pattern.to_string(), backwards, from, count, wrapped);
+    }
+
+    /// Look for the same thing again: on from the last match, the same way
+    /// round or the other one.
+    fn again(&mut self, same_way: bool, width: usize, height: usize) {
+        let Some(find) = &self.find else { return };
+        let backwards = find.backwards == same_way;
+        let pattern = find.pattern.clone();
+        let count = self.source.count();
+        let Some(at) = find.at else {
+            return self.look(&pattern, backwards, width, height);
+        };
+        let (from, wrapped) = beyond(at, backwards, count);
+        self.start(pattern, backwards, from, count, wrapped);
+    }
+
+    fn start(&mut self, pattern: String, backwards: bool, from: u64, count: u64, wrapped: bool) {
+        let fold = !pattern.chars().any(char::is_uppercase);
+        self.find = Some(Find {
+            pattern,
+            fold,
+            backwards,
+            at: None,
+            next: (count > 0).then_some(from),
+            left: count,
+            wrapped,
+            missing: count == 0,
+        });
+        self.step();
+    }
+
+    /// One frame's worth of looking, which either finds something, runs out of
+    /// file, or leaves the rest for the next frame.
+    fn step(&mut self) {
+        let count = self.source.count();
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let Some(mut at) = find.next else { return };
+        for _ in 0..SEARCH_LINES {
+            if find.left == 0 || count == 0 {
+                find.next = None;
+                find.missing = true;
+                return;
+            }
+            if contains(self.source.line(at), &find.pattern, find.fold) {
+                find.at = Some(at);
+                find.next = None;
+                // At the top of the screen, where `less` puts it: what is
+                // wanted with a match is usually what follows it.
+                self.top = Some(Top { line: at, row: 0 });
+                self.pinned = false;
+                return;
+            }
+            find.left -= 1;
+            at = match (find.backwards, at) {
+                (true, 0) => {
+                    find.wrapped = true;
+                    count - 1
+                }
+                (true, at) => at - 1,
+                (false, at) if at + 1 >= count => {
+                    find.wrapped = true;
+                    0
+                }
+                (false, at) => at + 1,
+            };
+            find.next = Some(at);
+        }
     }
 
     fn follow(&mut self) {
@@ -1853,10 +2100,7 @@ impl LogView {
     }
 
     fn scroll_to_top(&mut self) {
-        self.top = Some(Top {
-            line: self.tail.first(),
-            row: 0,
-        });
+        self.top = Some(Top { line: 0, row: 0 });
         self.pinned = false;
     }
 
@@ -1884,19 +2128,15 @@ impl LogView {
 
     /// Where the top of the screen is when following: far enough back from
     /// the end to fill `height` rows.
-    fn follow_top(&self, width: usize, height: usize) -> Top {
-        let first = self.tail.first();
-        let count = self.tail.count();
+    fn follow_top(&mut self, width: usize, height: usize) -> Top {
+        let count = self.source.count();
         if count == 0 {
-            return Top {
-                line: first,
-                row: 0,
-            };
+            return Top { line: 0, row: 0 };
         }
         let mut line = count - 1;
         let mut need = height.max(1);
         loop {
-            let rows = row_count(self.tail.line(line), width);
+            let rows = row_count(self.source.line(line), width);
             if rows >= need {
                 return Top {
                     line,
@@ -1904,7 +2144,7 @@ impl LogView {
                 };
             }
             need -= rows;
-            if line == first {
+            if line == 0 {
                 return Top { line, row: 0 };
             }
             line -= 1;
@@ -1913,22 +2153,13 @@ impl LogView {
 
     /// Where the top of the screen is now, given where it was asked to be.
     ///
-    /// A place at or past where following would put it means following; a
-    /// place in lines that have since been forgotten means the oldest kept.
+    /// A place at or past where following would put it means following.
     fn top(&mut self, width: usize, height: usize) -> (Top, bool) {
         let follow = self.follow_top(width, height);
         match self.top {
             Some(top) if top >= follow && !self.pinned => {
                 self.top = None;
                 (follow, true)
-            }
-            Some(top) if top.line < self.tail.first() => {
-                let top = Top {
-                    line: self.tail.first(),
-                    row: 0,
-                };
-                self.top = Some(top);
-                (top, false)
             }
             Some(top) => (top, false),
             None => (follow, true),
@@ -1943,12 +2174,17 @@ impl LogView {
         let mut line = top.line;
         let mut skip = top.row;
         let mut bottom = top.line;
-        while rows.len() < height && line < self.tail.count() {
-            for row in wrap(self.tail.line(line), width).into_iter().skip(skip) {
+        let find = self
+            .find
+            .as_ref()
+            .map(|find| (find.pattern.clone(), find.fold));
+        while rows.len() < height && line < self.source.count() {
+            for row in wrap(self.source.line(line), width).into_iter().skip(skip) {
                 if rows.len() == height {
                     break;
                 }
-                rows.push(Line::from(row));
+                let find = find.as_ref().map(|(pattern, fold)| (&**pattern, *fold));
+                rows.push(highlight(row, find));
                 bottom = line;
             }
             skip = 0;
@@ -1970,23 +2206,22 @@ impl LogView {
         let (width, height) = (width.max(1) as usize, height as usize);
         let follow = self.follow_top(width, height);
         let (mut top, _) = self.top(width, height);
-        let first = self.tail.first();
-        let count = self.tail.count();
+        let count = self.source.count();
 
         if by < 0 {
             for _ in 0..by.unsigned_abs() {
                 if top.row > 0 {
                     top.row -= 1;
-                } else if top.line > first {
+                } else if top.line > 0 {
                     top.line -= 1;
-                    top.row = row_count(self.tail.line(top.line), width) - 1;
+                    top.row = row_count(self.source.line(top.line), width).saturating_sub(1);
                 } else {
                     break;
                 }
             }
         } else {
             for _ in 0..by {
-                if top.row + 1 < row_count(self.tail.line(top.line), width) {
+                if top.row + 1 < row_count(self.source.line(top.line), width) {
                     top.row += 1;
                 } else if top.line + 1 < count {
                     top.line += 1;
@@ -1998,6 +2233,83 @@ impl LogView {
         }
         self.top = (top < follow).then_some(top);
     }
+}
+
+/// The line a search starts at, given the one it is starting from, and
+/// whether getting there went round an end of the file.
+fn beyond(from: u64, backwards: bool, count: u64) -> (u64, bool) {
+    match backwards {
+        true if from == 0 => (count.saturating_sub(1), true),
+        true => (from - 1, false),
+        false if from + 1 >= count => (0, true),
+        false => (from + 1, false),
+    }
+}
+
+/// Whether `text` has `needle` in it, ignoring case where `fold` says to.
+///
+/// Case is folded for ASCII only, which keeps a match's bytes where they were:
+/// lowercasing a whole line first would move them, and the highlight is drawn
+/// from the offsets this finds.
+fn contains(text: &str, needle: &str, fold: bool) -> bool {
+    !needle.is_empty() && occurrences(text, needle, fold).next().is_some()
+}
+
+/// Where `needle` is in `text`, as byte ranges, left to right.
+fn occurrences<'a>(
+    text: &'a str,
+    needle: &'a str,
+    fold: bool,
+) -> impl Iterator<Item = (usize, usize)> + 'a {
+    let (hay, pin) = (text.as_bytes(), needle.as_bytes());
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        while at + pin.len() <= hay.len() {
+            let end = at + pin.len();
+            let same = if fold {
+                hay[at..end].eq_ignore_ascii_case(pin)
+            } else {
+                &hay[at..end] == pin
+            };
+            // On a character boundary at both ends, so that what is found can
+            // be sliced out of the text it was found in.
+            if same && text.is_char_boundary(at) && text.is_char_boundary(end) {
+                at = end.max(at + 1);
+                return Some((end - pin.len(), end));
+            }
+            at += 1;
+        }
+        None
+    })
+}
+
+/// A row with whatever matched picked out of it.
+fn highlight(row: String, find: Option<(&str, bool)>) -> Line<'static> {
+    let Some((needle, fold)) = find.filter(|(needle, _)| !needle.is_empty()) else {
+        return Line::from(row);
+    };
+    let mut spans = Vec::new();
+    let mut cut = 0;
+    for (from, to) in occurrences(&row, needle, fold) {
+        if from < cut {
+            continue;
+        }
+        if from > cut {
+            spans.push(span(row[cut..from].to_string(), Style::new()));
+        }
+        spans.push(span(
+            row[from..to].to_string(),
+            Style::new().black().on_yellow(),
+        ));
+        cut = to;
+    }
+    if spans.is_empty() {
+        return Line::from(row);
+    }
+    if cut < row.len() {
+        spans.push(span(row[cut..].to_string(), Style::new()));
+    }
+    Line::from(spans)
 }
 
 /// A line broken into rows of at most `width` columns.
@@ -2073,190 +2385,277 @@ fn row_count(text: &str, width: usize) -> usize {
     rows
 }
 
-/// A file being read as it grows, the way `tail -F` reads one.
+/// A file being read as it is written, and read back through: `tail -F` and
+/// `less` at once.
 ///
-/// Keeps the last [`MAX_LINES`] lines, starts again if the file is replaced or
-/// truncated, and waits for a file that is not there yet.
-struct Tail {
+/// All of it is reachable however long it is, because none of it is kept. What
+/// is kept is an index — the byte offset of every [`INDEX_EVERY`]th line — and
+/// a window of decoded lines around wherever is being read. Any line is then a
+/// seek to the nearest anchor and a short scan on from there, which costs the
+/// same whether it is the first line of the file or the last.
+///
+/// The index is built by scanning for newlines, at most [`INDEX_BUDGET`] bytes
+/// per poll: a log of an ordinary size is indexed before its first frame, and
+/// a very long one fills in over the next few without any of them costing more
+/// than that. [`Source::indexing`] says while that is still going on, and the
+/// count is of what has been indexed so far.
+struct Source {
     path: PathBuf,
     file: Option<File>,
     /// Which file this is, so that a replacement under the same name is
     /// noticed.
     identity: Option<(u64, u64)>,
-    /// Bytes read so far.
-    offset: u64,
-    /// The bytes after the last newline, waiting for the rest of their line.
-    partial: Vec<u8>,
-    /// The same, as text, to show while it waits.
-    partial_text: String,
-    /// Bytes are being skipped up to the next newline, after a jump forward.
-    resync: bool,
-    /// Bytes never read, because the file was too far ahead.
-    skipped: u64,
-    lines: VecDeque<String>,
-    /// Lines forgotten off the front, which is the number of the first kept.
-    dropped: u64,
-    state: TailState,
+    /// What the file measured at the last poll.
+    len: u64,
+    /// Where lines 0, [`INDEX_EVERY`], 2 × [`INDEX_EVERY`] … start.
+    anchors: Vec<u64>,
+    /// Lines finished by a newline, which is every line before
+    /// [`Source::line_start`].
+    lines: u64,
+    /// Where the line that has no newline yet starts.
+    line_start: u64,
+    /// How far the index has scanned. Ahead of [`Source::line_start`] only
+    /// inside a line longer than what one poll reads.
+    scanned: u64,
+    /// How much one poll may scan. [`INDEX_BUDGET`], except in tests, which
+    /// would otherwise have to write 64 MiB to reach a second poll.
+    budget: u64,
+    /// The lines held decoded, and the number of the first of them.
+    window: VecDeque<String>,
+    from: u64,
+    /// Whether the last line in the window had no newline when it was read,
+    /// and what the file measured then. Every other line is finished and can
+    /// never say anything different; that one grows.
+    window_partial: bool,
+    window_len: u64,
+    state: SourceState,
 }
 
-enum TailState {
+enum SourceState {
     /// There is no such file, yet.
     Waiting,
     Reading,
     Failed(String),
 }
 
-impl Tail {
+impl Source {
     fn new(path: PathBuf) -> Self {
         Self {
             path,
             file: None,
             identity: None,
-            offset: 0,
-            partial: Vec::new(),
-            partial_text: String::new(),
-            resync: false,
-            skipped: 0,
-            lines: VecDeque::new(),
-            dropped: 0,
-            state: TailState::Waiting,
+            len: 0,
+            anchors: vec![0],
+            lines: 0,
+            line_start: 0,
+            scanned: 0,
+            budget: INDEX_BUDGET,
+            window: VecDeque::new(),
+            from: 0,
+            window_partial: false,
+            window_len: 0,
+            state: SourceState::Waiting,
         }
     }
 
-    /// Read whatever has been written since last time.
+    /// Take in whatever has been written since last time.
     fn poll(&mut self) {
         let meta = match fs::metadata(&self.path) {
             Ok(meta) => meta,
             Err(error) => {
                 self.file = None;
                 self.state = if error.kind() == io::ErrorKind::NotFound {
-                    TailState::Waiting
+                    SourceState::Waiting
                 } else {
-                    TailState::Failed(error.to_string())
+                    SourceState::Failed(error.to_string())
                 };
                 return;
             }
         };
         if !meta.is_file() {
-            self.state = TailState::Failed("not a file".into());
+            self.state = SourceState::Failed("not a file".into());
             return;
         }
 
-        // New, replaced, or truncated: start again from the top.
+        // New, replaced, or truncated: everything known about it was about a
+        // file that is no longer there.
         let identity = identity(&meta);
-        if self.file.is_none() || self.identity != Some(identity) || meta.len() < self.offset {
+        if self.file.is_none() || self.identity != Some(identity) || meta.len() < self.scanned {
             match File::open(&self.path) {
                 Ok(file) => self.file = Some(file),
                 Err(error) => {
                     self.file = None;
-                    self.state = TailState::Failed(error.to_string());
+                    self.state = SourceState::Failed(error.to_string());
                     return;
                 }
             }
             self.identity = Some(identity);
-            self.offset = 0;
-            self.partial.clear();
-            self.partial_text.clear();
-            self.resync = false;
-            self.skipped = 0;
-            self.lines.clear();
-            self.dropped = 0;
+            self.forget();
         }
 
-        let len = meta.len();
-        if len - self.offset > BACKLOG {
-            // Too far behind to catch up on all of it: pick up from near the
-            // end, at a whole line.
-            self.skipped += len - BACKLOG - self.offset;
-            self.offset = len - BACKLOG;
-            self.partial.clear();
-            self.partial_text.clear();
-            self.resync = true;
-            if let Some(file) = &mut self.file {
-                if let Err(error) = file.seek(SeekFrom::Start(self.offset)) {
-                    self.state = TailState::Failed(error.to_string());
-                    return;
-                }
-            }
+        // The line that had no newline when the window was read has had more
+        // of itself written since. It is the only line that can have changed,
+        // so it is the only one dropped.
+        if self.window_partial && meta.len() != self.window_len {
+            self.window.pop_back();
+            self.window_partial = false;
+        }
+
+        self.len = meta.len();
+        self.index();
+        if !matches!(self.state, SourceState::Failed(_)) {
+            self.state = SourceState::Reading;
+        }
+    }
+
+    /// Everything read so far, forgotten: a different file is being read now.
+    fn forget(&mut self) {
+        self.anchors = vec![0];
+        self.lines = 0;
+        self.line_start = 0;
+        self.scanned = 0;
+        self.window.clear();
+        self.from = 0;
+        self.window_partial = false;
+        self.window_len = 0;
+    }
+
+    /// Scan on from where the last scan stopped, for as many bytes as one poll
+    /// is allowed, noting where every [`INDEX_EVERY`]th line starts.
+    fn index(&mut self) {
+        let until = self.len.min(self.scanned + self.budget);
+        if self.scanned >= until {
+            return;
+        }
+        let Some(file) = &mut self.file else { return };
+        if let Err(error) = file.seek(SeekFrom::Start(self.scanned)) {
+            self.state = SourceState::Failed(error.to_string());
+            return;
         }
 
         let mut buffer = vec![0u8; CHUNK];
-        while self.offset < len {
-            let Some(file) = &mut self.file else { break };
-            match file.read(&mut buffer) {
+        while self.scanned < until {
+            let want = ((until - self.scanned) as usize).min(CHUNK);
+            match file.read(&mut buffer[..want]) {
                 Ok(0) => break,
-                Ok(n) => {
-                    self.offset += n as u64;
-                    self.consume(&buffer[..n]);
+                Ok(read) => {
+                    let base = self.scanned;
+                    for (at, byte) in buffer[..read].iter().enumerate() {
+                        if *byte != b'\n' {
+                            continue;
+                        }
+                        // The line ends here, so the next one starts after it
+                        // — and is the one an anchor would point at.
+                        self.lines += 1;
+                        self.line_start = base + at as u64 + 1;
+                        if self.lines.is_multiple_of(INDEX_EVERY) {
+                            self.anchors.push(self.line_start);
+                        }
+                    }
+                    self.scanned += read as u64;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => {
-                    self.state = TailState::Failed(error.to_string());
+                    self.state = SourceState::Failed(error.to_string());
                     return;
                 }
             }
         }
-        self.state = TailState::Reading;
     }
 
-    fn consume(&mut self, mut bytes: &[u8]) {
-        while let Some(newline) = bytes.iter().position(|&b| b == b'\n') {
-            if self.resync {
-                self.resync = false;
-            } else {
-                self.partial.extend_from_slice(&bytes[..newline]);
-                let text = clean(&String::from_utf8_lossy(&self.partial));
-                self.partial.clear();
-                self.push(text);
-            }
-            bytes = &bytes[newline + 1..];
-        }
-        if !self.resync {
-            self.partial.extend_from_slice(bytes);
-        }
-        self.partial_text = if self.partial.is_empty() {
-            String::new()
-        } else {
-            clean(&String::from_utf8_lossy(&self.partial))
-        };
+    /// Whether the index is still catching up with the file.
+    ///
+    /// What is on screen is right either way; what is still growing is the
+    /// count of how much there is, which the page says rather than pretending
+    /// to a number it does not have yet.
+    fn indexing(&self) -> bool {
+        self.scanned < self.len
     }
 
-    fn push(&mut self, line: String) {
-        self.lines.push_back(line);
-        while self.lines.len() > MAX_LINES {
-            self.lines.pop_front();
-            self.dropped += 1;
-        }
-    }
-
-    /// The number of the oldest line still kept.
-    fn first(&self) -> u64 {
-        self.dropped
-    }
-
-    /// Whether the start of the file is no longer here to scroll back to.
-    fn truncated(&self) -> bool {
-        self.dropped > 0 || self.skipped > 0
-    }
-
-    /// How many lines are here to read.
-    fn kept(&self) -> u64 {
-        self.count() - self.first()
-    }
-
-    /// How many lines there have been, the one still being written included.
+    /// How many lines there are, the one still being written included.
     fn count(&self) -> u64 {
-        self.dropped + self.lines.len() as u64 + u64::from(!self.partial_text.is_empty())
+        self.lines + u64::from(self.len > self.line_start)
     }
 
-    /// Line `number`, which must be between [`Tail::first`] and [`Tail::count`].
-    fn line(&self, number: u64) -> &str {
-        let index = number.saturating_sub(self.dropped) as usize;
-        self.lines
-            .get(index)
+    /// Line `number`, which must be below [`Source::count`].
+    ///
+    /// Takes `&mut self` because a line outside the window is read in, which
+    /// is the whole point of the window: it is the reading that is bounded,
+    /// not what can be read.
+    fn line(&mut self, number: u64) -> &str {
+        if number < self.from || number >= self.from + self.window.len() as u64 {
+            self.load(number);
+        }
+        number
+            .checked_sub(self.from)
+            .and_then(|index| self.window.get(index as usize))
             .map(String::as_str)
-            .unwrap_or(&self.partial_text)
+            .unwrap_or_default()
     }
+
+    /// Decode the window of lines that `number` falls in, from the anchor at
+    /// or before it.
+    fn load(&mut self, number: u64) {
+        self.window.clear();
+        self.window_partial = false;
+        self.window_len = self.len;
+        let anchor = (number / INDEX_EVERY).min(self.anchors.len().saturating_sub(1) as u64);
+        let Some(&offset) = self.anchors.get(anchor as usize) else {
+            return;
+        };
+        self.from = anchor * INDEX_EVERY;
+
+        let Some(file) = &mut self.file else { return };
+        if file.seek(SeekFrom::Start(offset)).is_err() {
+            return;
+        }
+
+        let mut buffer = vec![0u8; CHUNK];
+        let mut line: Vec<u8> = Vec::new();
+        let mut read_from = offset;
+        let mut cut = false;
+        while self.window.len() < WINDOW && read_from < self.len {
+            let want = ((self.len - read_from) as usize).min(CHUNK);
+            let read = match file.read(&mut buffer[..want]) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
+            read_from += read as u64;
+            for byte in &buffer[..read] {
+                if *byte == b'\n' {
+                    self.window.push_back(decode(&line, cut));
+                    line.clear();
+                    cut = false;
+                    if self.window.len() == WINDOW {
+                        break;
+                    }
+                } else if line.len() < LINE_BYTES {
+                    line.push(*byte);
+                } else {
+                    // A line longer than anyone will read the end of on a
+                    // screen. The rest of it is skipped rather than held.
+                    cut = true;
+                }
+            }
+        }
+        // Whatever is left over has no newline yet: the line being written.
+        if !line.is_empty() && self.window.len() < WINDOW {
+            self.window.push_back(decode(&line, cut));
+            self.window_partial = true;
+        }
+    }
+}
+
+/// A line's bytes as they are shown: cleaned of anything that would move the
+/// cursor, and marked if it was too long to keep whole.
+fn decode(line: &[u8], cut: bool) -> String {
+    let mut text = clean(&String::from_utf8_lossy(line));
+    if cut {
+        text.push('…');
+    }
+    text
 }
 
 #[cfg(unix)]
@@ -2574,132 +2973,187 @@ mod tests {
         dir
     }
 
-    fn lines(tail: &Tail) -> Vec<&str> {
-        (tail.first()..tail.count()).map(|n| tail.line(n)).collect()
+    /// Every line of a source, which is all of them: nothing is out of reach.
+    fn lines(source: &mut Source) -> Vec<String> {
+        (0..source.count())
+            .map(|n| source.line(n).to_string())
+            .collect()
+    }
+
+    /// A scratch directory no other test is using: [`scratch`] empties the one
+    /// it is given, and the tests run at the same time as each other.
+    fn own_dir(name: &str) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        scratch(&format!("{name}{}", NEXT.fetch_add(1, Ordering::Relaxed)))
+    }
+
+    /// A file of `count` lines, numbered from zero, in a directory of its own.
+    fn numbered(count: usize) -> PathBuf {
+        let dir = own_dir("lines");
+        let path = dir.join("log");
+        let mut text = String::new();
+        for n in 0..count {
+            text.push_str(&format!("{n}\n"));
+        }
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn append(path: &Path, text: &str) {
+        let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(text.as_bytes()).unwrap();
     }
 
     #[test]
-    fn a_tail_waits_for_its_file_then_reads_what_is_appended() {
+    fn a_source_waits_for_its_file_then_reads_what_is_appended() {
         let dir = scratch("grows");
         let path = dir.join("tool.out");
-        let mut tail = Tail::new(path.clone());
+        let mut source = Source::new(path.clone());
 
-        tail.poll();
-        assert!(matches!(tail.state, TailState::Waiting));
-        assert_eq!(tail.count(), 0);
+        source.poll();
+        assert!(matches!(source.state, SourceState::Waiting));
+        assert_eq!(source.count(), 0);
 
         fs::write(&path, "one\ntwo\npart").unwrap();
-        tail.poll();
-        assert!(matches!(tail.state, TailState::Reading));
+        source.poll();
+        assert!(matches!(source.state, SourceState::Reading));
         // The unfinished line is shown while it waits for the rest of itself.
-        assert_eq!(lines(&tail), ["one", "two", "part"]);
-        assert_eq!(tail.count(), 3);
+        assert_eq!(lines(&mut source), ["one", "two", "part"]);
+        assert_eq!(source.count(), 3);
 
-        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(b"ial\r\nthree\n").unwrap();
-        drop(file);
-        tail.poll();
-        assert_eq!(lines(&tail), ["one", "two", "partial", "three"]);
+        append(&path, "ial\r\nthree\n");
+        source.poll();
+        assert_eq!(lines(&mut source), ["one", "two", "partial", "three"]);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_tail_starts_over_when_its_file_is_truncated_or_replaced() {
+    fn a_source_starts_over_when_its_file_is_truncated_or_replaced() {
         let dir = scratch("replaced");
         let path = dir.join("tool.out");
-        let mut tail = Tail::new(path.clone());
+        let mut source = Source::new(path.clone());
 
         fs::write(&path, "old one\nold two\n").unwrap();
-        tail.poll();
-        assert_eq!(lines(&tail), ["old one", "old two"]);
+        source.poll();
+        assert_eq!(lines(&mut source), ["old one", "old two"]);
 
         // Truncated and rewritten shorter.
         fs::write(&path, "new\n").unwrap();
-        tail.poll();
-        assert_eq!(lines(&tail), ["new"]);
+        source.poll();
+        assert_eq!(lines(&mut source), ["new"]);
 
         // Replaced by a different file under the same name, the way a tool
         // that rotates its log does it.
         let other = dir.join("tool.out.new");
         fs::write(&other, "replacement one\nreplacement two\n").unwrap();
         fs::rename(&other, &path).unwrap();
-        tail.poll();
-        assert_eq!(lines(&tail), ["replacement one", "replacement two"]);
+        source.poll();
+        assert_eq!(lines(&mut source), ["replacement one", "replacement two"]);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_tail_that_is_far_behind_skips_to_near_the_end_at_a_whole_line() {
-        let dir = scratch("behind");
+    fn every_line_of_a_long_file_is_reachable_at_the_same_cost() {
+        // Longer than the index's spacing several times over, so that lines
+        // are reached through anchors rather than from the top.
+        let count = 5 * INDEX_EVERY as usize + 7;
+        let path = numbered(count);
+        let mut source = Source::new(path);
+        source.poll();
+
+        assert_eq!(source.count(), count as u64);
+        assert!(!source.indexing());
+        assert_eq!(source.line(0), "0");
+        assert_eq!(source.line(count as u64 - 1), format!("{}", count - 1));
+
+        // Out of order, backwards, and across every anchor: the window is
+        // reloaded as needed and none of it is wrong.
+        for n in [count as u64 - 1, 0, INDEX_EVERY, INDEX_EVERY - 1, 3, 999] {
+            let n = n.min(count as u64 - 1);
+            assert_eq!(source.line(n), format!("{n}"), "line {n}");
+        }
+        for n in (0..count as u64).rev().step_by(97) {
+            assert_eq!(source.line(n), format!("{n}"), "line {n}");
+        }
+        // An anchor every INDEX_EVERY lines, and one for the first line.
+        assert_eq!(source.anchors.len(), count / INDEX_EVERY as usize + 1);
+    }
+
+    /// A file too long to index in one poll is indexed over several, and is
+    /// readable throughout — the count says how far it has got, and the page
+    /// says that is what it is.
+    #[test]
+    fn a_file_longer_than_one_polls_worth_is_indexed_over_several() {
+        let count = 4 * INDEX_EVERY as usize;
+        let path = numbered(count);
+        let all = fs::metadata(&path).unwrap().len();
+
+        let mut source = Source::new(path);
+        source.budget = all / 4;
+        source.poll();
+        assert!(source.indexing(), "done in one poll");
+        let reached = source.count();
+        assert!(reached > 0 && reached < count as u64, "{reached}");
+        // What it has reached is right, however much is left.
+        assert_eq!(source.line(0), "0");
+        assert_eq!(source.line(reached - 1), format!("{}", reached - 1));
+
+        // Polling on finishes it, and the count is the file's.
+        while source.indexing() {
+            source.poll();
+        }
+        assert_eq!(source.count(), count as u64);
+        assert_eq!(source.line(count as u64 - 1), format!("{}", count - 1));
+    }
+
+    #[test]
+    fn a_line_too_long_to_keep_is_cut_and_says_so() {
+        let dir = scratch("longline");
         let path = dir.join("tool.out");
-        let mut contents = String::new();
-        let mut number = 0;
-        while (contents.len() as u64) < BACKLOG + 100_000 {
-            contents.push_str(&format!("line {number}\n"));
-            number += 1;
-        }
-        fs::write(&path, &contents).unwrap();
+        fs::write(&path, format!("{}\nshort\n", "y".repeat(LINE_BYTES + 500))).unwrap();
 
-        let mut tail = Tail::new(path.clone());
-        tail.poll();
-        let read = lines(&tail);
-        // Picked up at a whole line, not the tail of one, and read to the end.
-        assert!(read[0].starts_with("line "), "{:?}", read[0]);
-        assert!(
-            read[0]["line ".len()..].parse::<u64>().is_ok(),
-            "{:?}",
-            read[0]
-        );
-        assert_eq!(*read.last().unwrap(), format!("line {}", number - 1));
-        assert_eq!(tail.kept(), read.len() as u64);
-        assert!(tail.truncated());
-
-        // Whereas a file that fits is all there.
-        let small = dir.join("small.out");
-        fs::write(&small, "a\nb\n").unwrap();
-        let mut tail = Tail::new(small);
-        tail.poll();
-        assert!(!tail.truncated());
-        assert_eq!(tail.kept(), 2);
+        let mut source = Source::new(path);
+        source.poll();
+        assert_eq!(source.count(), 2);
+        let long = source.line(0).to_string();
+        assert_eq!(long.chars().count(), LINE_BYTES + 1);
+        assert!(long.ends_with('…'), "{}", &long[long.len() - 8..]);
+        assert_eq!(source.line(1), "short");
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_tail_keeps_only_the_last_lines_and_numbers_them_from_the_start() {
-        let mut tail = Tail::new(PathBuf::from("/nonexistent"));
-        for n in 0..(MAX_LINES + 5) {
-            tail.push(format!("line {n}"));
-        }
-        assert_eq!(tail.lines.len(), MAX_LINES);
-        assert_eq!(tail.first(), 5);
-        assert_eq!(tail.count(), MAX_LINES as u64 + 5);
-        assert_eq!(tail.line(5), "line 5");
-        assert_eq!(
-            tail.line(tail.count() - 1),
-            format!("line {}", MAX_LINES + 4)
-        );
     }
 
     #[test]
     fn tool_output_is_cleaned_before_it_is_shown() {
-        let mut tail = Tail::new(PathBuf::from("/nonexistent"));
-        tail.consume(b"\x1b[1;31m**ERROR\x1b[0m: bad\tthing\r\n\xff\xfe raw\n");
+        let dir = scratch("cleaned");
+        let path = dir.join("tool.out");
+        fs::write(
+            &path,
+            b"\x1b[1;31m**ERROR\x1b[0m: bad\tthing\r\n\xff\xfe raw\n",
+        )
+        .unwrap();
+
+        let mut source = Source::new(path);
+        source.poll();
         assert_eq!(
-            lines(&tail),
+            lines(&mut source),
             ["**ERROR: bad    thing", "\u{fffd}\u{fffd} raw"]
         );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // -- scrolling ----------------------------------------------------------
 
     /// A view over `count` one-row lines, numbered from zero.
     fn view(count: usize) -> LogView {
-        let mut view = LogView::new(PathBuf::from("/nonexistent"));
-        for n in 0..count {
-            view.tail.push(format!("{n}"));
-        }
-        view.tail.state = TailState::Reading;
+        let mut view = LogView::new(numbered(count));
+        view.poll();
         view
+    }
+
+    /// Another line written to what a view is reading.
+    fn grew(view: &mut LogView, text: &str) {
+        append(&view.source.path.clone(), &format!("{text}\n"));
+        view.poll();
     }
 
     fn shown(view: &mut LogView, height: u16) -> Vec<String> {
@@ -2717,14 +3171,14 @@ mod tests {
         assert!(!view.render(80, 3).following);
 
         // New lines arrive; the view stays where it was put.
-        view.tail.push("100".into());
+        grew(&mut view, "100");
         assert_eq!(shown(&mut view, 3), ["96", "97", "98"]);
 
         // Down to the end again, and it follows again.
         view.scroll(2, 80, 3);
         assert_eq!(shown(&mut view, 3), ["98", "99", "100"]);
         assert!(view.render(80, 3).following);
-        view.tail.push("101".into());
+        grew(&mut view, "101");
         assert_eq!(shown(&mut view, 3), ["99", "100", "101"]);
     }
 
@@ -2741,6 +3195,29 @@ mod tests {
         assert_eq!(shown(&mut view, 3), ["7", "8", "9"]);
     }
 
+    /// The top of a file that has scrolled far past it, which is what nothing
+    /// being forgotten is for: `g` reaches line 0 of a long log.
+    #[test]
+    fn the_top_of_a_long_log_is_still_there_to_scroll_back_to() {
+        let count = 3 * INDEX_EVERY as usize;
+        let mut view = view(count);
+        assert_eq!(
+            shown(&mut view, 2),
+            [format!("{}", count - 2), format!("{}", count - 1)]
+        );
+
+        view.scroll_to_top();
+        assert_eq!(shown(&mut view, 2), ["0", "1"]);
+        assert!(!view.render(80, 2).following);
+
+        // And on down through it, a screen at a time, arriving where it ends.
+        view.follow();
+        assert_eq!(
+            shown(&mut view, 2),
+            [format!("{}", count - 2), format!("{}", count - 1)]
+        );
+    }
+
     #[test]
     fn a_log_shorter_than_the_screen_starts_at_the_top_and_follows() {
         let mut view = view(2);
@@ -2752,11 +3229,11 @@ mod tests {
 
     #[test]
     fn scrolling_moves_by_wrapped_rows_not_lines() {
-        let mut view = LogView::new(PathBuf::from("/nonexistent"));
-        view.tail.push("aaaa".into());
-        view.tail.push("bbbbbbbb".into()); // two rows at width 4
-        view.tail.push("cc".into());
-        view.tail.state = TailState::Reading;
+        let dir = scratch("wrapped");
+        let path = dir.join("log");
+        fs::write(&path, "aaaa\nbbbbbbbb\ncc\n").unwrap(); // the middle one is two rows at width 4
+        let mut view = LogView::new(path);
+        view.poll();
 
         let rows = |view: &mut LogView| -> Vec<String> {
             view.render(4, 2).rows.iter().map(plain).collect()
@@ -2768,20 +3245,215 @@ mod tests {
         assert_eq!(rows(&mut view), ["aaaa", "bbbb"]);
         view.scroll(1, 4, 2);
         assert_eq!(rows(&mut view), ["bbbb", "bbbb"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // -- searching ----------------------------------------------------------
+
+    /// A view over lines that are worth searching, three rows tall.
+    fn haystack() -> LogView {
+        let path = own_dir("haystack").join("log");
+        fs::write(
+            &path,
+            "alpha\nbeta\nERROR: first\ngamma\nerror: second\ndelta\nepsilon\n",
+        )
+        .unwrap();
+        let mut view = LogView::new(path);
+        view.poll();
+        view
+    }
+
+    /// The line a search left on top of the screen.
+    fn found(view: &LogView) -> Option<u64> {
+        view.find.as_ref().and_then(|find| find.at)
     }
 
     #[test]
-    fn a_place_in_forgotten_lines_becomes_the_oldest_kept() {
-        let mut view = view(10);
+    fn a_search_puts_the_line_it_found_on_top_of_the_screen() {
+        let mut view = haystack();
         view.scroll_to_top();
-        assert_eq!(shown(&mut view, 2), ["0", "1"]);
-        for n in 10..(MAX_LINES + 20) {
-            view.tail.push(format!("{n}"));
+        view.look("gamma", false, 80, 3);
+        assert_eq!(found(&view), Some(3));
+        assert_eq!(shown(&mut view, 3), ["gamma", "error: second", "delta"]);
+        assert!(!view.render(80, 3).following);
+    }
+
+    #[test]
+    fn a_search_ignores_case_unless_the_pattern_has_a_capital_in_it() {
+        let mut view = haystack();
+        view.scroll_to_top();
+        // All lowercase: either line will do, and the first one is line 2.
+        view.look("error", false, 80, 3);
+        assert_eq!(found(&view), Some(2));
+
+        // A capital means it was meant: only the line that has it.
+        view.scroll_to_top();
+        view.look("ERROR", false, 80, 3);
+        assert_eq!(found(&view), Some(2));
+        view.scroll_to_top();
+        view.look("Error", false, 80, 3);
+        assert!(view.find.as_ref().unwrap().missing);
+    }
+
+    #[test]
+    fn a_search_wraps_round_the_end_of_the_file_and_says_it_did() {
+        let mut view = haystack();
+        // From the last line, forwards: what it finds is round the far end.
+        view.top = Some(Top { line: 6, row: 0 });
+        view.look("alpha", false, 80, 3);
+        assert_eq!(found(&view), Some(0));
+        assert!(view.find.as_ref().unwrap().wrapped);
+
+        // And backwards from the top, the same the other way.
+        view.scroll_to_top();
+        view.look("epsilon", true, 80, 3);
+        assert_eq!(found(&view), Some(6));
+        assert!(view.find.as_ref().unwrap().wrapped);
+    }
+
+    #[test]
+    fn a_search_that_finds_nothing_says_so_and_leaves_the_screen_alone() {
+        let mut view = haystack();
+        view.scroll_to_top();
+        view.look("nowhere", false, 80, 3);
+        let find = view.find.as_ref().unwrap();
+        assert!(find.missing);
+        assert_eq!(find.at, None);
+        assert_eq!(shown(&mut view, 3), ["alpha", "beta", "ERROR: first"]);
+    }
+
+    #[test]
+    fn n_goes_on_to_the_next_and_shift_n_back_to_the_one_before() {
+        let mut view = haystack();
+        view.scroll_to_top();
+        view.look("e", false, 80, 3);
+        let first = found(&view).unwrap();
+
+        view.again(true, 80, 3);
+        let second = found(&view).unwrap();
+        assert!(second > first, "{first} then {second}");
+
+        // The other way round, which is back where it was.
+        view.again(false, 80, 3);
+        assert_eq!(found(&view), Some(first));
+    }
+
+    #[test]
+    fn a_search_of_a_long_log_is_spread_over_frames_and_finishes() {
+        // Longer than one frame's worth, with what it is looking for at the
+        // very end, so the first pass cannot reach it.
+        let count = SEARCH_LINES as usize + 100;
+        let path = numbered(count);
+        append(&path, "needle\n");
+        let mut view = LogView::new(path);
+        view.poll();
+        view.scroll_to_top();
+
+        view.look("needle", false, 80, 3);
+        assert!(
+            view.find.as_ref().unwrap().next.is_some(),
+            "searched it all in one frame"
+        );
+        assert_eq!(found(&view), None);
+
+        // Each frame does the next slice, and it is found without the display
+        // ever having stopped.
+        for _ in 0..10 {
+            view.poll();
+            if found(&view).is_some() {
+                break;
+            }
         }
-        // Lines 0 to 19 have gone; the view is on line 20, not following.
-        assert_eq!(view.tail.first(), 20);
-        assert_eq!(shown(&mut view, 2), ["20", "21"]);
-        assert!(!view.render(80, 2).following);
+        assert_eq!(found(&view), Some(count as u64));
+    }
+
+    #[test]
+    fn what_matched_is_picked_out_of_the_row_it_is_in() {
+        let plain_row = highlight("nothing here".to_string(), None);
+        assert_eq!(plain_row.spans.len(), 1);
+
+        let row = highlight("a beta and a Beta".to_string(), Some(("beta", true)));
+        assert_eq!(plain(&row), "a beta and a Beta");
+        let lit: Vec<&str> = row
+            .spans
+            .iter()
+            .filter(|span| span.style.bg.is_some())
+            .map(|span| span.content.as_ref())
+            .collect();
+        // Both, folded — and each of them whole, with its own case kept.
+        assert_eq!(lit, ["beta", "Beta"]);
+
+        // A capital in the pattern means only the one.
+        let row = highlight("a beta and a Beta".to_string(), Some(("Beta", false)));
+        let lit: Vec<&str> = row
+            .spans
+            .iter()
+            .filter(|span| span.style.bg.is_some())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(lit, ["Beta"]);
+
+        // Text either side of a match is left as it was.
+        let row = highlight("xxfindxx".to_string(), Some(("find", false)));
+        assert_eq!(plain(&row), "xxfindxx");
+        assert_eq!(row.spans.len(), 3);
+    }
+
+    #[test]
+    fn a_search_typed_at_the_prompt_has_the_keyboard_until_it_is_run() {
+        let paint = OneStep::default();
+        let mut page = run_page(100);
+
+        page.key(press(KeyCode::Char('/')), &paint);
+        assert!(page.prompt.is_some(), "no prompt");
+        // Keys that would otherwise do something are the pattern instead: `q`
+        // does not ask to cancel the run, and `j` does not scroll.
+        for c in "q9j".chars() {
+            page.key(press(KeyCode::Char(c)), &paint);
+        }
+        assert_eq!(page.prompt.as_ref().unwrap().text, "q9j");
+        assert!(!page.confirming, "asked to cancel the run");
+        assert_eq!(run_rows(&mut page), ["97", "98", "99"]);
+        assert!(plain(&page.hint(true, 80)).starts_with("  /q9j"));
+
+        // Backspaced away to nothing, it is gone.
+        for _ in 0..3 {
+            page.key(press(KeyCode::Backspace), &paint);
+        }
+        assert!(page.prompt.is_none());
+
+        // Typed and run, it searches — and the page is still the page.
+        page.key(press(KeyCode::Char('/')), &paint);
+        for c in "42".chars() {
+            page.key(press(KeyCode::Char(c)), &paint);
+        }
+        page.key(press(KeyCode::Enter), &paint);
+        assert!(page.prompt.is_none());
+        assert_eq!(run_rows(&mut page), ["42", "43", "44"]);
+
+        // And `esc` puts a prompt away without closing the page under it.
+        page.key(press(KeyCode::Char('?')), &paint);
+        assert!(page.prompt.as_ref().unwrap().backwards);
+        page.key(press(KeyCode::Esc), &paint);
+        assert!(page.prompt.is_none());
+        assert!(matches!(page.page, Page::Log(_)));
+    }
+
+    #[test]
+    fn the_less_keys_page_and_follow() {
+        let paint = OneStep::default();
+        let mut page = run_page(100);
+        let rows = 3;
+
+        page.key(press(KeyCode::Char('b')), &paint);
+        assert_eq!(run_rows(&mut page), ["94", "95", "96"]);
+        page.key(press(KeyCode::Char(' ')), &paint);
+        assert_eq!(run_rows(&mut page), ["97", "98", "99"]);
+
+        page.key(press(KeyCode::Char('b')), &paint);
+        assert_eq!(run_rows(&mut page).len(), rows);
+        page.key(press(KeyCode::Char('F')), &paint);
+        assert_eq!(run_rows(&mut page), ["97", "98", "99"]);
     }
 
     // -- the banner ---------------------------------------------------------
@@ -2883,29 +3555,52 @@ mod tests {
 
     /// A step's page, open on a log of `count` one-row lines, three rows tall.
     fn page(count: usize) -> View {
-        let mut watch = Watch::new(7);
-        watch.pane.log = Some(view(count));
-        watch.pane.columns = 80;
-        watch.pane.rows = 3;
+        opened(Pager::step(7), count)
+    }
+
+    /// The run's page, open on a log of `count` one-row lines.
+    fn run_page(count: usize) -> View {
+        opened(Pager::run(), count)
+    }
+
+    fn opened(mut pager: Pager, count: usize) -> View {
+        let log = view(count);
+        pager.files = vec![log.source.path.clone()];
+        pager.pane.log = Some(log);
+        pager.pane.columns = 80;
+        pager.pane.rows = 3;
         View {
-            page: Page::Detail(Box::new(watch)),
+            page: Page::Log(Box::new(pager)),
             ..View::default()
         }
     }
 
-    /// What the log on an open step's page is showing.
-    fn log_rows(page: &mut View) -> Vec<String> {
-        let Page::Detail(watch) = &mut page.page else {
-            panic!("not a step's page");
+    /// The page's pager, whichever kind of page it is.
+    fn pager(page: &mut View) -> &mut Pager {
+        let Page::Log(pager) = &mut page.page else {
+            panic!("not a log's page");
         };
-        shown(watch.pane.log.as_mut().unwrap(), 3)
+        pager
+    }
+
+    /// What the log on an open page is showing.
+    fn log_rows(page: &mut View) -> Vec<String> {
+        shown(pager(page).pane.log.as_mut().unwrap(), 3)
+    }
+
+    /// The same, for a page opened on the run's log.
+    fn run_rows(page: &mut View) -> Vec<String> {
+        log_rows(page)
     }
 
     fn is_following(page: &mut View) -> bool {
-        let Page::Detail(watch) = &mut page.page else {
-            panic!("not a step's page");
-        };
-        watch.pane.log.as_mut().unwrap().render(80, 3).following
+        pager(page)
+            .pane
+            .log
+            .as_mut()
+            .unwrap()
+            .render(80, 3)
+            .following
     }
 
     #[test]
@@ -3004,53 +3699,70 @@ mod tests {
             ..View::default()
         };
         view.key(press(KeyCode::Enter), &paint);
-        assert!(matches!(view.page, Page::Detail(_)));
+        assert!(matches!(view.page, Page::Log(_)));
         view.key(press(KeyCode::Esc), &paint);
         assert!(matches!(view.page, Page::List));
     }
 
-    /// The run's page, open on a log of `count` one-row lines, three rows tall.
-    fn run_page(count: usize) -> View {
-        View {
-            page: Page::Run(Box::new(Pane {
-                log: Some(view(count)),
-                columns: 80,
-                rows: 3,
-            })),
-            ..View::default()
-        }
-    }
-
-    /// What the log on an open run page is showing.
-    fn run_rows(page: &mut View) -> Vec<String> {
-        let Page::Run(pane) = &mut page.page else {
-            panic!("not the run's page");
-        };
-        shown(pane.log.as_mut().unwrap(), 3)
-    }
-
     #[test]
-    fn the_run_log_opens_from_either_page_and_closes_to_the_list() {
+    fn the_run_log_opens_from_the_list_and_closes_back_to_it() {
         let paint = OneStep::default();
         let mut view = View {
             selected: Some(7),
             ..View::default()
         };
 
-        // From the list, and back to it.
         view.key(press(KeyCode::Char('L')), &paint);
-        assert!(matches!(view.page, Page::Run(_)));
+        let Page::Log(pager) = &view.page else {
+            panic!("not a log's page");
+        };
+        assert_eq!(pager.step, None, "opened as a step's page");
         view.key(press(KeyCode::Esc), &paint);
         assert!(matches!(view.page, Page::List));
 
-        // From a step's page — the run's log is not the step's, so `esc` from
-        // it goes back to the list rather than to the step.
+        // A step's page is a step's, and closing it goes back to that step.
         view.key(press(KeyCode::Enter), &paint);
-        assert!(matches!(view.page, Page::Detail(_)));
-        view.key(press(KeyCode::Char('L')), &paint);
-        assert!(matches!(view.page, Page::Run(_)));
-        view.key(press(KeyCode::Esc), &paint);
-        assert!(matches!(view.page, Page::List));
+        let Page::Log(pager) = &view.page else {
+            panic!("not a log's page");
+        };
+        assert_eq!(pager.step, Some(7));
+    }
+
+    #[test]
+    fn a_steps_page_reaches_the_run_log_by_tab_and_by_key() {
+        let paint = OneStep::default();
+        let mut page = page(100);
+        let out = numbered(4);
+        let err = numbered(5);
+        let run = numbered(6);
+
+        // What a frame does: hand the page the step's files and the run's log.
+        pager(&mut page).sync(&[out.clone(), err.clone()], Some(run.clone()));
+        assert_eq!(
+            pager(&mut page).files,
+            [out.clone(), err.clone(), run.clone()]
+        );
+        let open = |page: &mut View| pager(page).pane.log.as_ref().unwrap().source.path.clone();
+        assert_eq!(open(&mut page), out);
+
+        // `tab` goes through the step's files and on into the run's log,
+        // which is one of the files this page can read.
+        page.key(press(KeyCode::Tab), &paint);
+        assert_eq!(open(&mut page), err);
+        page.key(press(KeyCode::Tab), &paint);
+        assert_eq!(open(&mut page), run);
+        page.key(press(KeyCode::Tab), &paint);
+        assert_eq!(open(&mut page), out, "did not come round");
+        page.key(press(KeyCode::BackTab), &paint);
+        assert_eq!(open(&mut page), run, "did not go back round");
+
+        // And `L` goes straight to it from wherever in the cycle.
+        page.key(press(KeyCode::Tab), &paint);
+        assert_eq!(open(&mut page), out);
+        page.key(press(KeyCode::Char('L')), &paint);
+        assert_eq!(open(&mut page), run);
+        // Still the step's page: the step is what it is a page for.
+        assert_eq!(pager(&mut page).step, Some(7));
     }
 
     #[test]
@@ -3063,7 +3775,7 @@ mod tests {
         // Not reopened from the top, which would throw away where it was read
         // to: `L` is how it is opened, and `esc` how it is left.
         page.key(press(KeyCode::Char('L')), &paint);
-        assert!(matches!(page.page, Page::Run(_)));
+        assert!(matches!(page.page, Page::Log(_)));
         assert_eq!(run_rows(&mut page), ["96", "97", "98"]);
     }
 
@@ -3095,7 +3807,15 @@ mod tests {
         let Action::Copy(files) = page.key(press(KeyCode::Char('y')), &paint) else {
             panic!("y copies");
         };
-        assert_eq!(files, [PathBuf::from("/nonexistent")]);
+        let path = pager(&mut page)
+            .pane
+            .log
+            .as_ref()
+            .unwrap()
+            .source
+            .path
+            .clone();
+        assert_eq!(files, [path]);
     }
 
     #[test]
@@ -3120,17 +3840,22 @@ mod tests {
         assert!(pane.log.is_none());
         assert!(pane.files().is_empty());
 
-        pane.sync(Some(Path::new("/build/rivet.log")));
-        assert_eq!(pane.files(), [PathBuf::from("/build/rivet.log")]);
+        let one = numbered(3);
+        let two = numbered(7);
+        pane.sync(Some(&one));
+        assert_eq!(pane.files(), std::slice::from_ref(&one));
 
         // The same file again is the same read, not a fresh one from the top.
-        pane.log.as_mut().unwrap().tail.push("kept".into());
-        pane.sync(Some(Path::new("/build/rivet.log")));
-        assert_eq!(pane.log.as_ref().unwrap().tail.count(), 1);
+        pane.log.as_mut().unwrap().poll();
+        pane.log.as_mut().unwrap().scroll_to_top();
+        pane.sync(Some(&one));
+        assert!(pane.log.as_ref().unwrap().top.is_some(), "started again");
 
-        // A different one starts again.
-        pane.sync(Some(Path::new("/build/other.log")));
-        assert_eq!(pane.log.as_ref().unwrap().tail.count(), 0);
+        // A different one starts again, at its end.
+        pane.sync(Some(&two));
+        pane.log.as_mut().unwrap().poll();
+        assert_eq!(pane.log.as_ref().unwrap().source.count(), 7);
+        assert!(pane.log.as_ref().unwrap().top.is_none(), "not following");
 
         // Nothing to read — a run that was told not to log.
         pane.sync(None);
@@ -3306,13 +4031,13 @@ mod tests {
             click(MouseEventKind::Down(MouseButton::Left), (2, 1)),
             &paint,
         );
-        let Page::Detail(watch) = &mut page.page else {
-            panic!("not a step's page");
-        };
         // ...so the lines that arrive during the drag do not carry it away.
+        let log = pager(&mut page).pane.log.as_mut().unwrap();
+        let path = log.source.path.clone();
         for n in 100..110 {
-            watch.pane.log.as_mut().unwrap().tail.push(n.to_string());
+            append(&path, &format!("{n}\n"));
         }
+        log.poll();
         assert_eq!(log_rows(&mut page), ["97", "98", "99"]);
         assert!(!is_following(&mut page));
 

@@ -71,6 +71,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, RwLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui::style::{Style, Stylize};
@@ -110,6 +111,15 @@ const SPIN_EVERY: u128 = 100;
 /// enough that nobody watches a stalled run for an afternoon.
 pub(crate) const QUIET_AFTER: Duration = Duration::from_secs(600);
 
+/// How long a tool told to stop is given before it is made to.
+///
+/// `SIGTERM` first, because a tool asked to stop may have something to close
+/// or write out. `SIGKILL` after this, because it may equally sit in a signal
+/// handler and never stop at all — see `cadence::kill_on_fatal_signal` for
+/// what Cadence tools do with a fatal signal — and a step that was killed and
+/// did not die would be worse than one that was never killed.
+const KILL_AFTER: Duration = Duration::from_secs(5);
+
 /// Separates the two halves of a step's line, and the two halves of the
 /// location reported when a step fails.
 pub(crate) const REGION_SEP: &str = " │ ";
@@ -123,6 +133,18 @@ pub enum Outcome {
     Skipped,
     /// The step panicked.
     Failed,
+}
+
+/// What came of asking for a step to be killed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kill {
+    /// The tool has been told to stop, and will be made to if it does not.
+    Sent,
+    /// The step is running, but not a tool of its own: there is nothing to
+    /// signal, and its own thread cannot be stopped from outside.
+    NoTool,
+    /// The step is not running: it is finished, or has not started.
+    NotRunning,
 }
 
 /// How many steps ended each way.
@@ -329,6 +351,64 @@ impl Reporter {
         self.display().is_some()
     }
 
+    /// Stop the tool step `id` is running, leaving the rest of the run going.
+    ///
+    /// What dies is the process the step spawned, not the step: its own thread
+    /// goes on, sees the tool exit, and ends the step however it ends a tool
+    /// that failed — which is what makes this safe to do from the display. The
+    /// steps waiting on it are blocked from then on, as they would be by any
+    /// other failure.
+    ///
+    /// Nothing here waits: the tool is signalled, and the step ends when it
+    /// notices.
+    pub(crate) fn kill(&self, id: usize) -> Kill {
+        let Some(entry) = self.steps.get(id) else {
+            return Kill::NotRunning;
+        };
+        let running = self
+            .display()
+            .map(|display| {
+                display
+                    .cursor
+                    .rows
+                    .iter()
+                    .any(|row| row.id == id && row.group() == Group::Running)
+            })
+            .unwrap_or(true);
+        if !running {
+            return Kill::NotRunning;
+        }
+
+        let child = {
+            let mut state = entry.state.lock().unwrap();
+            let Some(child) = state.child else {
+                return Kill::NoTool;
+            };
+            state.killed = true;
+            child
+        };
+
+        tracing::warn!(step = %entry.label, pid = child.pid, "killing the step's tool");
+        crate::tui::signals::signal_process(child.pid, false);
+
+        // Asked, then made to: on a worker of its own, because the display's
+        // thread has a screen to keep drawing and the run has steps to get on
+        // with.
+        let state = Arc::clone(&entry.state);
+        let label = Arc::clone(&entry.label);
+        thread::spawn(move || {
+            thread::sleep(KILL_AFTER);
+            // Only if it is still the same process. The step may have ended by
+            // now, and may have started another tool since.
+            if state.lock().unwrap().child != Some(child) {
+                return;
+            }
+            tracing::warn!(step = %label, pid = child.pid, "the tool did not stop; killing it");
+            crate::tui::signals::signal_process(child.pid, true);
+        });
+        Kill::Sent
+    }
+
     /// Announce that step `id` has started running, returning a handle the
     /// step can use to report its own output.
     ///
@@ -421,13 +501,32 @@ impl Reporter {
     pub(crate) fn finish(&self, handle: &StepHandle, outcome: Outcome, detail: Option<&str>) {
         self.running.fetch_sub(1, Ordering::Relaxed);
         self.finished.fetch_add(1, Ordering::Relaxed);
+        if outcome == Outcome::Failed {
+            self.failed.fetch_add(1, Ordering::Relaxed);
+        }
+        let record = self.record(handle, outcome, detail);
 
-        // The step's line for the record, which is also its row in the list
-        // once it has stopped. Built without the record's indent, so that the
-        // cursor can go where the indent goes.
+        match self.display() {
+            Some(mut display) => display.cursor.end(
+                handle.id,
+                Ended {
+                    record,
+                    at: Instant::now(),
+                },
+            ),
+            None => self.print(indent(record)),
+        }
+    }
+
+    /// The step's line for the record, which is also its row in the list once
+    /// it has stopped.
+    ///
+    /// Built without the record's indent, so that the cursor can go where the
+    /// indent goes.
+    fn record(&self, handle: &StepHandle, outcome: Outcome, detail: Option<&str>) -> Line<'static> {
         let elapsed = fmt_duration(handle.started.elapsed());
         let padded = pad(&handle.label, self.label_width);
-        let record = match outcome {
+        match outcome {
             Outcome::Completed => Line::from(vec![
                 span("✔ ", Style::new().green()),
                 span(padded, Style::new().bold()),
@@ -443,7 +542,6 @@ impl Reporter {
                 ),
             ]),
             Outcome::Failed => {
-                self.failed.fetch_add(1, Ordering::Relaxed);
                 let mut spans = vec![
                     span("✖ ", Style::new().red()),
                     span(padded, Style::new().red().bold()),
@@ -455,7 +553,12 @@ impl Reporter {
                 if let Some(location) = handle.location() {
                     spans.push(span(format!("  during {location}"), Style::new().yellow()));
                 }
-                if let Some(detail) = detail {
+                // A step someone killed did not fail of its own accord, and
+                // whatever the tool said on its way out is not the reason it
+                // stopped. That is in the log; the line says who to blame.
+                if handle.was_killed() {
+                    spans.push(span("  killed", Style::new().yellow()));
+                } else if let Some(detail) = detail {
                     spans.push(span(
                         format!("  {}", truncate(&clean(detail), 160)),
                         Style::new().red(),
@@ -463,17 +566,6 @@ impl Reporter {
                 }
                 Line::from(spans)
             }
-        };
-
-        match self.display() {
-            Some(mut display) => display.cursor.end(
-                handle.id,
-                Ended {
-                    record,
-                    at: Instant::now(),
-                },
-            ),
-            None => self.print(indent(record)),
         }
     }
 
@@ -755,6 +847,10 @@ impl Paint for Reporter {
 
     fn done(&self) -> bool {
         self.ended().is_some()
+    }
+
+    fn kill(&self, id: usize) -> Kill {
+        Reporter::kill(self, id)
     }
 
     fn detach(&self) -> Vec<Line<'static>> {
@@ -1200,10 +1296,19 @@ impl Row {
         Line::from(spans)
     }
 
-    /// The remark that says this step's tool has gone quiet, once it has been
-    /// quiet long enough to be worth saying. See [`StepState::quiet_for`].
+    /// The remark at the end of a running step's line: that it has been told
+    /// to stop, or that its tool has gone quiet.
+    ///
+    /// Not both. A step that has been killed and has not stopped yet is quiet
+    /// for the most ordinary of reasons, and the two together would be saying
+    /// the same thing twice.
     fn quiet_remark(&self) -> Option<Span<'static>> {
-        let quiet = self.state.lock().unwrap().quiet_for(self.started?)?;
+        let started = self.started?;
+        let state = self.state.lock().unwrap();
+        if state.killed {
+            return Some(span("  (stopping)", Style::new().yellow()));
+        }
+        let quiet = state.quiet_for(started)?;
         Some(span(
             format!("  (quiet for {})", fmt_duration(quiet)),
             Style::new().yellow(),
@@ -1473,6 +1578,25 @@ pub struct StepHandle {
     log: Option<Arc<crate::log::LogFile>>,
 }
 
+/// Says that a step is running a process, for as long as it is held: see
+/// [`StepHandle::watch_child`].
+pub struct ChildGuard {
+    state: Arc<Mutex<StepState>>,
+    child: Child,
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        // Only if it is still the process this guard was for. A step that runs
+        // one tool after another has a guard for each, and the one going out
+        // of scope must not forget the one that took its place.
+        if state.child == Some(self.child) {
+            state.child = None;
+        }
+    }
+}
+
 /// What the step's progress line is currently showing.
 ///
 /// The two halves are independent: nothing written to one ever disturbs the
@@ -1492,6 +1616,23 @@ struct StepState {
     history: Vec<PathBuf>,
     /// When the tool last wrote a line. `None` until it writes its first.
     last_output: Option<Instant>,
+    /// The tool the step is running, while it is running one: what a kill
+    /// from the display has to reach. See [`StepHandle::watch_child`].
+    child: Option<Child>,
+    /// That the step has been told to stop, so its line can say so and its
+    /// record can say it was killed rather than however the tool died.
+    killed: bool,
+}
+
+/// A process a step is running, and which one it is.
+///
+/// The pid alone would not do: a pid read here and signalled a moment later
+/// could by then belong to something else entirely. The token says whether the
+/// process signalled is the one that was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Child {
+    pid: u32,
+    token: u64,
 }
 
 impl StepState {
@@ -1567,6 +1708,35 @@ impl StepHandle {
     /// The substep last parsed out of this step's output.
     pub fn substep(&self) -> Option<Progress> {
         self.state.lock().unwrap().banner.clone()
+    }
+
+    /// Whether the step was killed from the display.
+    pub fn was_killed(&self) -> bool {
+        self.state.lock().unwrap().killed
+    }
+
+    /// Say that the step is running the process `pid`, so that a kill from the
+    /// display can reach it, for as long as the returned guard is held.
+    ///
+    /// Dropping the guard says the process is gone. Signalling a step that is
+    /// not running one does nothing, which is the right answer for a step
+    /// doing its work in Rust: there is nothing to kill but the step itself,
+    /// and a thread cannot be stopped from outside.
+    ///
+    /// [`crate::exec`] does this for the commands it runs. A step driving a
+    /// tool some other way should do it itself, or be unkillable.
+    pub fn watch_child(&self, pid: u32) -> ChildGuard {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let child = Child {
+            pid,
+            token: NEXT.fetch_add(1, Ordering::Relaxed) as u64,
+        };
+        let mut state = self.state.lock().unwrap();
+        state.child = Some(child);
+        ChildGuard {
+            state: Arc::clone(&self.state),
+            child,
+        }
     }
 
     /// Say which files the step's tool is writing its output to.
@@ -2249,6 +2419,109 @@ mod tests {
         let narrow = plain(&reporter.summary(10));
         assert_eq!(bar(&narrow), MIN_SUMMARY_BAR_WIDTH);
         assert!(narrow.contains("3/7 steps"), "{narrow}");
+    }
+
+    // -- killing a step -----------------------------------------------------
+
+    /// A step running a process that will not stop on its own.
+    fn sleeping(reporter: &Arc<Reporter>) -> (StepHandle, std::process::Child, ChildGuard) {
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn");
+        let handle = reporter.start(0, None);
+        let guard = handle.watch_child(child.id());
+        (handle, child, guard)
+    }
+
+    #[test]
+    fn killing_a_step_kills_the_tool_it_is_running() {
+        let reporter = reporter_of(&["one", "two"]);
+        let (handle, mut child, _guard) = sleeping(&reporter);
+
+        let started = Instant::now();
+        assert_eq!(reporter.kill(0), Kill::Sent);
+        // Nothing waits for the tool to die: the step's own thread is already
+        // waiting for that, and is what ends the step when it does.
+        assert!(started.elapsed() < Duration::from_secs(1), "waited for it");
+
+        let status = child.wait().expect("wait");
+        assert!(!status.success(), "{status}");
+        assert!(handle.was_killed());
+    }
+
+    #[test]
+    fn a_killed_steps_line_says_it_was_killed_rather_than_how_the_tool_died() {
+        let reporter = reporter_of(&["one", "two"]);
+        let (handle, mut child, _guard) = sleeping(&reporter);
+        reporter.kill(0);
+        let _ = child.wait();
+
+        // What the tool said on its way out is in the log. The line says the
+        // step did not fail of its own accord.
+        let killed = plain(&reporter.record(&handle, Outcome::Failed, Some("signal 15")));
+        assert!(killed.contains("killed"), "{killed}");
+        assert!(!killed.contains("signal 15"), "{killed}");
+
+        // A step that failed on its own still says why.
+        let other = reporter.start(1, None);
+        let failed = plain(&reporter.record(&other, Outcome::Failed, Some("lvs did not match")));
+        assert!(failed.contains("lvs did not match"), "{failed}");
+        assert!(!failed.contains("killed"), "{failed}");
+    }
+
+    #[test]
+    fn a_step_running_no_tool_of_its_own_says_there_is_nothing_to_kill() {
+        let reporter = reporter_of(&["one", "two"]);
+        let handle = reporter.start(0, None);
+        // Nothing spawned: a step doing its work in Rust. Its own thread
+        // cannot be stopped from outside, and saying so is better than
+        // pretending it was.
+        assert_eq!(reporter.kill(0), Kill::NoTool);
+        assert!(!handle.was_killed());
+
+        // Not a step at all.
+        assert_eq!(reporter.kill(9), Kill::NotRunning);
+    }
+
+    #[test]
+    fn a_step_being_killed_says_so_on_its_line_until_it_stops() {
+        let reporter = reporter_of(&["one", "two"]);
+        let (_handle, mut child, _guard) = sleeping(&reporter);
+
+        // The row the display would draw for it, sharing the step's state.
+        let mut row = row(0);
+        row.state = Arc::clone(&reporter.steps[0].state);
+        let line = |row: &Row| plain(&row.fit(false, 8, "⠹", 200, &[]));
+        assert!(!line(&row).contains("stopping"), "{}", line(&row));
+
+        reporter.kill(0);
+        assert!(line(&row).contains("(stopping)"), "{}", line(&row));
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn a_tool_that_has_gone_is_not_signalled_again() {
+        let reporter = reporter_of(&["one", "two"]);
+        let handle = reporter.start(0, None);
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+
+        // The guard is what says the step is running it, and dropping it says
+        // the process is gone — as `exec` does once it has been waited for.
+        // A pid is reused sooner or later, and killing whatever holds it next
+        // would be a bug worth avoiding.
+        {
+            let _guard = handle.watch_child(pid);
+        }
+        assert_eq!(reporter.kill(0), Kill::NoTool);
+
+        let mut child = child;
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     // -- fitting the width --------------------------------------------------

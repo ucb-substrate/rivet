@@ -62,6 +62,10 @@ pub fn run_logged(
     // The reader threads are not the worker thread, so they cannot look the
     // handle up themselves.
     let handle = progress::current_step();
+    // Held until the child has been waited for, which is what lets the display
+    // kill this step on its own without touching the rest of the run. See
+    // `progress::StepHandle::watch_child`.
+    let _child = handle.as_ref().map(|handle| handle.watch_child(child.id()));
     if let Some(handle) = &handle {
         // Not to show — none of this is shown — but so that someone watching
         // the run can be handed a command to follow these two files while the

@@ -217,7 +217,7 @@ and gone on a very short one:
   ⊘ decoder signoff  blocked by decoder lvs
 
   ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed · ⚠ 3
-  ↑/↓ or j/k move · enter open a step · L run log · drag copies · q cancel the run
+  ↑/↓ or j/k move · enter open a step · x kill it · L run log · q cancel the run
 ```
 
 The list is every step in the run, in the order the run is expected to take
@@ -314,6 +314,18 @@ Because the display owns the whole screen, it can be redrawn from nothing at
 any time: resizing the terminal redraws it, and so does `^L`, for when
 something has written over it — a stray `println!` in flow code lands on the
 alternate screen, and is gone with it.
+
+A single step can be stopped without stopping the run: `x` kills the tool the
+step under the cursor is running, or the one whose page is open. It is asked
+about by name first, because it cannot be taken back. What dies is
+the process the step spawned, not the step itself: its own thread goes on, sees
+the tool exit, and ends the step as it would end any tool that failed, so the
+line reads `✖ decoder par  1.8s  during place_opt_design (3/5)  killed` and the
+steps waiting on it are blocked. Everything else in the run carries on. A tool
+is asked to stop with `SIGTERM` and made to with `SIGKILL` five seconds later
+if it has not, because a Cadence tool that traps a fatal signal can sit in its
+own crash handler instead of dying. A step doing its work in Rust rather than
+in a tool has nothing to kill, and says so.
 
 While the run is going, the display is where it is controlled from. `q` cancels
 the run — after asking, since the answer kills every tool the run has going —

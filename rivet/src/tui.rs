@@ -24,6 +24,12 @@
 //! ([`ExecuteConfig::progress`](crate::ExecuteConfig::progress)), and reports
 //! plainly instead.
 //!
+//! One step can be stopped without stopping the rest: `x` kills the tool the
+//! step under the cursor is running, or the one whose page is open. It is
+//! asked about first, by name, because it cannot be undone —
+//! the step fails, and the steps waiting on it are blocked, exactly as if the
+//! tool had died on its own. See [`crate::progress::Reporter::kill`].
+//!
 //! There are two pages. The list is every step in the run, in the order the run
 //! is expected to take them and staying in it, with a cursor on one of them;
 //! `enter`
@@ -143,7 +149,7 @@ use ratatui::{Frame, Terminal};
 use unicode_width::UnicodeWidthChar;
 
 use crate::clipboard;
-use crate::progress::clean;
+use crate::progress::{clean, Kill};
 
 /// How often the screen is redrawn. The spinners and the elapsed times move on
 /// their own, so this is a frame rate rather than a reaction to events; a key
@@ -297,6 +303,9 @@ pub(crate) trait Paint: Send + Sync {
 
     /// Put the cursor on one step.
     fn select(&self, id: usize);
+
+    /// Stop the tool step `id` is running, leaving the rest of the run going.
+    fn kill(&self, id: usize) -> Kill;
 
     /// Whether the run is over.
     fn done(&self) -> bool;
@@ -724,6 +733,19 @@ enum Action {
     Cancel,
 }
 
+/// A question the hint line is asking, and what the answer does.
+///
+/// Both are destructive and neither can be undone, so both are asked rather
+/// than done: `y` for yes, and anything else is no.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Confirm {
+    /// Cancel the whole run.
+    Run,
+    /// Kill the tool one step is running. Named, because a question about
+    /// something destructive should say what it is about.
+    Kill { id: usize, label: String },
+}
+
 /// A search being typed, which is what the hint line says while it is.
 struct Prompt {
     text: String,
@@ -750,9 +772,8 @@ struct View {
     selected: Option<usize>,
     /// Something to say on the hint line, until the moment it expires.
     flash: Option<(Line<'static>, Instant)>,
-    /// `q` was pressed while the run was going, and the next key decides
-    /// whether the run is cancelled.
-    confirming: bool,
+    /// A question was asked, and the next key answers it.
+    confirming: Option<Confirm>,
     /// Text being selected with the mouse, or just selected.
     selection: Option<Selection>,
     /// A search being typed, which has the keyboard until it is done.
@@ -849,7 +870,6 @@ impl View {
                 // A log that is following its end would go on moving under the
                 // selection, so it is held where it is until the selection is
                 // done with.
-                self.deselect();
                 if let Some(pane) = self.pane() {
                     pane.pin();
                 }
@@ -935,12 +955,13 @@ impl View {
             return Action::None;
         }
 
-        // The answer to "cancel the run?": `y` (or `q` again) does, and any
-        // other key is a no that is otherwise ignored.
-        if self.confirming {
-            self.confirming = false;
-            return match key.code {
-                Char('y') | Char('Y') | Char('q') | Enter => Action::Cancel,
+        // The answer to a question: `y` (or the key that asked it again) is
+        // yes, and any other key is a no that is otherwise ignored.
+        if let Some(asked) = self.confirming.take() {
+            let yes = matches!(key.code, Char('y') | Char('Y') | Enter);
+            return match asked {
+                Confirm::Run if yes || key.code == Char('q') => Action::Cancel,
+                Confirm::Kill { id, .. } if yes || key.code == Char('x') => self.kill(paint, id),
                 _ => Action::None,
             };
         }
@@ -962,7 +983,20 @@ impl View {
             // the way out. Before that, it is a question first.
             Char('q') if paint.done() => return Action::Quit,
             Char('q') => {
-                self.confirming = true;
+                self.confirming = Some(Confirm::Run);
+                return Action::None;
+            }
+            // The step being looked at, killed: on the list that is the one
+            // under the cursor, and on a step's page the step whose page it
+            // is. A question first, like `q`, and for the same reason.
+            Char('x') => {
+                let step = match &self.page {
+                    Page::List => self.selected,
+                    Page::Log(pager) => pager.step,
+                };
+                if let Some(id) = step {
+                    self.ask_to_kill(id, paint);
+                }
                 return Action::None;
             }
             _ => {}
@@ -1015,6 +1049,46 @@ impl View {
                 }
             }
         }
+        Action::None
+    }
+
+    /// Ask whether to kill step `id`, which is the only way it is ever done.
+    ///
+    /// A step that is not running has no tool to kill, and is said so at once
+    /// rather than asked about.
+    fn ask_to_kill(&mut self, id: usize, paint: &dyn Paint) {
+        let Some(detail) = paint.detail(id, usize::MAX) else {
+            return;
+        };
+        if !detail.running {
+            self.flash(
+                Line::from(span(
+                    format!("  {} is not running", detail.label),
+                    Style::new().yellow(),
+                )),
+                FLASH_FOR,
+            );
+            return;
+        }
+        self.confirming = Some(Confirm::Kill {
+            id,
+            label: detail.label,
+        });
+    }
+
+    /// Kill the step, and say what came of it.
+    fn kill(&mut self, paint: &dyn Paint, id: usize) -> Action {
+        let said = match paint.kill(id) {
+            Kill::Sent => span("  killing it", Style::new().yellow()),
+            // A step doing its own work in Rust, with no tool to signal. The
+            // run can be cancelled, or the step left to finish.
+            Kill::NoTool => span(
+                "  nothing to kill: the step is not running a tool of its own",
+                Style::new().yellow(),
+            ),
+            Kill::NotRunning => span("  it is not running", Style::new().yellow()),
+        };
+        self.flash(Line::from(said), FLASH_FOR);
         Action::None
     }
 
@@ -1102,8 +1176,12 @@ impl View {
     /// The bottom line: the question being asked, what was just done, or what
     /// the keys do.
     fn hint(&mut self, done: bool, width: usize) -> Line<'static> {
-        if self.confirming {
-            return Line::from(span(confirm_text(width), Style::new().yellow().bold()));
+        if let Some(asked) = &self.confirming {
+            let text = match asked {
+                Confirm::Run => confirm_text(width),
+                Confirm::Kill { label, .. } => kill_text(label, width),
+            };
+            return Line::from(span(text, Style::new().yellow().bold()));
         }
         if let Some((line, until)) = &self.flash {
             if Instant::now() < *until {
@@ -1337,24 +1415,24 @@ fn hint_text(page: Hint, done: bool, width: usize) -> String {
     let tiers: Vec<String> = match page {
         Hint::List => vec![
             format!(
-                "  ↑/↓ or wheel move · enter open a step · L run log · drag copies · \
-                 y copy a less command · {quit}"
+                "  ↑/↓ or wheel move · enter open a step · x kill it · L run log · \
+                 drag copies · {quit}"
             ),
             format!(
-                "  ↑/↓/wheel move · enter open · L run log · drag copies · y copy · {quit_short}"
+                "  ↑/↓/wheel move · enter open · x kill · L run log · drag copies · {quit_short}"
             ),
-            format!("  ↑/↓/wheel · enter · L log · drag copies · y · {quit_short}"),
+            format!("  ↑/↓/wheel · enter · x kill · L log · drag copies · {quit_short}"),
             "  ↑/↓ · enter · drag copies · y · q".to_string(),
             "  ↑/↓ · enter · y · q".to_string(),
         ],
         Hint::Step => vec![
             format!(
                 "  esc back · ↑/↓ or wheel scroll · / search · G follow · tab next file · \
-                 L run log · drag copies · y copy a less command · {quit}"
+                 x kill the step · L run log · drag copies · {quit}"
             ),
             format!(
-                "  esc back · ↑/↓ or wheel · / search · G follow · tab file · L run log · \
-                 drag copies · y copy · {quit_short}"
+                "  esc back · ↑/↓ or wheel · / search · G follow · tab file · x kill · \
+                 L run log · drag copies · {quit_short}"
             ),
             format!(
                 "  esc back · ↑/↓/wheel · / search · G follow · tab file · drag copies · {quit_short}"
@@ -1384,6 +1462,21 @@ fn hint_text(page: Hint, done: bool, width: usize) -> String {
         .or_else(|| tiers.last())
         .cloned()
         .unwrap_or_default()
+}
+
+/// The question `x` asks about a step, at whatever length fits.
+fn kill_text(label: &str, width: usize) -> String {
+    let tiers = [
+        format!("  kill {label}? this kills the tool it is running, and the steps waiting on it are blocked · y kills · any other key keeps it"),
+        format!("  kill {label}? the steps waiting on it are blocked · y kills · any other key keeps it"),
+        format!("  kill {label}? y kills · any other key keeps it"),
+        format!("  kill {label}? y/n"),
+    ];
+    tiers
+        .iter()
+        .find(|tier| columns(tier) <= width)
+        .unwrap_or(&tiers[3])
+        .to_string()
 }
 
 /// The question `q` asks while the run is going, at whatever length fits.
@@ -2774,7 +2867,7 @@ fn plain(line: &Line) -> String {
 // ---------------------------------------------------------------------------
 
 /// Signals and terminal modes, which only unix has.
-mod signals {
+pub(crate) mod signals {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
@@ -2875,6 +2968,25 @@ mod signals {
     pub(super) fn interrupt_run(interrupted: &AtomicBool) {
         use std::sync::atomic::Ordering;
         interrupted.store(true, Ordering::SeqCst);
+    }
+
+    /// Ask one process to stop, or make it: `SIGTERM` asks, `SIGKILL` does not.
+    ///
+    /// `false` if it could not be signalled at all, which for a process that
+    /// was running a moment ago means it has since exited.
+    #[cfg(unix)]
+    pub(crate) fn signal_process(pid: u32, hard: bool) -> bool {
+        use rustix::process::{Pid, Signal};
+        let signal = if hard { Signal::Kill } else { Signal::Term };
+        i32::try_from(pid)
+            .ok()
+            .and_then(Pid::from_raw)
+            .is_some_and(|pid| rustix::process::kill_process(pid, signal).is_ok())
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn signal_process(_pid: u32, _hard: bool) -> bool {
+        false
     }
 
     /// Stop taking an interest, now that the run has the terminal no longer.
@@ -3413,7 +3525,7 @@ mod tests {
             page.key(press(KeyCode::Char(c)), &paint);
         }
         assert_eq!(page.prompt.as_ref().unwrap().text, "q9j");
-        assert!(!page.confirming, "asked to cancel the run");
+        assert!(page.confirming.is_none(), "asked to cancel the run");
         assert_eq!(run_rows(&mut page), ["97", "98", "99"]);
         assert!(plain(&page.hint(true, 80)).starts_with("  /q9j"));
 
@@ -3508,9 +3620,25 @@ mod tests {
 
     /// A run of one finished step, which remembers where it was asked to put
     /// its cursor.
-    #[derive(Default)]
     struct OneStep {
         moves: Mutex<Vec<Motion>>,
+        /// The steps the display asked to kill, in order.
+        killed: Mutex<Vec<usize>>,
+        /// The step the display last put its cursor on by hand.
+        selected: Mutex<Option<usize>>,
+        /// Whether the step is running, which is whether it can be killed.
+        running: AtomicBool,
+    }
+
+    impl Default for OneStep {
+        fn default() -> Self {
+            Self {
+                moves: Mutex::new(Vec::new()),
+                killed: Mutex::new(Vec::new()),
+                selected: Mutex::new(None),
+                running: AtomicBool::new(true),
+            }
+        }
     }
 
     impl Paint for OneStep {
@@ -3526,15 +3654,28 @@ mod tests {
                 ..Screen::default()
             }
         }
-        fn detail(&self, _id: usize, _width: usize) -> Option<Detail> {
-            None
+        fn detail(&self, id: usize, _width: usize) -> Option<Detail> {
+            Some(Detail {
+                label: format!("step {id}"),
+                line: Line::from(format!("step {id}")),
+                files: Vec::new(),
+                follow: Vec::new(),
+                running: self.running.load(Ordering::SeqCst),
+                pending: false,
+            })
         }
         fn move_cursor(&self, motion: Motion) {
             self.moves.lock().unwrap().push(motion);
         }
-        fn select(&self, _id: usize) {}
+        fn select(&self, id: usize) {
+            *self.selected.lock().unwrap() = Some(id);
+        }
         fn done(&self) -> bool {
             true
+        }
+        fn kill(&self, id: usize) -> Kill {
+            self.killed.lock().unwrap().push(id);
+            Kill::Sent
         }
         fn detach(&self) -> Vec<Line<'static>> {
             Vec::new()
@@ -3861,6 +4002,67 @@ mod tests {
         // Nothing to read — a run that was told not to log.
         pane.sync(None);
         assert!(pane.log.is_none());
+    }
+
+    // -- killing a step -----------------------------------------------------
+
+    #[test]
+    fn killing_a_step_is_asked_about_first_and_only_then_done() {
+        let paint = OneStep::default();
+        let mut view = View {
+            selected: Some(7),
+            ..View::default()
+        };
+
+        // `x` asks, naming the step, and kills nothing yet.
+        view.key(press(KeyCode::Char('x')), &paint);
+        assert!(matches!(view.confirming, Some(Confirm::Kill { id: 7, .. })));
+        assert!(paint.killed.lock().unwrap().is_empty(), "killed unasked");
+        let asked = plain(&view.hint(true, 200));
+        assert!(asked.contains("kill step 7?"), "{asked}");
+
+        // Any other key is a no, and the question goes away.
+        view.key(press(KeyCode::Char('j')), &paint);
+        assert!(view.confirming.is_none());
+        assert!(paint.killed.lock().unwrap().is_empty(), "killed by a no");
+
+        // `y` is a yes.
+        view.key(press(KeyCode::Char('x')), &paint);
+        view.key(press(KeyCode::Char('y')), &paint);
+        assert!(view.confirming.is_none());
+        assert_eq!(*paint.killed.lock().unwrap(), [7]);
+        // And it says what it did, where the question was.
+        assert!(plain(&view.hint(true, 200)).contains("killing it"));
+    }
+
+    #[test]
+    fn a_step_that_is_not_running_is_not_asked_about() {
+        let paint = OneStep::default();
+        paint.running.store(false, Ordering::SeqCst);
+        let mut view = View {
+            selected: Some(7),
+            ..View::default()
+        };
+
+        view.key(press(KeyCode::Char('x')), &paint);
+        assert!(view.confirming.is_none(), "asked about a finished step");
+        assert!(paint.killed.lock().unwrap().is_empty());
+        assert!(plain(&view.hint(true, 200)).contains("is not running"));
+    }
+
+    #[test]
+    fn a_steps_page_kills_the_step_whose_page_it_is() {
+        let paint = OneStep::default();
+        let mut page = page(100);
+        page.key(press(KeyCode::Char('x')), &paint);
+        assert!(matches!(page.confirming, Some(Confirm::Kill { id: 7, .. })));
+        page.key(press(KeyCode::Enter), &paint);
+        assert_eq!(*paint.killed.lock().unwrap(), [7]);
+
+        // The run's own page is nobody's step, so there is nothing to kill.
+        let mut run = run_page(100);
+        run.key(press(KeyCode::Char('x')), &paint);
+        assert!(run.confirming.is_none());
     }
 
     // -- selecting ----------------------------------------------------------

@@ -185,6 +185,11 @@ const HANG: usize = 4;
 /// Most rows a step's line may take on its own page.
 const MAX_STEP_ROWS: usize = 6;
 
+/// Narrowest a held tool's attach command is squeezed to before what is said
+/// beside it gives way instead. The command is the point of that row; the
+/// remark beside it is said on the step's own line too.
+const MIN_ATTACH_WIDTH: usize = 24;
+
 /// Rows a log scrolls, or steps the cursor moves, per notch of the wheel.
 const WHEEL: usize = 3;
 
@@ -281,6 +286,21 @@ pub(crate) struct Detail {
     pub running: bool,
     /// Whether the step has yet to start, which is why it has no files.
     pub pending: bool,
+    /// The tool the step failed with and is still holding at its own prompt,
+    /// if it is holding one; see [`crate::hold`].
+    pub holding: Option<Holding>,
+}
+
+/// A tool held at its own prompt after the step running it failed, as its page
+/// says it.
+pub(crate) struct Holding {
+    /// What the tool is, since what is worth attaching to is `innovus` rather
+    /// than the step that was driving it.
+    pub tool: String,
+    pub pid: u32,
+    /// The command that attaches a terminal to it, said in full: it is as much
+    /// there to be read off the screen and typed elsewhere as to be copied.
+    pub attach: String,
 }
 
 /// What the display draws, and what it does when a key is typed.
@@ -652,7 +672,7 @@ fn run_loop(stage: &Stage, painter: &Weak<dyn Paint>) {
                         Action::Redraw => {
                             let _ = stage.hold().clear();
                         }
-                        Action::Copy(files) => view.copy(stage, &files),
+                        Action::Copy(command) => view.copy(stage, &command),
                         Action::Quit => {
                             let record = paint.detach();
                             stage.close(record);
@@ -725,8 +745,9 @@ enum Action {
     None,
     /// Draw everything again from nothing.
     Redraw,
-    /// Copy a command to read these files.
-    Copy(Vec<PathBuf>),
+    /// Copy this command to the clipboard: one to read a step's logs, or one
+    /// to attach a terminal to a tool it is holding.
+    Copy(String),
     /// Give the screen back, the run being over.
     Quit,
     /// Cancel the run, confirmed.
@@ -741,9 +762,19 @@ enum Action {
 enum Confirm {
     /// Cancel the whole run.
     Run,
-    /// Kill the tool one step is running. Named, because a question about
-    /// something destructive should say what it is about.
-    Kill { id: usize, label: String },
+    /// Quit a finished run's display while it is still holding a tool, which
+    /// quitting lets go of; see [`crate::hold`].
+    Quit,
+    /// Kill the tool one step is running, or let go of one it is holding at
+    /// its prompt after failing. Named, because a question about something
+    /// destructive should say what it is about.
+    Kill {
+        id: usize,
+        label: String,
+        /// What is being ended is a session someone may be attached to, which
+        /// is a different question with a different answer.
+        held: Option<String>,
+    },
 }
 
 /// A search being typed, which is what the hint line says while it is.
@@ -962,6 +993,7 @@ impl View {
             return match asked {
                 Confirm::Run if yes || key.code == Char('q') => Action::Cancel,
                 Confirm::Kill { id, .. } if yes || key.code == Char('x') => self.kill(paint, id),
+                Confirm::Quit if yes || key.code == Char('q') => Action::Quit,
                 _ => Action::None,
             };
         }
@@ -980,8 +1012,14 @@ impl View {
                 return Action::None;
             }
             // Once the run is over there is nothing to cancel, and `q` is just
-            // the way out. Before that, it is a question first.
-            Char('q') if paint.done() => return Action::Quit,
+            // the way out — unless a tool is still being held for debugging,
+            // which quitting lets go of, and which somebody may be in the
+            // middle of using. Before that, it is a question first.
+            Char('q') if paint.done() && crate::hold::live().is_empty() => return Action::Quit,
+            Char('q') if paint.done() => {
+                self.confirming = Some(Confirm::Quit);
+                return Action::None;
+            }
             Char('q') => {
                 self.confirming = Some(Confirm::Run);
                 return Action::None;
@@ -990,14 +1028,31 @@ impl View {
             // under the cursor, and on a step's page the step whose page it
             // is. A question first, like `q`, and for the same reason.
             Char('x') => {
-                let step = match &self.page {
-                    Page::List => self.selected,
-                    Page::Log(pager) => pager.step,
-                };
-                if let Some(id) = step {
+                if let Some(id) = self.step() {
                     self.ask_to_kill(id, paint);
                 }
                 return Action::None;
+            }
+            // The tool a failed step is holding at its own prompt, attached to
+            // in a terminal of your own: the display owns this one, so what
+            // this hands over is the command that does it. See `crate::hold`.
+            Char('a') => {
+                let Some(id) = self.step() else {
+                    return Action::None;
+                };
+                let holding = paint
+                    .detail(id, usize::MAX)
+                    .and_then(|detail| detail.holding);
+                return match holding {
+                    Some(held) => Action::Copy(held.attach),
+                    None => {
+                        self.flash(
+                            Line::from(span("  nothing held to attach to", Style::new().yellow())),
+                            FLASH_FOR,
+                        );
+                        Action::None
+                    }
+                };
             }
             _ => {}
         }
@@ -1025,7 +1080,7 @@ impl View {
                             .and_then(|id| paint.detail(id, usize::MAX))
                             .map(|detail| detail.follow)
                             .unwrap_or_default();
-                        return Action::Copy(files);
+                        return Action::Copy(view_command(&files));
                     }
                     _ => {}
                 }
@@ -1044,12 +1099,21 @@ impl View {
                     }
                     Tab | Char(']') => pager.next_file(1),
                     BackTab | Char('[') => pager.next_file(-1),
-                    Char('y') => return Action::Copy(pager.pane.files()),
+                    Char('y') => return Action::Copy(view_command(&pager.pane.files())),
                     code => self.prompt = log_key(code, ctrl, page, &mut pager.pane),
                 }
             }
         }
         Action::None
+    }
+
+    /// The step the keys are about: the one under the cursor on the list, or
+    /// the one whose page is open.
+    fn step(&self) -> Option<usize> {
+        match &self.page {
+            Page::List => self.selected,
+            Page::Log(pager) => pager.step,
+        }
     }
 
     /// Ask whether to kill step `id`, which is the only way it is ever done.
@@ -1060,7 +1124,10 @@ impl View {
         let Some(detail) = paint.detail(id, usize::MAX) else {
             return;
         };
-        if !detail.running {
+        // A step that has finished holding a tool at its prompt has one thing
+        // left to stop, and this is the key that stops it.
+        let held = detail.holding.as_ref().map(|held| held.tool.clone());
+        if !detail.running && held.is_none() {
             self.flash(
                 Line::from(span(
                     format!("  {} is not running", detail.label),
@@ -1073,6 +1140,12 @@ impl View {
         self.confirming = Some(Confirm::Kill {
             id,
             label: detail.label,
+            // The tool is only what is asked about when there is nothing
+            // running to kill instead.
+            held: match detail.running {
+                true => None,
+                false => held,
+            },
         });
     }
 
@@ -1080,6 +1153,10 @@ impl View {
     fn kill(&mut self, paint: &dyn Paint, id: usize) -> Action {
         let said = match paint.kill(id) {
             Kill::Sent => span("  killing it", Style::new().yellow()),
+            Kill::LetGo => span(
+                "  letting the tool it was holding go",
+                Style::new().yellow(),
+            ),
             // A step doing its own work in Rust, with no tool to signal. The
             // run can be cancelled, or the step left to finish.
             Kill::NoTool => span(
@@ -1092,21 +1169,22 @@ impl View {
         Action::None
     }
 
-    /// Copy a command for reading `files` in full.
+    /// Put a command on the clipboard, for a terminal of your own.
     ///
-    /// This screen shows the end of a log as it grows. What someone wants
-    /// beyond that is the whole of it, in a terminal of their own, and this
-    /// hands over the command for it.
-    fn copy(&mut self, stage: &Stage, files: &[PathBuf]) {
-        if files.is_empty() {
+    /// This screen shows the end of a log as it grows; what someone wants
+    /// beyond that is the whole of it, or a prompt on the tool still sitting
+    /// behind a failure. Either way what is handed over is the command, and an
+    /// empty one is a way of saying there is nothing to hand over yet.
+    fn copy(&mut self, stage: &Stage, command: &str) {
+        if command.is_empty() {
             self.flash(
                 Line::from(span("  nothing to read yet", Style::new().yellow())),
                 FLASH_FOR,
             );
             return;
         }
-        let command = view_command(files);
-        tracing::info!(%command, "copied a command to read the log");
+        let command = command.to_string();
+        tracing::info!(%command, "copied a command");
 
         // Held still while it writes: asking the terminal to copy is an escape
         // sequence on the same stream the display draws on.
@@ -1179,7 +1257,8 @@ impl View {
         if let Some(asked) = &self.confirming {
             let text = match asked {
                 Confirm::Run => confirm_text(width),
-                Confirm::Kill { label, .. } => kill_text(label, width),
+                Confirm::Quit => quit_text(crate::hold::live().len(), width),
+                Confirm::Kill { label, held, .. } => kill_text(label, held.as_deref(), width),
             };
             return Line::from(span(text, Style::new().yellow().bold()));
         }
@@ -1284,14 +1363,26 @@ impl View {
         // The step's line in full, wrapped, however long a failure's message
         // made it — within reason, so the log keeps most of the screen.
         let width = frame.area().width as usize;
-        let step_rows: Vec<Line<'static>> = detail
+        // The tool the step failed with, if it is still sitting at its own
+        // prompt: a row of its own under the step's line, because the command
+        // that attaches a terminal to it is the whole point of holding it and
+        // is no use half-said. Kept whatever the failure message does to the
+        // rows above it.
+        let held: Vec<Line<'static>> = detail
+            .as_ref()
+            .and_then(|detail| detail.as_ref())
+            .and_then(|detail| detail.holding.as_ref())
+            .map(|held| vec![holding_line(held, width)])
+            .unwrap_or_default();
+        let mut step_rows: Vec<Line<'static>> = detail
             .as_ref()
             .and_then(|detail| detail.as_ref())
             .map(|detail| wrap_line(&detail.line, width, HANG))
             .unwrap_or_default()
             .into_iter()
-            .take(MAX_STEP_ROWS)
+            .take(MAX_STEP_ROWS.saturating_sub(held.len()))
             .collect();
+        step_rows.extend(held);
         // A step's page keeps the row even when the step has gone, to say so.
         let step_height = match detail.is_some() {
             true => step_rows.len().max(1) as u16,
@@ -1415,6 +1506,10 @@ fn hint_text(page: Hint, done: bool, width: usize) -> String {
     let tiers: Vec<String> = match page {
         Hint::List => vec![
             format!(
+                "  ↑/↓ or wheel move · enter open a step · x kill it · a attach a held tool · \
+                 L run log · drag copies · {quit}"
+            ),
+            format!(
                 "  ↑/↓ or wheel move · enter open a step · x kill it · L run log · \
                  drag copies · {quit}"
             ),
@@ -1426,6 +1521,10 @@ fn hint_text(page: Hint, done: bool, width: usize) -> String {
             "  ↑/↓ · enter · y · q".to_string(),
         ],
         Hint::Step => vec![
+            format!(
+                "  esc back · ↑/↓ or wheel scroll · / search · G follow · tab next file · \
+                 x kill the step · a attach a held tool · L run log · drag copies · {quit}"
+            ),
             format!(
                 "  esc back · ↑/↓ or wheel scroll · / search · G follow · tab next file · \
                  x kill the step · L run log · drag copies · {quit}"
@@ -1465,17 +1564,79 @@ fn hint_text(page: Hint, done: bool, width: usize) -> String {
 }
 
 /// The question `x` asks about a step, at whatever length fits.
-fn kill_text(label: &str, width: usize) -> String {
-    let tiers = [
-        format!("  kill {label}? this kills the tool it is running, and the steps waiting on it are blocked · y kills · any other key keeps it"),
-        format!("  kill {label}? the steps waiting on it are blocked · y kills · any other key keeps it"),
-        format!("  kill {label}? y kills · any other key keeps it"),
-        format!("  kill {label}? y/n"),
-    ];
+///
+/// `held` is the tool the step is holding at its own prompt, when that is what
+/// `x` would end: a different thing to be asked about, since the step is over
+/// and somebody may have a terminal attached to what is being ended.
+fn kill_text(label: &str, held: Option<&str>, width: usize) -> String {
+    let tiers = match held {
+        Some(tool) => [
+            format!("  let go of the {tool} {label} is holding? it exits, and any terminal attached to it is cut off · y lets it go · any other key keeps it"),
+            format!("  let go of the {tool} {label} is holding? it exits · y lets it go · any other key keeps it"),
+            format!("  let the {tool} go? y lets it go · any other key keeps it"),
+            format!("  let the {tool} go? y/n"),
+        ],
+        None => [
+            format!("  kill {label}? this kills the tool it is running, and the steps waiting on it are blocked · y kills · any other key keeps it"),
+            format!("  kill {label}? the steps waiting on it are blocked · y kills · any other key keeps it"),
+            format!("  kill {label}? y kills · any other key keeps it"),
+            format!("  kill {label}? y/n"),
+        ],
+    };
     tiers
         .iter()
         .find(|tier| columns(tier) <= width)
         .unwrap_or(&tiers[3])
+        .to_string()
+}
+
+/// The row under a held step's line: what is being held, and the command that
+/// attaches a terminal to it.
+///
+/// The command in full, cut from the left if it has to be, so that the name of
+/// the script survives: this is as much there to be read off the screen and
+/// typed into another terminal — over ssh, with no clipboard between the two —
+/// as it is to be copied with `a`.
+fn holding_line(held: &Holding, width: usize) -> Line<'static> {
+    // Said at whatever length fits, as the hint line is, and the command is
+    // what room is kept for: what is being held is on the step's own line
+    // above this one as well, and the command is nowhere else.
+    let tiers = [
+        format!(
+            "  {} held at its prompt (pid {}) · a copies ",
+            held.tool, held.pid
+        ),
+        format!("  {} held · a copies ", held.tool),
+        "  a copies ".to_string(),
+    ];
+    let said = tiers
+        .iter()
+        .find(|said| columns(said) + MIN_ATTACH_WIDTH <= width)
+        .unwrap_or(&tiers[2])
+        .clone();
+    let room = width.saturating_sub(columns(&said));
+    Line::from(vec![
+        span(said, Style::new().yellow()),
+        span(shorten_left(&held.attach, room), Style::new().dim()),
+    ])
+}
+
+/// The question `q` asks about a finished run that is still holding a tool, at
+/// whatever length fits.
+fn quit_text(held: usize, width: usize) -> String {
+    let tools = match held {
+        1 => "a tool is".to_string(),
+        held => format!("{held} tools are"),
+    };
+    let tiers = [
+        format!("  {tools} still held at a prompt for debugging; quitting lets them go · y quits · any other key stays"),
+        format!("  {tools} still held; quitting lets them go · y quits · any other key stays"),
+        format!("  quit and let the held {} go? y/n", if held == 1 { "tool" } else { "tools" }),
+    ];
+    tiers
+        .iter()
+        .find(|tier| columns(tier) <= width)
+        .unwrap_or(&tiers[2])
         .to_string()
 }
 
@@ -2772,14 +2933,17 @@ fn identity(_: &Metadata) -> (u64, u64) {
 /// The whole log, rather than a tail of it: the tail is what this screen
 /// already shows. Given several files, `less` opens the first and moves to the
 /// next with `:n`.
-fn view_command(files: &[PathBuf]) -> String {
+pub(crate) fn view_command(files: &[PathBuf]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
     let files: Vec<String> = files.iter().map(|file| quote(&full_path(file))).collect();
     format!("less {}", files.join(" "))
 }
 
 /// A path as it has to be to be pasted somewhere else, which is not necessarily
 /// a shell sitting in the directory this run was started from.
-fn full_path(path: &Path) -> String {
+pub(crate) fn full_path(path: &Path) -> String {
     fs::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .display()
@@ -2788,7 +2952,7 @@ fn full_path(path: &Path) -> String {
 
 /// Quote a path for a shell: a step's own log is named after the step, and step
 /// labels have spaces in them.
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     let plain = !text.is_empty()
         && text
             .chars()
@@ -3628,6 +3792,9 @@ mod tests {
         selected: Mutex<Option<usize>>,
         /// Whether the step is running, which is whether it can be killed.
         running: AtomicBool,
+        /// The tool the step is holding at its own prompt, if any: what `a`
+        /// has to offer, and the other thing `x` can end.
+        holding: Mutex<Option<String>>,
     }
 
     impl Default for OneStep {
@@ -3637,6 +3804,7 @@ mod tests {
                 killed: Mutex::new(Vec::new()),
                 selected: Mutex::new(None),
                 running: AtomicBool::new(true),
+                holding: Mutex::new(None),
             }
         }
     }
@@ -3662,6 +3830,11 @@ mod tests {
                 follow: Vec::new(),
                 running: self.running.load(Ordering::SeqCst),
                 pending: false,
+                holding: self.holding.lock().unwrap().clone().map(|tool| Holding {
+                    tool,
+                    pid: 1234,
+                    attach: "sh /build/decoder.par.attach.sh".to_string(),
+                }),
             })
         }
         fn move_cursor(&self, motion: Motion) {
@@ -3675,7 +3848,13 @@ mod tests {
         }
         fn kill(&self, id: usize) -> Kill {
             self.killed.lock().unwrap().push(id);
-            Kill::Sent
+            match (
+                self.running.load(Ordering::SeqCst),
+                self.holding.lock().unwrap().is_some(),
+            ) {
+                (false, true) => Kill::LetGo,
+                _ => Kill::Sent,
+            }
         }
         fn detach(&self) -> Vec<Line<'static>> {
             Vec::new()
@@ -3946,7 +4125,7 @@ mod tests {
 
         // `y` offers the file it is reading, so it can be read in full
         // somewhere else.
-        let Action::Copy(files) = page.key(press(KeyCode::Char('y')), &paint) else {
+        let Action::Copy(command) = page.key(press(KeyCode::Char('y')), &paint) else {
             panic!("y copies");
         };
         let path = pager(&mut page)
@@ -3957,7 +4136,7 @@ mod tests {
             .source
             .path
             .clone();
-        assert_eq!(files, [path]);
+        assert_eq!(command, view_command(&[path]));
     }
 
     #[test]
@@ -4063,6 +4242,80 @@ mod tests {
         let mut run = run_page(100);
         run.key(press(KeyCode::Char('x')), &paint);
         assert!(run.confirming.is_none());
+    }
+
+    // -- a held tool --------------------------------------------------------
+
+    /// `a` is how a terminal gets to a tool the display is holding: it hands
+    /// over the command, since the display has the terminal it is on.
+    #[test]
+    fn a_hands_over_the_command_that_attaches_to_a_held_tool() {
+        let paint = OneStep::default();
+        let mut view = View {
+            selected: Some(7),
+            ..View::default()
+        };
+
+        // Nothing held: said, rather than a command that would do nothing.
+        assert!(matches!(
+            view.key(press(KeyCode::Char('a')), &paint),
+            Action::None
+        ));
+        assert!(plain(&view.hint(true, 200)).contains("nothing held"));
+
+        *paint.holding.lock().unwrap() = Some("innovus".to_string());
+        let Action::Copy(command) = view.key(press(KeyCode::Char('a')), &paint) else {
+            panic!("a copies the attach command");
+        };
+        assert_eq!(command, "sh /build/decoder.par.attach.sh");
+
+        // And from the step's own page, which is where its line says it is
+        // being held.
+        let mut page = page(100);
+        let Action::Copy(from_page) = page.key(press(KeyCode::Char('a')), &paint) else {
+            panic!("a copies the attach command");
+        };
+        assert_eq!(from_page, command);
+    }
+
+    /// `x` on a step that has finished holding a tool is about the tool, not
+    /// about a step there is nothing left to kill.
+    #[test]
+    fn x_asks_about_letting_a_held_tool_go_rather_than_killing_a_finished_step() {
+        let paint = OneStep::default();
+        paint.running.store(false, Ordering::SeqCst);
+        *paint.holding.lock().unwrap() = Some("innovus".to_string());
+        let mut view = View {
+            selected: Some(7),
+            ..View::default()
+        };
+
+        view.key(press(KeyCode::Char('x')), &paint);
+        assert!(
+            matches!(view.confirming, Some(Confirm::Kill { id: 7, .. })),
+            "not asked about"
+        );
+        let asked = plain(&view.hint(true, 200));
+        assert!(asked.contains("let go of the innovus"), "{asked}");
+        assert!(!asked.contains("kill"), "{asked}");
+
+        view.key(press(KeyCode::Char('y')), &paint);
+        assert_eq!(*paint.killed.lock().unwrap(), [7]);
+        assert!(plain(&view.hint(true, 200)).contains("letting the tool"));
+    }
+
+    /// Quitting lets go of what the run is holding, so a run still holding
+    /// something asks before it does.
+    #[test]
+    fn quitting_a_finished_run_asks_about_the_tools_it_would_let_go() {
+        assert!(quit_text(1, 200).contains("a tool is still held"));
+        assert!(quit_text(3, 200).contains("3 tools are still held"));
+        // On a narrow terminal it is said shorter, never not at all.
+        for width in [0, 20, 60, 200] {
+            for held in [1, 2] {
+                assert!(quit_text(held, width).contains("held"), "{width}");
+            }
+        }
     }
 
     // -- selecting ----------------------------------------------------------

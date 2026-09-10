@@ -33,10 +33,11 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 tracing-appender = "0.2"
 
 # Both already come with `ratatui`'s crossterm, so neither adds a crate to the
-# build. `rustix` puts back the signal keys that raw mode turns off and sends
-# the interrupt that cancels a run, and `signal-hook` catches the interrupt so
-# the terminal can be handed back before the run ends. See `src/tui.rs`.
+# build. `rustix` puts back the signal keys that raw mode turns off, sends the
+# interrupt that cancels a run and makes the fifo a held tool takes its
+# commands from, and `signal-hook` catches the interrupt so the terminal can be
+# handed back before the run ends. See `src/tui.rs` and `src/hold.rs`.
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "0.38", features = ["termios", "process"] }
+rustix = { version = "0.38", features = ["termios", "process", "fs"] }
 signal-hook = "0.3"
 

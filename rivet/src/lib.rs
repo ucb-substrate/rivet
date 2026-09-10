@@ -10,6 +10,7 @@ pub mod bash;
 mod clipboard;
 pub mod exec;
 pub mod executor;
+pub mod hold;
 pub mod log;
 pub mod progress;
 pub mod rust;

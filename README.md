@@ -325,7 +325,9 @@ steps waiting on it are blocked. Everything else in the run carries on. A tool
 is asked to stop with `SIGTERM` and made to with `SIGKILL` five seconds later
 if it has not, because a Cadence tool that traps a fatal signal can sit in its
 own crash handler instead of dying. A step doing its work in Rust rather than
-in a tool has nothing to kill, and says so.
+in a tool has nothing to kill, and says so. On a step that has already failed
+holding a tool at its own prompt, `x` is what lets that tool go; see [A failed
+tool, held](#a-failed-tool-held).
 
 While the run is going, the display is where it is controlled from. `q` cancels
 the run — after asking, since the answer kills every tool the run has going —
@@ -333,7 +335,8 @@ by sending the same interrupt `^C` would, to the whole process group; the run
 ends as an interrupted one, exit code `130`, with its record so far left in the
 terminal. `^C` itself cancels at once, without asking: it is a signal, not a
 key, so it works whatever the display is doing. Once the run is over, `q`
-simply quits. A run that is not wanted on screen at all is started with the
+simply quits — unless a tool is still being held for debugging, which quitting
+lets go of, and which it asks about first. A run that is not wanted on screen at all is started with the
 display turned off, `ExecuteConfig::progress(false)`, and reports plainly
 instead.
 
@@ -355,6 +358,86 @@ with stderr redirected, falls back to plain one-line-per-event logging on
 stderr.
 
 
+### A failed tool, held
+
+A tool that hits an error in the TCL it was given exits, and takes the design it
+had in memory with it. What is left behind is the log and whatever db was
+written last, which answers most questions and none of the ones worth a session
+of its own: what a `get_db` says about the state the tool was actually in when
+it stopped, what the timing looked like before anything was rerun, which of the
+things that were supposed to be true were not.
+
+So Genus and Innovus are not let go when they fail. Each stays where it
+stopped, at its own prompt, and the step fails on that exactly as it would on a
+tool that exited: the run carries on, the steps waiting on it are blocked, and
+its line says what went wrong — and that the tool is still there.
+
+```text
+  ✖ decoder par  2m14s  during route_design (2/5)  innovus failed and is held at its own
+    prompt (pid 41982); attach with sh build/decoder/par/decoder.par.attach.sh  (innovus held)
+```
+
+Its page says how to reach it, on a row of its own under the step's line, and
+`a` copies the command:
+
+```text
+ decoder par  build/decoder/par/decoder.par.out ────────────────────────────────
+rivet> get_db current_design
+rivet= decoder
+rivet> report_timing -late
+ ...
+──────────────────────────────────── 1/4 files (tab)  line 84,201 of 84,201
+  ✖ decoder par  2m14s  during route_design (2/5)  innovus failed and is held …
+  innovus held at its prompt (pid 41982) · a copies sh build/decoder/par/decoder.par.attach.sh
+  ━━━━━━╸───────────────── 4/7 steps · 12m08s · 1 blocked · 1 failed · 1 held
+  esc back · ↑/↓ scroll · / search · G follow · tab file · a attach a held tool · q quit
+```
+
+The script is run in a terminal of your own, because the display owns this one.
+What you type in it goes to the tool a line at a time, as commands in its own
+language:
+
+```text
+$ sh build/decoder/par/decoder.par.attach.sh
+attached to innovus (pid 41982), held where decoder par failed
+type its commands · ^D leaves it held · exit lets it go
+report_timing -late
+rivet> report_timing -late
+ ...
+```
+
+What the tool says comes back through the log it is still writing, which the
+script follows: the command, what it returned and the tool's own output arrive
+in the order they happened, and the step's page in the display is reading the
+same file, so the conversation is on both screens. `^D` leaves the tool held, to
+attach to again, from as many terminals as you like; `exit` lets it go, and it
+exits as the failure it was.
+
+Nothing in rivet can hold a tool. All it can do is offer somewhere to be held
+and notice a tool that takes the offer: it makes a fifo beside the tool's logs
+and names it in `RIVET_CONTROL`, and the tool, on an error, prints
+`<<rivet:held>>` and then reads commands from that fifo until it reads `exit`.
+`cadence::hold_tcl` writes exactly that loop into the TCL Genus and Innovus are
+given, and does nothing at all when `RIVET_CONTROL` is unset, so the same script
+run by hand fails as it always did. A tool plugin of its own can do the same:
+`exec::run_held` in place of `exec::run_logged`, and `rivet::hold` for the
+protocol.
+
+A held tool is a tool that has not exited: it keeps its licence and its memory
+for as long as it is held. That is worth it for someone who is going to attach
+to it and not otherwise, so holding happens only when the run has a live
+display to say it on — `RIVET_HOLD=1` holds anyway, for a run being watched some
+other way, and `RIVET_HOLD=0` never does. How many tools are held is on the
+summary line, for the same reason the step's own line says it.
+
+`x` on a held step lets its tool go — asked about first, since a terminal may be
+attached to what it ends — and everything still held is let go when the display
+is dismissed, which is why `q` asks then too. That last part is not tidiness.
+Nothing but this process is draining the tool's output, so a tool left running
+once rivet has gone would fill its pipe and stop dead there, holding a licence,
+with nobody left to notice.
+
+
 ## Logging
 
 The display owns stderr while a flow runs, so a log line printed to a stream
@@ -374,7 +457,12 @@ build/
     decoder.par.out          raw innovus stdout
     decoder.par.err          raw innovus stderr
     decoder par.rivet.log    what this step logged, and nothing else
+    decoder.par.control      the fifo a held tool takes commands from
+    decoder.par.attach.sh    the script that attaches a terminal to it
 ```
+
+The last two are there only while a tool is being held; see [A failed tool,
+held](#a-failed-tool-held).
 
 `rivet.log` goes in `ExecuteConfig::log_dir` (the current directory by default)
 and is appended to, with a blank line between runs. A step's own log goes

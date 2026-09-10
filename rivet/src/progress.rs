@@ -78,7 +78,8 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-use crate::tui::{About, Detail, Motion, Paint, Screen, StepLine, Tui};
+use crate::hold::Session;
+use crate::tui::{About, Detail, Holding, Motion, Paint, Screen, StepLine, Tui};
 
 /// Longest step label rendered before it is truncated.
 const MAX_LABEL_WIDTH: usize = 44;
@@ -140,6 +141,9 @@ pub enum Outcome {
 pub(crate) enum Kill {
     /// The tool has been told to stop, and will be made to if it does not.
     Sent,
+    /// The step had already failed, and the tool it was holding at its own
+    /// prompt for debugging has been let go. See [`crate::hold`].
+    LetGo,
     /// The step is running, but not a tool of its own: there is nothing to
     /// signal, and its own thread cannot be stopped from outside.
     NoTool,
@@ -359,6 +363,10 @@ impl Reporter {
     /// steps waiting on it are blocked from then on, as they would be by any
     /// other failure.
     ///
+    /// A step that has already failed holding a tool at its prompt has that
+    /// tool stopped instead: it is the one thing left about a finished step
+    /// that can be. See [`crate::hold`].
+    ///
     /// Nothing here waits: the tool is signalled, and the step ends when it
     /// notices.
     pub(crate) fn kill(&self, id: usize) -> Kill {
@@ -375,17 +383,34 @@ impl Reporter {
                     .any(|row| row.id == id && row.group() == Group::Running)
             })
             .unwrap_or(true);
-        if !running {
-            return Kill::NotRunning;
-        }
 
-        let child = {
+        // Taken out of the lock, both of them: signalling a tool is not
+        // something to do holding a lock the display wants every frame.
+        let (child, held) = {
             let mut state = entry.state.lock().unwrap();
-            let Some(child) = state.child else {
-                return Kill::NoTool;
+            // Only a running step's tool is killed by marking the step, and
+            // only if it has one. A held session is not the step running.
+            let child = match running {
+                true => state.child,
+                false => None,
             };
-            state.killed = true;
-            child
+            if child.is_some() {
+                state.killed = true;
+            }
+            (child, state.held.clone())
+        };
+
+        let Some(child) = child else {
+            // The tool the step ran and did not let go of, if it is still
+            // there: `x` on a failed step is how a session is ended.
+            if let Some(session) = held.filter(|session| session.alive()) {
+                session.end();
+                return Kill::LetGo;
+            }
+            return match running {
+                true => Kill::NoTool,
+                false => Kill::NotRunning,
+            };
         };
 
         tracing::warn!(step = %entry.label, pid = child.pid, "killing the step's tool");
@@ -609,6 +634,23 @@ impl Reporter {
         if let Some(tui) = tui {
             tui.wait();
         }
+
+        // The display is down, so there is nobody left watching a held tool —
+        // and nothing left draining its output, which is what would happen to
+        // it. Waited for, and said, because letting a large tool go takes a
+        // few seconds and silence would look like a hang. See `crate::hold`.
+        for session in crate::hold::live() {
+            self.print(Line::from(span(
+                format!(
+                    "  letting the {} {} was holding go",
+                    session.tool(),
+                    session.label()
+                ),
+                Style::new().yellow(),
+            )));
+        }
+        crate::hold::end_all();
+
         if interrupted {
             std::process::exit(crate::tui::INTERRUPTED);
         }
@@ -713,6 +755,13 @@ impl Reporter {
                 format!(" · {} failed", counts.failed),
                 Style::new().red(),
             ));
+        }
+        // Said for the same reason the step's own line says it: a held tool is
+        // a licence and a machine's worth of memory that the run is still
+        // using, and the summary is the one line always on screen.
+        let held = crate::hold::live().len();
+        if held > 0 {
+            spans.push(span(format!(" · {held} held"), Style::new().yellow()));
         }
         // A count rather than the warnings themselves: what they said is in
         // the log, which `L` opens, and a count cannot go stale the way a line
@@ -830,6 +879,7 @@ impl Paint for Reporter {
             follow,
             running: row.group() == Group::Running,
             pending: row.group() == Group::Pending,
+            holding: row.holding(),
         })
     }
 
@@ -1248,6 +1298,10 @@ impl Row {
             Some(ended) => {
                 let mut spans = vec![cursor_span(selected)];
                 spans.extend(ended.record.spans.iter().cloned());
+                // Only on screen, and only while it lasts: the record is how
+                // the step ended, and by the time it is read back in the
+                // terminal's scrollback nothing is being held any more.
+                spans.extend(self.hold_remark());
                 Line::from(spans)
             }
             None if self.started.is_some() => {
@@ -1294,6 +1348,33 @@ impl Row {
         let mut spans = fit_line(bare, columns.saturating_sub(remark.width())).spans;
         spans.push(remark);
         Line::from(spans)
+    }
+
+    /// The remark at the end of a failed step's line: that the tool it failed
+    /// with is still there, waiting at its own prompt.
+    ///
+    /// Its page says how to reach it. The line only says that there is
+    /// something to reach, because that is the part someone who is not looking
+    /// for it has to notice — a licence and a machine's worth of memory are
+    /// being held.
+    fn hold_remark(&self) -> Option<Span<'static>> {
+        let state = self.state.lock().unwrap();
+        let session = state.held.as_ref().filter(|session| session.alive())?;
+        Some(span(
+            format!("  ({} held)", session.tool()),
+            Style::new().yellow(),
+        ))
+    }
+
+    /// The tool this step is holding at its prompt, for its own page.
+    fn holding(&self) -> Option<Holding> {
+        let state = self.state.lock().unwrap();
+        let session = state.held.as_ref().filter(|session| session.alive())?;
+        Some(Holding {
+            tool: session.tool().to_string(),
+            pid: session.pid(),
+            attach: session.attach_command(),
+        })
     }
 
     /// The remark at the end of a running step's line: that it has been told
@@ -1622,6 +1703,9 @@ struct StepState {
     /// That the step has been told to stop, so its line can say so and its
     /// record can say it was killed rather than however the tool died.
     killed: bool,
+    /// The tool the step failed with and did not let go of, if there was one.
+    /// Outlives the step, which is what a session is for; see [`crate::hold`].
+    held: Option<Arc<Session>>,
 }
 
 /// A process a step is running, and which one it is.
@@ -1737,6 +1821,17 @@ impl StepHandle {
             state: Arc::clone(&self.state),
             child,
         }
+    }
+
+    /// Say that the tool the step was running has failed and been held at its
+    /// own prompt, in `session`.
+    ///
+    /// The step is about to fail on it. What this adds is that the tool is
+    /// still there behind the failure: the step's line says it is held for as
+    /// long as it is, its page says how to attach a terminal to it, and `x`
+    /// lets it go. [`crate::exec::run_held`] does this for the tools it runs.
+    pub fn hold(&self, session: Arc<Session>) {
+        self.state.lock().unwrap().held = Some(session);
     }
 
     /// Say which files the step's tool is writing its output to.
@@ -1856,6 +1951,20 @@ pub(crate) fn current_step_log() -> Option<Arc<crate::log::LogFile>> {
 
 pub(crate) fn set_active_reporter(reporter: Option<Arc<Reporter>>) {
     *ACTIVE.write().unwrap() = reporter;
+}
+
+/// Whether a run is drawing on the terminal, as opposed to reporting plainly or
+/// not running at all.
+///
+/// What a live display means for [`crate::hold`] is somebody sitting in front
+/// of the run: a held tool is worth its licence when there is someone to
+/// attach to it and tell it has been held, and not otherwise.
+pub(crate) fn showing() -> bool {
+    ACTIVE
+        .read()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|reporter| reporter.drawing())
 }
 
 /// Say something that is not a step: to `rivet.log` always, and to stderr as
@@ -2498,6 +2607,42 @@ mod tests {
         reporter.kill(0);
         assert!(line(&row).contains("(stopping)"), "{}", line(&row));
         let _ = child.wait();
+    }
+
+    /// A step that failed holding a tool is the one finished step with
+    /// something left to stop, and `x` is what stops it.
+    #[test]
+    fn a_failed_step_holding_a_tool_says_so_until_it_is_let_go() {
+        let _alone = crate::hold::testing::alone();
+        let dir = crate::hold::testing::scratch("shown");
+        let reporter = reporter_of(&["one", "two"]);
+        let handle = reporter.start(0, None);
+        let session = crate::hold::testing::session(&dir, "one");
+        handle.hold(Arc::clone(&session));
+        reporter.finish(&handle, Outcome::Failed, Some("bash exited with 1"));
+
+        // The row the display would draw for it, ended as the step ended and
+        // sharing the step's state.
+        let mut row = row(0);
+        row.state = Arc::clone(&reporter.steps[0].state);
+        row.ended = Some(Ended {
+            record: reporter.record(&handle, Outcome::Failed, Some("bash exited with 1")),
+            at: Instant::now(),
+        });
+        let line = |row: &Row| plain(&row.fit(false, 8, "⠹", 200, &[]));
+        assert!(line(&row).contains("(bash held)"), "{}", line(&row));
+        // And the summary, which is the line always on screen.
+        assert!(plain(&reporter.summary(120)).contains("1 held"));
+
+        // `x` on it lets the tool go, rather than finding nothing to kill.
+        assert_eq!(reporter.kill(0), Kill::LetGo);
+        assert!(crate::hold::testing::gone(&session), "still there");
+
+        // Said only while it lasts: the record the terminal is left with is
+        // how the step ended, and nothing is held by then.
+        assert!(!line(&row).contains("held"), "{}", line(&row));
+        assert!(!plain(&reporter.summary(120)).contains("held"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

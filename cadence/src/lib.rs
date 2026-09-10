@@ -3,6 +3,7 @@ pub mod innovus;
 pub mod pegasus;
 
 use indoc::formatdoc;
+use rivet::exec;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as FmtWrite;
@@ -81,6 +82,97 @@ pub fn kill_on_fatal_signal(command: &mut Command, work_dir: &Path) -> io::Resul
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
     command.env("GDB", &script).env("NO_GDB", "1");
     Ok(())
+}
+
+/// The TCL that holds a tool at its own prompt after a failure, instead of
+/// letting it exit.
+///
+/// Goes in the error path of the script a step generates, before whatever
+/// exits:
+///
+/// ```tcl
+/// if {[catch {source -verbose par.tcl} err]} {
+///     puts stderr "FATAL: $err"
+///     # ... hold_tcl() ...
+///     rivet_hold
+///     exit 1
+/// }
+/// ```
+///
+/// What it defines is `rivet_hold`, which returns at once unless rivet has
+/// offered somewhere to be held — so a run that is not holding anything, or a
+/// script run by hand outside rivet altogether, fails exactly as it always
+/// did. Offered a fifo, it prints the marker rivet is watching for and then
+/// reads commands from the fifo one line at a time, evaluating each in the
+/// global scope and printing what came of it, until it reads `exit` or rivet
+/// lets it go. See [`rivet::hold`] for the other half, and what it costs.
+///
+/// Nothing in it is written where a tool echoing the script it is reading
+/// would say something rivet takes for the tool's own doing; see
+/// [`rivet::hold::marker_halves`].
+///
+/// Everything it says goes to stdout, which is where the tool's own output is
+/// going: the terminal attached to the session is following that log rather
+/// than talking to the tool, so a command and its result have to arrive in it
+/// in the order they happened. A command's own output — which for these tools
+/// is written by the tool itself and not by TCL — arrives there anyway, which
+/// is the whole reason a session is worth holding.
+pub fn hold_tcl() -> String {
+    formatdoc!(
+        r#"
+        proc rivet_hold {{}} {{
+            if {{![info exists ::env({control})]}} {{ return }}
+            # Opened rather than read from stdin, which the tool has its own
+            # ideas about. rivet holds the other end of this open, so the
+            # channel neither ends when a terminal detaches nor blocks here
+            # when none has attached yet.
+            set channel [open $::env({control}) r]
+            fconfigure $channel -buffering line
+            # Assembled rather than written out: the tool echoes the source of
+            # this file as it reads it, and rivet reads that echo along with
+            # everything else the tool says. See `rivet::hold::marker_halves`.
+            set marker {{{marker_first}}}
+            append marker {{{marker_second}}}
+            puts $marker
+            flush stdout
+            while {{[gets $channel line] >= 0}} {{
+                set line [string trim $line]
+                if {{$line eq {{}}}} {{ continue }}
+                if {{$line eq {{{leave}}}}} {{ break }}
+                puts "rivet> $line"
+                if {{[catch {{uplevel #0 $line}} result]}} {{
+                    puts "rivet! $result"
+                }} elseif {{$result ne {{}}}} {{
+                    puts "rivet= $result"
+                }}
+                flush stdout
+            }}
+            close $channel
+            puts "rivet: letting go"
+            flush stdout
+        }}
+        "#,
+        control = rivet::hold::CONTROL,
+        marker_first = rivet::hold::marker_halves().0,
+        marker_second = rivet::hold::marker_halves().1,
+        leave = rivet::hold::LEAVE,
+    )
+}
+
+/// The error a tool run that did not succeed becomes: what became of the tool,
+/// where to read about it, and how to reach it if it is still there.
+///
+/// Which log holds the reason depends on how the tool died. A fatal signal is
+/// reported by the tool's own crash handler on stdout and never reaches the
+/// `.err`, which a crash leaves empty: `catch_fatal.tcl` can see a TCL error,
+/// not a signal. Nor has a tool that is being held exited at all, and what it
+/// has to say it is still saying on stdout.
+pub fn failure(tool: &str, finish: &exec::Finish, log_dir: &Path, basename: &str) -> String {
+    let log = log_dir.join(match finish.status().and_then(|status| status.code()) {
+        Some(_) => format!("{basename}.err"),
+        None => format!("{basename}.out"),
+    });
+    format!("{tool} {finish}; see {}", log.display())
 }
 
 #[derive(Debug, Clone)]

@@ -121,11 +121,16 @@ impl InnovusStep {
             }
         }
 
+        writeln!(catch_fatal, "{}", crate::hold_tcl())?;
         writeln!(catch_fatal, "if {{[catch {{")?;
         writeln!(catch_fatal, "source -verbose par.tcl")?;
         writeln!(catch_fatal, "}} err]}} {{")?;
         writeln!(catch_fatal, "puts stderr \"FATAL: $err\"")?;
         writeln!(catch_fatal, "puts stderr $::errorInfo")?;
+        // The design is still in memory here, which is the one moment it can
+        // be looked at. Returns at once unless rivet offered somewhere to be
+        // held; see `crate::hold_tcl`.
+        writeln!(catch_fatal, "rivet_hold")?;
         writeln!(catch_fatal, "exit 1")?;
         writeln!(catch_fatal, "}}")?;
         writeln!(catch_fatal, "exit")?;
@@ -272,28 +277,14 @@ impl Step for InnovusStep {
         crate::kill_on_fatal_signal(&mut command, &self.work_dir)?;
 
         progress::status(format!("running innovus (log: {}.par.out)", self.module));
-        let status = exec::run_logged_in(
-            &mut command,
-            &self.work_dir,
-            &format!("{}.par", self.module),
-        )?;
+        let basename = format!("{}.par", self.module);
+        // Held rather than logged: a par that dies on a TCL error stays at its
+        // own prompt with the design still in memory, and the step fails on
+        // that as it would on any other failure. See `rivet::hold`.
+        let finish = exec::run_held_in(&mut command, &self.work_dir, &basename)?;
 
-        if !status.success() {
-            return Err(format!(
-                "innovus exited with {status}; see {}",
-                self.work_dir
-                    // Which log holds the reason depends on how it died. A
-                    // fatal signal is reported by the tool's own handler on
-                    // stdout and never reaches `.par.err`, which a crash
-                    // leaves empty: `catch_fatal.tcl` can see a Tcl error, not
-                    // a signal.
-                    .join(match status.code() {
-                        None => format!("{}.par.out", self.module),
-                        Some(_) => format!("{}.par.err", self.module),
-                    })
-                    .display()
-            )
-            .into());
+        if !finish.success() {
+            return Err(crate::failure("innovus", &finish, &self.work_dir, &basename).into());
         }
         Ok(())
     }

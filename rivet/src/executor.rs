@@ -862,6 +862,53 @@ mod tests {
         ExecuteConfig::new().progress(false).logging(false)
     }
 
+    /// A step whose tool holds itself fails like any other, and the run goes
+    /// on — and what it held goes when the run does, since nothing is left to
+    /// drain it. See `crate::hold`.
+    #[test]
+    fn a_step_that_holds_its_tool_fails_and_the_run_lets_it_go() {
+        let _alone = crate::hold::testing::alone();
+        let dir = crate::hold::testing::scratch("run");
+        let held: Arc<Mutex<Vec<Arc<crate::hold::Session>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let sessions = Arc::clone(&held);
+        let work = dir.clone();
+        let syn = acting("syn", vec![], move || {
+            let mut command = crate::hold::testing::holds_itself();
+            let finish = crate::exec::run_held_in(&mut command, &work, "tool")?;
+            let session = finish.session().expect("held").clone();
+            // Still there while the step is failing on it, which is the point.
+            assert!(session.alive());
+            sessions.lock().unwrap().push(session);
+            Err("the tool failed and is held".into())
+        });
+        let par = step("par", vec![syn.clone()]);
+        let drc = step("drc", vec![]);
+
+        let failed = Executor::new()
+            .config(config())
+            .target_dyn(par)
+            .target_dyn(drc)
+            .run()
+            .expect_err("the run failed");
+
+        // The ordinary shape of a failure: the step failed, what waited on it
+        // was blocked, and what did not carry on.
+        let ExecuteError::Failed { failures, blocked } = failed else {
+            panic!("{failed:?}");
+        };
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].label, "syn");
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].label, "par");
+
+        // And the run let go of the tool on its way out.
+        let held = held.lock().unwrap();
+        let session = held.first().expect("a session");
+        assert!(!session.alive(), "the tool outlived the run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn shared_dependency_runs_exactly_once() {
         let runs = Arc::new(AtomicUsize::new(0));

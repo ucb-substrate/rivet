@@ -69,6 +69,22 @@ impl GenusStep {
         }
 
         let mut tcl_file = File::create(path.join("syn.tcl"))?;
+        // What genus is actually pointed at: `syn.tcl` sourced inside a catch,
+        // so that a TCL error is something the script sees rather than
+        // something that ends the tool on the spot. That is what makes it
+        // possible to hold the tool at its own prompt instead; see
+        // `crate::hold_tcl`.
+        let mut catch_fatal = File::create(path.join("catch_fatal.tcl"))?;
+        writeln!(catch_fatal, "{}", crate::hold_tcl())?;
+        writeln!(catch_fatal, "if {{[catch {{")?;
+        writeln!(catch_fatal, "source syn.tcl")?;
+        writeln!(catch_fatal, "}} err]}} {{")?;
+        writeln!(catch_fatal, "puts stderr \"FATAL: $err\"")?;
+        writeln!(catch_fatal, "puts stderr $::errorInfo")?;
+        writeln!(catch_fatal, "rivet_hold")?;
+        writeln!(catch_fatal, "exit 1")?;
+        writeln!(catch_fatal, "}}")?;
+        writeln!(catch_fatal, "exit")?;
 
         File::create(path.join("rivet_error.log"))?;
         if let Some(preamble) = &self.preamble {
@@ -221,7 +237,7 @@ impl Step for GenusStep {
         command
             .args([
                 "-f",
-                self.work_dir.join("syn.tcl").to_str().unwrap(),
+                self.work_dir.join("catch_fatal.tcl").to_str().unwrap(),
                 "-no_gui",
                 "-batch",
             ])
@@ -230,28 +246,14 @@ impl Step for GenusStep {
         crate::kill_on_fatal_signal(&mut command, &self.work_dir)?;
 
         progress::status(format!("running genus (log: {}.syn.out)", self.module));
-        let status = exec::run_logged_in(
-            &mut command,
-            &self.work_dir,
-            &format!("{}.syn", self.module),
-        )?;
+        let basename = format!("{}.syn", self.module);
+        // Held rather than logged: a synthesis that dies on a TCL error stays
+        // at its own prompt with the design still in memory, and the step
+        // fails on that as it would on any other failure. See `rivet::hold`.
+        let finish = exec::run_held_in(&mut command, &self.work_dir, &basename)?;
 
-        if !status.success() {
-            return Err(format!(
-                "genus exited with {status}; see {}",
-                self.work_dir
-                    // Which log holds the reason depends on how it died. A
-                    // fatal signal is reported by the tool's own handler on
-                    // stdout and never reaches `.syn.err`, which a crash
-                    // leaves empty: `catch_fatal.tcl` can see a Tcl error, not
-                    // a signal.
-                    .join(match status.code() {
-                        None => format!("{}.syn.out", self.module),
-                        Some(_) => format!("{}.syn.err", self.module),
-                    })
-                    .display()
-            )
-            .into());
+        if !finish.success() {
+            return Err(crate::failure("genus", &finish, &self.work_dir, &basename).into());
         }
         Ok(())
     }

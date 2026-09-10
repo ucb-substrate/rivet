@@ -16,6 +16,11 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
 
+/// Substep name the post-failure db is filed under, so that it lands beside
+/// the checkpoints as `post_fail` and every path to it goes through
+/// [`InnovusStep::checkpoint_path`]. No substep may share it.
+const FAIL_CHECKPOINT: &str = "fail";
+
 /// Defines the Innovus place and route step subflow
 #[derive(Debug, Clone)]
 pub struct InnovusStep {
@@ -126,6 +131,44 @@ impl InnovusStep {
         writeln!(catch_fatal, "}} err]}} {{")?;
         writeln!(catch_fatal, "puts stderr \"FATAL: $err\"")?;
         writeln!(catch_fatal, "puts stderr $::errorInfo")?;
+
+        // The newest db a failed run leaves behind is whatever checkpoint it
+        // last got past, which can be a long way back, and the state the
+        // error actually happened in dies with the process. So write it out
+        // and repoint `latest` at it, exactly as a checkpointed substep
+        // would: the state at the failure is now the most recent db, and
+        // `open_chip.sh` opens it.
+        //
+        // Under its own catch, because this runs with the design in whatever
+        // state the error left it. A write that fails must not replace the
+        // error that is the real reason the run stopped, nor keep the exit
+        // status from being 1 — and it does fail, harmlessly, when the run
+        // died before there was a design to write at all. `latest` is moved
+        // only once the write has returned, so it never names a half-written
+        // db.
+        let fail_db = self.fail_db_path();
+        writeln!(catch_fatal, "if {{[catch {{")?;
+        writeln!(catch_fatal, "write_db {}", fail_db.display())?;
+        writeln!(
+            catch_fatal,
+            "exec ln -sfn post_{} {}",
+            FAIL_CHECKPOINT,
+            self.work_dir.join("latest").display()
+        )?;
+        writeln!(catch_fatal, "}} db_err]}} {{")?;
+        writeln!(
+            catch_fatal,
+            "puts stderr \"could not write {}: $db_err\"",
+            fail_db.display()
+        )?;
+        writeln!(catch_fatal, "}} else {{")?;
+        writeln!(
+            catch_fatal,
+            "puts stderr \"wrote state at the failure to {}\"",
+            fail_db.display()
+        )?;
+        writeln!(catch_fatal, "}}")?;
+
         writeln!(catch_fatal, "exit 1")?;
         writeln!(catch_fatal, "}}")?;
         writeln!(catch_fatal, "exit")?;
@@ -215,6 +258,20 @@ impl InnovusStep {
         self.work_dir.join(format!("post_{substep}"))
     }
 
+    /// The db written when a run dies on a Tcl error: the state the tool was
+    /// in at the moment it failed, which is otherwise lost when the process
+    /// exits. It is there only if the last run of this step failed that way —
+    /// a run killed by a signal never reaches the error path, and so leaves
+    /// none — and a stale one from an earlier run is removed before each run.
+    ///
+    /// No substep wrote it, so there is nothing to resume "after" it: pass it
+    /// to [`InnovusStep::add_checkpoint`] along with the substep to pick up
+    /// from, which is the case that method's `name` and `checkpoint_path`
+    /// arguments are separate for.
+    pub fn fail_db_path(&self) -> PathBuf {
+        self.checkpoint_path(FAIL_CHECKPOINT)
+    }
+
     /// Restore the db `substep` wrote on an earlier run and continue with the
     /// substeps after it. `substep` must be checkpointed, or there is nothing
     /// to restore.
@@ -245,6 +302,17 @@ impl Step for InnovusStep {
                 .position(|s| s.name == *endpoint_name)
                 .ok_or_else(|| format!("no substep named '{endpoint_name}' to stop at"))?;
             substeps = substeps[..=slice_index].to_vec();
+        }
+
+        // A `post_fail` from an earlier run would be reported below as this
+        // run's failure state and opened as if it were. Only the error path
+        // writes one, so clearing it here makes its presence afterwards mean
+        // exactly that this run failed on a Tcl error. `latest` may be left
+        // naming it until the first checkpoint of this run repoints it, which
+        // is a window in which the run itself is what is holding the db.
+        let fail_db = self.fail_db_path();
+        if fail_db.exists() {
+            fs::remove_dir_all(&fail_db)?;
         }
 
         progress::status("writing par.tcl");
@@ -279,7 +347,7 @@ impl Step for InnovusStep {
         )?;
 
         if !status.success() {
-            return Err(format!(
+            let mut message = format!(
                 "innovus exited with {status}; see {}",
                 self.work_dir
                     // Which log holds the reason depends on how it died. A
@@ -292,8 +360,19 @@ impl Step for InnovusStep {
                         Some(_) => format!("{}.par.err", self.module),
                     })
                     .display()
-            )
-            .into());
+            );
+            // There only if this run's error path got far enough to write it,
+            // which is worth saying: it is the difference between the last
+            // checkpoint and the state the failure happened in.
+            if fail_db.exists() {
+                write!(
+                    message,
+                    "; state at the failure in {} (open_chip.sh)",
+                    fail_db.display()
+                )
+                .unwrap();
+            }
+            return Err(message.into());
         }
         Ok(())
     }

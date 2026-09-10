@@ -5,6 +5,7 @@ pub mod pegasus;
 use indoc::formatdoc;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io;
@@ -88,6 +89,71 @@ pub struct Substep {
     pub name: String,
     pub command: String,
     pub checkpoint: bool,
+}
+
+/// A substep name that the flow it was looked for in does not have.
+///
+/// Every hook is anchored on a substep that is already in the flow: one is
+/// inserted after it, replaces it, or deletes it. A name that is not there
+/// used to be a no-op, which is the worst of the options — the hook is
+/// dropped, nothing says so, and the tool runs the whole flow through
+/// without the step the author asked for. So it is an error instead, and
+/// because hooks are added while the flow is being built rather than while
+/// it runs, it is returned to whoever is building the flow rather than
+/// reported as a step failure hours later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSubstep {
+    /// The substep name that was asked for.
+    pub name: String,
+    /// What the caller was trying to do with it, e.g. `"add a hook after"`.
+    pub action: String,
+    /// The flow it was looked for in, as [`rivet::Step::label`] gives it,
+    /// e.g. `"decoder par"`.
+    pub flow: String,
+    /// The substeps the flow does have, in the order it runs them.
+    pub available: Vec<String>,
+}
+
+impl fmt::Display for UnknownSubstep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cannot {} '{}': {} has ",
+            self.action, self.name, self.flow
+        )?;
+        if self.available.is_empty() {
+            write!(f, "no substeps at all")
+        } else {
+            write!(f, "no such substep. It has: {}", self.available.join(", "))
+        }
+    }
+}
+
+impl std::error::Error for UnknownSubstep {}
+
+/// The index of the substep named `name`, or an [`UnknownSubstep`] naming the
+/// substeps that are there instead.
+///
+/// `action` completes "cannot {action} '{name}'" in the message, and `flow`
+/// is the step's label; the step types wrap this so callers pass neither.
+pub(crate) fn substep_index(
+    substeps: &[Substep],
+    name: &str,
+    action: &str,
+    flow: &str,
+) -> Result<usize, UnknownSubstep> {
+    substeps
+        .iter()
+        .position(|substep| substep.name == name)
+        .ok_or_else(|| UnknownSubstep {
+            name: name.to_string(),
+            action: action.to_string(),
+            flow: flow.to_string(),
+            available: substeps
+                .iter()
+                .map(|substep| substep.name.clone())
+                .collect(),
+        })
 }
 
 #[derive(Debug, Clone)]

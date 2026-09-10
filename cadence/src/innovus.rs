@@ -6,7 +6,7 @@ use std::process::Command;
 use std::{fs, io};
 
 use crate::MmmcCorner;
-use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc};
+use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, UnknownSubstep, mmmc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::exec;
@@ -36,6 +36,9 @@ pub struct InnovusStep {
     /// at the tool's default CPU count. Put those settings here, not in a
     /// substep.
     pub preamble: Option<String>,
+    /// Whether `read_db` verifies that the saved db's files are unchanged;
+    /// see [`InnovusStep::set_checkpoint_file_check`].
+    pub checkpoint_file_check: bool,
 }
 
 impl InnovusStep {
@@ -59,6 +62,7 @@ impl InnovusStep {
             deps,
             synthesis,
             preamble: None,
+            checkpoint_file_check: true,
         }
     }
 
@@ -66,6 +70,19 @@ impl InnovusStep {
     /// [`InnovusStep::preamble`].
     pub fn set_preamble(&mut self, tcl: impl Into<String>) {
         self.preamble = Some(tcl.into());
+    }
+
+    /// Whether `read_db` checks that the files inside the saved db are
+    /// unchanged. On by default, as Innovus has it.
+    ///
+    /// The check errors out if any file in the db directory has been edited,
+    /// renamed or deleted. That is the right default, but it also rejects a
+    /// checkpoint whose children's LEFs have legitimately been rebuilt since
+    /// it was written -- which is exactly when reusing one is worth doing.
+    /// Turning it off says the db is being restored deliberately against
+    /// changed collateral.
+    pub fn set_checkpoint_file_check(&mut self, check: bool) {
+        self.checkpoint_file_check = check;
     }
 
     /// Generates the tcl file for place and route
@@ -78,6 +95,9 @@ impl InnovusStep {
         }
 
         if let Some(checkpoint) = &self.start_checkpoint {
+            if !self.checkpoint_file_check {
+                writeln!(tcl_file, "set_db read_db_file_check false")?;
+            }
             // Restoring a large db takes minutes; without a banner the display
             // shows nothing for all of it. Un-numbered so the substep counts
             // still cover exactly the substeps.
@@ -133,50 +153,64 @@ impl InnovusStep {
         Ok(())
     }
 
-    /// Inserts a custom command as a substep in the par flow
-    pub fn add_hook(&mut self, name: &str, tcl: &str, after_substep: &str, checkpointed: bool) {
-        if let Some(index) = self.substeps.iter().position(|s| s.name == after_substep) {
-            self.substeps.insert(
-                index + 1,
-                Substep {
-                    name: name.to_string(),
-                    command: tcl.to_string(),
-                    checkpoint: checkpointed,
-                },
-            );
-        }
+    /// The index of the substep named `substep`, or an [`UnknownSubstep`]
+    /// naming the substeps the flow does have.
+    fn substep_index(&self, substep: &str, action: &str) -> Result<usize, UnknownSubstep> {
+        crate::substep_index(&self.substeps, substep, action, &self.label())
+    }
+
+    /// Inserts a custom command as a substep in the par flow, directly after
+    /// the substep named `after_substep`.
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep by that name,
+    /// leaving the flow untouched.
+    pub fn add_hook(
+        &mut self,
+        name: &str,
+        tcl: &str,
+        after_substep: &str,
+        checkpointed: bool,
+    ) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(after_substep, "add a hook after")?;
+        self.substeps.insert(
+            index + 1,
+            Substep {
+                name: name.to_string(),
+                command: tcl.to_string(),
+                checkpoint: checkpointed,
+            },
+        );
+        Ok(())
     }
 
     /// Replaces a specfic substep in the par flow with a new command
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep named
+    /// `replaced_substep_name`, leaving the flow untouched.
     pub fn replace_hook(
         &mut self,
         new_substep_name: &str,
         tcl: &str,
         replaced_substep_name: &str,
         checkpointed: bool,
-    ) {
-        if let Some(index) = self
-            .substeps
-            .iter()
-            .position(|s| s.name == replaced_substep_name)
-        {
-            self.substeps[index] = Substep {
-                name: new_substep_name.to_string(),
-                command: tcl.to_string(),
-                checkpoint: checkpointed,
-            };
-        }
+    ) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(replaced_substep_name, "replace")?;
+        self.substeps[index] = Substep {
+            name: new_substep_name.to_string(),
+            command: tcl.to_string(),
+            checkpoint: checkpointed,
+        };
+        Ok(())
     }
 
     /// Deletes a specfic substep in the par flow
-    pub fn delete_hook(&mut self, deleted_substep_name: &str) {
-        if let Some(index) = self
-            .substeps
-            .iter()
-            .position(|s| s.name == deleted_substep_name)
-        {
-            self.substeps.remove(index);
-        }
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep by that name,
+    /// leaving the flow untouched.
+    pub fn delete_hook(&mut self, deleted_substep_name: &str) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(deleted_substep_name, "delete")?;
+        self.substeps.remove(index);
+        Ok(())
     }
 
     pub fn ilm_path(&self) -> PathBuf {
@@ -231,19 +265,23 @@ impl InnovusStep {
 impl Step for InnovusStep {
     fn execute(&self) -> StepResult {
         let mut substeps = self.substeps.clone();
+        // A checkpoint or an endpoint can be set before the hooks that name
+        // it are added, so neither is checked until here, where the flow is
+        // whatever it ended up being. The endpoint is looked for in what the
+        // resume left, so one before the resume point reads as absent, which
+        // is what it is: there is no run that both starts and stops there.
         if let Some(checkpoint) = &self.start_checkpoint {
-            let slice_index = self
-                .substeps
-                .iter()
-                .position(|s| s.name == checkpoint.name)
-                .ok_or_else(|| format!("no substep named '{}' to start from", checkpoint.name))?;
+            let slice_index = crate::substep_index(
+                &self.substeps,
+                &checkpoint.name,
+                "start from",
+                &self.label(),
+            )?;
             substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
         if let Some(endpoint_name) = &self.endpoint {
-            let slice_index = substeps
-                .iter()
-                .position(|s| s.name == *endpoint_name)
-                .ok_or_else(|| format!("no substep named '{endpoint_name}' to stop at"))?;
+            let slice_index =
+                crate::substep_index(&substeps, endpoint_name, "stop at", &self.label())?;
             substeps = substeps[..=slice_index].to_vec();
         }
 
@@ -989,4 +1027,120 @@ pub fn generate_open_chip_script(work_dir: &Path, db: &str, synthesis: bool) -> 
     perms.set_mode(0o755);
     fs::set_permissions(&script_path, perms)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    fn step() -> InnovusStep {
+        let substeps = ["floorplan", "place", "route"]
+            .map(|name| Substep {
+                name: name.into(),
+                command: String::new(),
+                checkpoint: false,
+            })
+            .to_vec();
+        InnovusStep::new(
+            "/tmp/hook_tests",
+            "TopLevel",
+            substeps,
+            false,
+            vec![],
+            false,
+        )
+    }
+
+    fn substep_names(step: &InnovusStep) -> Vec<&str> {
+        step.substeps.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_hook_lands_after_its_anchor() -> Result<(), UnknownSubstep> {
+        let mut step = step();
+        step.add_hook("bumps", "create_bump", "floorplan", false)?;
+        assert_eq!(
+            substep_names(&step),
+            ["floorplan", "bumps", "place", "route"]
+        );
+        Ok(())
+    }
+
+    /// The whole point: a mistyped or since-deleted anchor used to drop the
+    /// hook silently, and the run would go through place-and-route without it.
+    #[test]
+    fn a_hook_on_a_missing_anchor_is_an_error() {
+        let mut step = step();
+        let err = step
+            .add_hook("rdl_route", "read_def", "fc_route", false)
+            .expect_err("hook anchored on a substep that does not exist");
+        assert_eq!(err.name, "fc_route");
+        assert_eq!(substep_names(&step), ["floorplan", "place", "route"]);
+    }
+
+    #[test]
+    fn the_error_names_the_flow_and_the_substeps_that_do_exist() {
+        let err = step()
+            .add_hook("rdl_route", "read_def", "fc_route", false)
+            .expect_err("hook anchored on a substep that does not exist");
+        assert_eq!(
+            err.to_string(),
+            "cannot add a hook after 'fc_route': TopLevel par has no such substep. \
+             It has: floorplan, place, route"
+        );
+    }
+
+    #[test]
+    fn replacing_a_missing_substep_is_an_error() {
+        let err = step()
+            .replace_hook("resyn", "syn_generic", "syn", false)
+            .expect_err("replacing a substep that does not exist");
+        assert_eq!(err.action, "replace");
+        assert_eq!(err.name, "syn");
+    }
+
+    #[test]
+    fn deleting_a_missing_substep_is_an_error() {
+        let err = step()
+            .delete_hook("syn")
+            .expect_err("deleting a substep that does not exist");
+        assert_eq!(err.action, "delete");
+        assert_eq!(err.name, "syn");
+    }
+
+    /// `read_db` skips its file check only when asked, and the `set_db` has
+    /// to precede the `read_db` it applies to.
+    #[test]
+    fn the_checkpoint_file_check_can_be_turned_off() -> io::Result<()> {
+        for (check, expect_disabled) in [(true, false), (false, true)] {
+            let dir = std::env::temp_dir().join(format!("rivet_ckpt_check_{check}"));
+            std::fs::create_dir_all(&dir)?;
+            let mut step = step();
+            step.add_checkpoint("floorplan", "/tmp/post_floorplan".into());
+            step.set_checkpoint_file_check(check);
+            step.make_tcl_file(&dir, step.substeps.clone())?;
+
+            let tcl = std::fs::read_to_string(dir.join("par.tcl"))?;
+            let disabled = tcl.find("set_db read_db_file_check false");
+            assert_eq!(disabled.is_some(), expect_disabled, "file_check = {check}");
+            if let Some(at) = disabled {
+                assert!(at < tcl.find("read_db /tmp").expect("the read_db"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The checkpoint and endpoint names are not checked until the step runs,
+    /// so that a flow may set either before adding the hook it names.
+    #[test]
+    fn a_resume_from_a_missing_substep_fails_the_step() {
+        let mut step = step();
+        step.resume_from("fc_route");
+        let err = step.execute().expect_err("resume from a missing substep");
+        assert_eq!(
+            err.to_string(),
+            "cannot start from 'fc_route': TopLevel par has no such substep. \
+             It has: floorplan, place, route"
+        );
+    }
 }

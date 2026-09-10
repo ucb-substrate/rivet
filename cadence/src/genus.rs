@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{fs, io};
 
-use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc};
+use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, UnknownSubstep, mmmc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::exec;
@@ -116,50 +116,64 @@ impl GenusStep {
         Ok(())
     }
 
-    /// Inserts a custom command as a substep in the synthesis flow
-    pub fn add_hook(&mut self, name: &str, tcl: &str, after_substep: &str, checkpointed: bool) {
-        if let Some(index) = self.substeps.iter().position(|s| s.name == after_substep) {
-            self.substeps.insert(
-                index + 1,
-                Substep {
-                    name: name.to_string(),
-                    command: tcl.to_string(),
-                    checkpoint: checkpointed,
-                },
-            );
-        }
+    /// The index of the substep named `substep`, or an [`UnknownSubstep`]
+    /// naming the substeps the flow does have.
+    fn substep_index(&self, substep: &str, action: &str) -> Result<usize, UnknownSubstep> {
+        crate::substep_index(&self.substeps, substep, action, &self.label())
+    }
+
+    /// Inserts a custom command as a substep in the synthesis flow, directly
+    /// after the substep named `after_substep`.
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep by that name,
+    /// leaving the flow untouched.
+    pub fn add_hook(
+        &mut self,
+        name: &str,
+        tcl: &str,
+        after_substep: &str,
+        checkpointed: bool,
+    ) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(after_substep, "add a hook after")?;
+        self.substeps.insert(
+            index + 1,
+            Substep {
+                name: name.to_string(),
+                command: tcl.to_string(),
+                checkpoint: checkpointed,
+            },
+        );
+        Ok(())
     }
 
     /// Replaces a specfic substep in the synthesis flow with a new command
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep named
+    /// `replaced_substep_name`, leaving the flow untouched.
     pub fn replace_hook(
         &mut self,
         new_substep_name: &str,
         tcl: &str,
         replaced_substep_name: &str,
         checkpointed: bool,
-    ) {
-        if let Some(index) = self
-            .substeps
-            .iter()
-            .position(|s| s.name == replaced_substep_name)
-        {
-            self.substeps[index] = Substep {
-                name: new_substep_name.to_string(),
-                command: tcl.to_string(),
-                checkpoint: checkpointed,
-            };
-        }
+    ) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(replaced_substep_name, "replace")?;
+        self.substeps[index] = Substep {
+            name: new_substep_name.to_string(),
+            command: tcl.to_string(),
+            checkpoint: checkpointed,
+        };
+        Ok(())
     }
 
     /// Deletes a specfic substep in the synthesis flow
-    pub fn delete_hook(&mut self, deleted_substep_name: &str) {
-        if let Some(index) = self
-            .substeps
-            .iter()
-            .position(|s| s.name == deleted_substep_name)
-        {
-            self.substeps.remove(index);
-        }
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep by that name,
+    /// leaving the flow untouched.
+    pub fn delete_hook(&mut self, deleted_substep_name: &str) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(deleted_substep_name, "delete")?;
+        self.substeps.remove(index);
+        Ok(())
     }
 
     pub fn netlist(&self) -> PathBuf {
@@ -198,19 +212,23 @@ impl GenusStep {
 impl Step for GenusStep {
     fn execute(&self) -> StepResult {
         let mut substeps = self.substeps.clone();
+        // A checkpoint or an endpoint can be set before the hooks that name
+        // it are added, so neither is checked until here, where the flow is
+        // whatever it ended up being. The endpoint is looked for in what the
+        // resume left, so one before the resume point reads as absent, which
+        // is what it is: there is no run that both starts and stops there.
         if let Some(checkpoint) = &self.start_checkpoint {
-            let slice_index = self
-                .substeps
-                .iter()
-                .position(|s| s.name == checkpoint.name)
-                .ok_or_else(|| format!("no substep named '{}' to start from", checkpoint.name))?;
+            let slice_index = crate::substep_index(
+                &self.substeps,
+                &checkpoint.name,
+                "start from",
+                &self.label(),
+            )?;
             substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
         if let Some(endpoint_name) = &self.endpoint {
-            let slice_index = substeps
-                .iter()
-                .position(|s| s.name == *endpoint_name)
-                .ok_or_else(|| format!("no substep named '{endpoint_name}' to stop at"))?;
+            let slice_index =
+                crate::substep_index(&substeps, endpoint_name, "stop at", &self.label())?;
             substeps = substeps[..=slice_index].to_vec();
         }
 
@@ -587,4 +605,46 @@ pub fn remove_hierarchical_submodules(
     fs::write(&new_path, new_content)?;
 
     Ok(new_path)
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    fn step() -> GenusStep {
+        let substeps = ["init_design", "syn_generic", "syn_map"]
+            .map(|name| Substep {
+                name: name.into(),
+                command: String::new(),
+                checkpoint: false,
+            })
+            .to_vec();
+        GenusStep::new("/tmp/hook_tests", "TopLevel", substeps, false, vec![])
+    }
+
+    #[test]
+    fn a_hook_lands_after_its_anchor() -> Result<(), UnknownSubstep> {
+        let mut step = step();
+        step.add_hook("dont_use", "set_dont_use", "init_design", false)?;
+        let names: Vec<&str> = step.substeps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["init_design", "dont_use", "syn_generic", "syn_map"]);
+        Ok(())
+    }
+
+    /// As in [`crate::innovus`]: an anchor that is not there used to drop the
+    /// hook silently, and synthesis would run without it.
+    #[test]
+    fn a_hook_on_a_missing_anchor_is_an_error() {
+        let mut step = step();
+        let err = step
+            .add_hook("dont_use", "set_dont_use", "int_design", false)
+            .expect_err("hook anchored on a substep that does not exist");
+        assert_eq!(
+            err.to_string(),
+            "cannot add a hook after 'int_design': TopLevel syn has no such substep. \
+             It has: init_design, syn_generic, syn_map"
+        );
+        let names: Vec<&str> = step.substeps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["init_design", "syn_generic", "syn_map"]);
+    }
 }

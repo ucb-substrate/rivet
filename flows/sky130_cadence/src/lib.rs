@@ -1455,7 +1455,7 @@ pub fn hierarchical_flow() -> anyhow::Result<()> {
     flow.get("fourbitadder")
         .unwrap()
         .syn
-        .update(|syn| syn.replace_hook("syn_opt", "syn_opt", "syn_map", false));
+        .update(|syn| syn.replace_hook("syn_opt", "syn_opt", "syn_map", false))?;
 
     execute(flow.node.par);
     Ok(())

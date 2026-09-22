@@ -304,4 +304,14 @@ fn main() {
         dir.display(),
         dir.join(rivet::log::RUN_LOG).display()
     );
+    // The run wrote itself down as it went, so it can be put back on the screen
+    // — which is what happens to one that was interrupted, and the reason the
+    // logs above are worth pointing at rather than hunting for. The second run
+    // wrote over the first's session, as it wrote over its logs.
+    println!(
+        "\n   the second run was written down as it went, so it can be opened again\n\
+         \x20  to read those logs where they were read while it ran:\n\
+         \x20  `cargo run -p rivet --bin rivet -- -C {}`.",
+        dir.display()
+    );
 }

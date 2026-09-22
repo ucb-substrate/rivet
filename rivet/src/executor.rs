@@ -46,6 +46,7 @@ pub struct ExecuteConfig {
     concurrency: usize,
     progress: bool,
     logging: bool,
+    sessions: bool,
     log_dir: PathBuf,
 }
 
@@ -55,6 +56,7 @@ impl Default for ExecuteConfig {
             concurrency: default_concurrency(),
             progress: true,
             logging: true,
+            sessions: true,
             log_dir: PathBuf::from("."),
         }
     }
@@ -100,9 +102,29 @@ impl ExecuteConfig {
     /// Whether to write log files at all. Defaults to on.
     ///
     /// Turning it off leaves the `tracing` subscriber installed but gives it
-    /// nowhere to write, so a run leaves nothing on disk.
+    /// nowhere to write, so a run leaves nothing on disk — the session
+    /// ([`ExecuteConfig::sessions`]) included, since that is a file rivet
+    /// writes like any other.
     pub fn logging(mut self, logging: bool) -> Self {
         self.logging = logging;
+        self
+    }
+
+    /// Whether to write the run down as it goes, so that it can be opened
+    /// again once it is over. Defaults to on.
+    ///
+    /// The session is a small file beside the run's
+    /// [`rivet.log`](crate::log::RUN_LOG) naming every step, how it ended and
+    /// what it wrote — enough for `rivet` to put the run back on the screen
+    /// after the process that ran it has gone. The next run in the same
+    /// directory writes over it, as it writes over the logs it names. See
+    /// [`crate::session`].
+    ///
+    /// A run that is not logging at all ([`ExecuteConfig::logging`]) writes no
+    /// session either, whatever this says: that switch is there to leave the
+    /// disk alone, and this is a file on it.
+    pub fn sessions(mut self, sessions: bool) -> Self {
+        self.sessions = sessions;
         self
     }
 
@@ -173,6 +195,12 @@ impl Executor {
     /// See [`ExecuteConfig::logging`].
     pub fn logging(mut self, logging: bool) -> Self {
         self.config = self.config.logging(logging);
+        self
+    }
+
+    /// See [`ExecuteConfig::sessions`].
+    pub fn sessions(mut self, sessions: bool) -> Self {
+        self.config = self.config.sessions(sessions);
         self
     }
 
@@ -511,7 +539,10 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
         .collect();
     let workers = config.concurrency.max(1).min(total.max(1));
     let log_dir = config.logging.then(|| config.log_dir.clone());
-    let reporter = Reporter::new(plan, workers, log_dir, config.progress);
+    // Under `logging` as well as its own switch: a run told to leave the disk
+    // alone is not to leave a session on it.
+    let sessions = (config.sessions && config.logging).then(|| config.log_dir.clone());
+    let reporter = Reporter::new(plan, workers, log_dir, config.progress, sessions);
     progress::set_active_reporter(Some(Arc::clone(&reporter)));
 
     let unfinished_deps: Vec<usize> = graph.nodes.iter().map(|node| node.deps.len()).collect();

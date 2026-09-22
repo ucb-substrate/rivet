@@ -78,6 +78,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
+use crate::session::{self, Recorder};
 use crate::tui::{About, Detail, Motion, Paint, Screen, StepLine, Tui};
 
 /// Longest step label rendered before it is truncated.
@@ -158,6 +159,9 @@ pub(crate) struct Counts {
     pub blocked: usize,
     /// Steps that failed.
     pub failed: usize,
+    /// Steps that were still running when the run was killed. Only a run being
+    /// looked at again has any; see [`Reporter::replay`].
+    pub unfinished: usize,
 }
 
 impl Counts {
@@ -208,6 +212,30 @@ pub(crate) struct Reporter {
     /// has only to wait to be dismissed, and the clock has stopped.
     ended: Mutex<Option<Duration>>,
     ui: Option<Ui>,
+    /// The run's session file, kept up to date as the run goes so that a run
+    /// that is killed can be opened again; see [`crate::session`]. `None` when
+    /// sessions are turned off, or there is nowhere to write one.
+    session: Option<Recorder>,
+    /// Set when this is a run being read back rather than one happening: what
+    /// a reopened run knows that a running one works out for itself.
+    replay: Option<Replay>,
+}
+
+/// A run that is over, as [`Reporter::replay`] puts it back together.
+struct Replay {
+    /// The warnings the run logged. This process logged none of its own, and
+    /// the count on the summary is the run's.
+    warnings: usize,
+    /// Steps that were still running when the session was last written: what
+    /// the run was in the middle of when it was killed.
+    unfinished: usize,
+    /// Whether the run finished, as opposed to being cut short.
+    complete: bool,
+    /// Every step's record line, in the order the steps ended. The record a
+    /// display hands back on its way out, kept for the case where there is no
+    /// display to hand it back: a session looked at with the output piped
+    /// somewhere is printed instead.
+    records: Vec<Line<'static>>,
 }
 
 /// The live display, when there is one.
@@ -229,13 +257,34 @@ struct UiState {
 
 impl Reporter {
     /// `workers` and `log_dir` are for the banner: how many steps can run at
-    /// once, and where `rivet.log` is going, if anywhere.
+    /// once, and where `rivet.log` is going, if anywhere. `sessions` is the
+    /// directory the run writes itself down in to be opened again, if it is to
+    /// — the same one, when it is.
     pub(crate) fn new(
         plan: Vec<Planned>,
         workers: usize,
         log_dir: Option<PathBuf>,
         progress: bool,
+        sessions: Option<PathBuf>,
     ) -> Arc<Self> {
+        let reporter = Arc::new(Self::build(plan, workers, log_dir, progress, sessions));
+        reporter.take_terminal();
+        reporter
+    }
+
+    /// The run, before anything is drawing it.
+    ///
+    /// Taken apart from [`Reporter::new`] for [`Reporter::replay`], which has a
+    /// finished run to fill in and must do it before the first frame: a run
+    /// being read back has never been a run in progress, and must not appear
+    /// to be one for however long it takes to say so.
+    fn build(
+        plan: Vec<Planned>,
+        workers: usize,
+        log_dir: Option<PathBuf>,
+        progress: bool,
+        sessions: Option<PathBuf>,
+    ) -> Self {
         // The targets are the steps nothing else waits on: what the run was
         // asked for, in the order it was asked.
         let mut waited_for = vec![false; plan.len()];
@@ -256,7 +305,11 @@ impl Reporter {
             steps: plan.len(),
             workers,
             log_dir,
+            saved: None,
         };
+        // Before the display, so a run that is killed in its first moments is
+        // already a run there is something to open.
+        let session = sessions.and_then(|dir| Recorder::start(&dir, &about, &plan));
         let label_width = plan
             .iter()
             .map(|step| step.label.chars().count())
@@ -302,7 +355,7 @@ impl Reporter {
             }
         });
 
-        let reporter = Arc::new(Self {
+        Self {
             steps,
             about,
             label_width,
@@ -314,7 +367,107 @@ impl Reporter {
             failed: AtomicUsize::new(0),
             ended: Mutex::new(None),
             ui,
+            session,
+            replay: None,
+        }
+    }
+
+    /// A run that is over, put back on the screen from what it wrote down.
+    ///
+    /// The same display, built from the same parts: the plan makes the same
+    /// list in the same order, and every step that ended gets the very line it
+    /// ended on. What is different is that nothing is happening — the clock has
+    /// stopped, there is nothing to kill and nothing to cancel — and that a
+    /// step the run was in the middle of when it was killed is marked
+    /// unfinished, since it never got to say how it went.
+    ///
+    /// Nothing is written: a session is opened as often as anyone likes, and
+    /// reading one must not be a way of changing it.
+    pub(crate) fn replay(saved: &session::Session) -> Arc<Self> {
+        let plan: Vec<Planned> = saved
+            .steps
+            .iter()
+            .map(|step| Planned {
+                label: step.label.clone(),
+                pinned: step.pinned,
+                deps: step.deps.clone(),
+                log: step.log.clone(),
+            })
+            .collect();
+        let mut reporter = Self::build(plan, saved.workers, saved.log_dir.clone(), true, None);
+        let width = reporter.label_width;
+
+        // The record, in the order the steps ended: the order the run happened
+        // in, which is not the order the list is in.
+        let mut order: Vec<usize> = (0..saved.steps.len()).collect();
+        let ended = |id: usize| saved.steps[id].ended.unwrap_or(f64::MAX);
+        order.sort_by(|&a, &b| ended(a).total_cmp(&ended(b)).then(a.cmp(&b)));
+        let ends: Vec<(usize, Line<'static>)> = order
+            .into_iter()
+            .filter_map(|id| Some((id, replayed_record(&saved.steps[id], width)?)))
+            .collect();
+
+        reporter.about.saved = Some(format!("run of {}", saved.when()));
+        reporter.replay = Some(Replay {
+            warnings: saved.warnings,
+            unfinished: saved.unfinished(),
+            complete: saved.complete(),
+            records: ends.iter().map(|(_, line)| line.clone()).collect(),
         });
+        *reporter.ended.get_mut().unwrap() = Some(saved.elapsed());
+        reporter.finished.store(
+            saved.steps.iter().filter(|step| step.state.over()).count(),
+            Ordering::Relaxed,
+        );
+        for (state, count) in [
+            (session::State::Skipped, &reporter.skipped),
+            (session::State::Blocked, &reporter.blocked),
+            (session::State::Failed, &reporter.failed),
+        ] {
+            count.store(saved.count(state), Ordering::Relaxed);
+        }
+
+        // What each step wrote, so that its page offers the same files it did.
+        // Not the state it was in when it wrote them: a status or a substep is
+        // where a step had got to at a moment that has passed, and a line that
+        // said one now would be saying it of a step that is not running.
+        for (entry, step) in reporter.steps.iter().zip(&saved.steps) {
+            let mut state = entry.state.lock().unwrap();
+            state.history = step.files.clone();
+            state.outputs = step.follow.clone();
+        }
+
+        if let Some(ui) = reporter.ui.as_mut() {
+            let display = ui.state.get_mut().unwrap();
+            // `Instant`s a millisecond apart, in the order worked out above.
+            // All they are for is the order the record goes back to the
+            // terminal in; the times themselves are on the lines already.
+            let base = Instant::now();
+            for (at, (id, record)) in ends.into_iter().enumerate() {
+                if let Some(row) = display.cursor.rows.iter_mut().find(|row| row.id == id) {
+                    row.ended = Some(Ended {
+                        record,
+                        at: base
+                            .checked_add(Duration::from_millis(at as u64))
+                            .unwrap_or(base),
+                    });
+                }
+            }
+            // Opened on what went wrong, which is what a run is reopened for:
+            // the first step that failed, or that never got to finish.
+            let first = saved
+                .steps
+                .iter()
+                .position(|step| {
+                    matches!(step.state, session::State::Failed | session::State::Running)
+                })
+                .unwrap_or(0);
+            display.cursor.select(first);
+        }
+
+        // Last, as it is for a run: the screen is taken once there is something
+        // whole to put on it.
+        let reporter = Arc::new(reporter);
         reporter.take_terminal();
         reporter
     }
@@ -424,6 +577,10 @@ impl Reporter {
         let entry = &self.steps[id];
         let started = Instant::now();
 
+        if let Some(session) = &self.session {
+            session.started(id, log.as_ref().map(|log| log.path()));
+        }
+
         match self.display() {
             Some(mut display) => display.cursor.start(
                 id,
@@ -454,6 +611,9 @@ impl Reporter {
         self.skipped.fetch_add(1, Ordering::Relaxed);
         self.finished.fetch_add(1, Ordering::Relaxed);
         let record = pinned_record(&self.steps[id].label, self.label_width);
+        if let Some(session) = &self.session {
+            session.ended(id, session::State::Skipped, None, None, None, false);
+        }
         match self.display() {
             Some(mut display) => {
                 if !display.cursor.has_ended(id) {
@@ -479,12 +639,17 @@ impl Reporter {
     pub(crate) fn block(&self, id: usize, blame: &str) {
         self.blocked.fetch_add(1, Ordering::Relaxed);
         self.finished.fetch_add(1, Ordering::Relaxed);
-        let record = Line::from(vec![
-            span("⊘ ", Style::new().yellow()),
-            span(pad(&self.steps[id].label, self.label_width), Style::new()),
-            span("  ", Style::new()),
-            span(format!("blocked by {blame}"), Style::new().yellow()),
-        ]);
+        let record = blocked_record(&self.steps[id].label, blame, self.label_width);
+        if let Some(session) = &self.session {
+            session.ended(
+                id,
+                session::State::Blocked,
+                None,
+                Some(blame.to_string()),
+                None,
+                false,
+            );
+        }
         match self.display() {
             Some(mut display) => display.cursor.end(
                 id,
@@ -505,6 +670,22 @@ impl Reporter {
             self.failed.fetch_add(1, Ordering::Relaxed);
         }
         let record = self.record(handle, outcome, detail);
+        if let Some(session) = &self.session {
+            session.ended(
+                handle.id,
+                match outcome {
+                    Outcome::Completed => session::State::Completed,
+                    Outcome::Skipped => session::State::Skipped,
+                    Outcome::Failed => session::State::Failed,
+                },
+                Some(handle.started.elapsed()),
+                // Whole, however much of it the line has room for: the session
+                // is read back on a terminal of its own width, not this one's.
+                detail.map(str::to_string),
+                handle.location(),
+                handle.was_killed(),
+            );
+        }
 
         match self.display() {
             Some(mut display) => display.cursor.end(
@@ -524,49 +705,16 @@ impl Reporter {
     /// Built without the record's indent, so that the cursor can go where the
     /// indent goes.
     fn record(&self, handle: &StepHandle, outcome: Outcome, detail: Option<&str>) -> Line<'static> {
-        let elapsed = fmt_duration(handle.started.elapsed());
-        let padded = pad(&handle.label, self.label_width);
-        match outcome {
-            Outcome::Completed => Line::from(vec![
-                span("✔ ", Style::new().green()),
-                span(padded, Style::new().bold()),
-                span(format!("  {elapsed}"), Style::new().dim()),
-            ]),
-            Outcome::Skipped => Line::from(vec![
-                span("⏭ ", Style::new().yellow()),
-                span(padded, Style::new()),
-                span("  ", Style::new()),
-                span(
-                    detail.unwrap_or("skipped").to_string(),
-                    Style::new().yellow(),
-                ),
-            ]),
-            Outcome::Failed => {
-                let mut spans = vec![
-                    span("✖ ", Style::new().red()),
-                    span(padded, Style::new().red().bold()),
-                    span(format!("  {elapsed}"), Style::new().dim()),
-                ];
-                // Say where it died, not just that it did. Both halves are
-                // reported: which of them caused the failure is exactly what is
-                // not known here.
-                if let Some(location) = handle.location() {
-                    spans.push(span(format!("  during {location}"), Style::new().yellow()));
-                }
-                // A step someone killed did not fail of its own accord, and
-                // whatever the tool said on its way out is not the reason it
-                // stopped. That is in the log; the line says who to blame.
-                if handle.was_killed() {
-                    spans.push(span("  killed", Style::new().yellow()));
-                } else if let Some(detail) = detail {
-                    spans.push(span(
-                        format!("  {}", truncate(&clean(detail), 160)),
-                        Style::new().red(),
-                    ));
-                }
-                Line::from(spans)
-            }
-        }
+        let location = handle.location();
+        step_record(
+            &handle.label,
+            self.label_width,
+            outcome,
+            handle.started.elapsed(),
+            detail,
+            location.as_deref(),
+            handle.was_killed(),
+        )
     }
 
     /// Say a line that is not a step, when there is anywhere to say it.
@@ -593,6 +741,13 @@ impl Reporter {
     /// be looked through. Nothing else is drawing by now, so waiting costs the
     /// run nothing but the time someone spends reading.
     pub(crate) fn finish_all(&self, elapsed: Duration) {
+        // Before the waiting, because this is the moment the run ended: what
+        // someone does with the display afterwards is not the run's business,
+        // and a session written when they got round to pressing `q` would time
+        // the run by how long it was looked at.
+        if let Some(session) = &self.session {
+            session.finished(elapsed, crate::log::warnings());
+        }
         // Taken out of the lock before it is waited on: `suspend` wants this
         // same lock, and must find nothing rather than wait.
         let tui = self
@@ -610,15 +765,84 @@ impl Reporter {
             tui.wait();
         }
         if interrupted {
+            // The one thing worth saying about a run that was cut short, since
+            // the summary below is not said for one: it is still there to be
+            // read. Then out, with the shell's code for it.
+            if let Some(line) = self.reopen() {
+                self.print(line);
+            }
             std::process::exit(crate::tui::INTERRUPTED);
         }
 
+        self.print(self.closing());
+        if let Some(line) = self.reopen() {
+            self.print(line);
+        }
+    }
+
+    /// Put a run that is already over on the screen, and wait there.
+    ///
+    /// [`Reporter::finish_all`] for a run that is not happening: there is
+    /// nothing to finish and nothing to wait for but the reading. With no
+    /// terminal to draw on — a session opened with the output piped somewhere —
+    /// the record is printed instead, which is the same thing a run reports
+    /// when its display is turned off.
+    pub(crate) fn present(&self) {
+        let tui = self
+            .ui
+            .as_ref()
+            .and_then(|ui| ui.tui.lock().unwrap().take());
+        match tui {
+            Some(tui) => tui.wait(),
+            None => {
+                for record in self.replay.iter().flat_map(|replay| &replay.records) {
+                    self.print(indent(record.clone()));
+                }
+            }
+        }
+        self.print(self.closing());
+    }
+
+    /// Where this run was written down, for opening it again — the last thing
+    /// said before the terminal goes back to being a terminal.
+    ///
+    /// Said at the end of a run rather than shown during one. While the display
+    /// is up the run is right there, and nobody needs telling how to get back
+    /// to something they are looking at; the moment it is worth knowing is the
+    /// moment it has just gone.
+    fn reopen(&self) -> Option<Line<'static>> {
+        let path = self.session.as_ref()?.path();
+        // The directory the run was logging in, which is what `rivet` is
+        // pointed at rather than the file itself.
+        let dir = path
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty() && *dir != std::path::Path::new("."));
+        let command = match dir {
+            // Quoted the way the `less` command a step's page copies is, so
+            // that a build directory with a space in it is still one line to
+            // paste.
+            Some(dir) => format!("rivet -C {}", crate::tui::quote(&dir.display().to_string())),
+            None => "rivet".to_string(),
+        };
+        Some(Line::from(vec![
+            span("  ↻ ", Style::new().cyan()),
+            span(
+                format!("reopen this run to read its logs: {command}"),
+                Style::new().dim(),
+            ),
+        ]))
+    }
+
+    /// How the run went, in a line, for the terminal it is handed back to.
+    fn closing(&self) -> Line<'static> {
         let counts = self.counts();
         let mut spans = vec![
-            if counts.failed == 0 {
-                span("  ✔ ", Style::new().green())
-            } else {
-                span("  ✖ ", Style::new().red())
+            // A run that was cut short did not go well, but it did not go
+            // wrong either: what it gets is neither the tick nor the cross.
+            match (counts.failed, counts.unfinished) {
+                (0, 0) => span("  ✔ ", Style::new().green()),
+                (0, _) => span("  ⊗ ", Style::new().yellow()),
+                _ => span("  ✖ ", Style::new().red()),
             },
             span(format!("{} executed", counts.executed()), Style::new()),
         ];
@@ -637,7 +861,13 @@ impl Reporter {
                 Style::new().red(),
             ));
         }
-        let warnings = crate::log::warnings();
+        if counts.unfinished > 0 {
+            spans.push(span(
+                format!(" · {} unfinished", counts.unfinished),
+                Style::new().yellow(),
+            ));
+        }
+        let warnings = self.warnings();
         if warnings > 0 {
             spans.push(span(
                 format!(
@@ -648,10 +878,10 @@ impl Reporter {
             ));
         }
         spans.push(span(
-            format!(" · {}", fmt_duration(elapsed)),
+            format!(" · {}", fmt_duration(self.elapsed())),
             Style::new().dim(),
         ));
-        self.print(Line::from(spans));
+        Line::from(spans)
     }
 
     /// How long the run took, once it is over.
@@ -672,6 +902,17 @@ impl Reporter {
             skipped: self.skipped.load(Ordering::Relaxed),
             blocked: self.blocked.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
+            unfinished: self.replay.as_ref().map_or(0, |replay| replay.unfinished),
+        }
+    }
+
+    /// How many warnings there are to point at: this run's, or — for a run
+    /// being read back — the ones it logged when it happened. This process has
+    /// logged none of its own.
+    fn warnings(&self) -> usize {
+        match &self.replay {
+            Some(replay) => replay.warnings,
+            None => crate::log::warnings(),
         }
     }
 
@@ -681,7 +922,7 @@ impl Reporter {
     /// both it is squeezed, down to a limit, and only then are the counts cut.
     /// A terminal wide enough for everything gets the full bar.
     fn summary(&self, width: usize) -> Line<'static> {
-        self.summary_of(width, crate::log::warnings())
+        self.summary_of(width, self.warnings())
     }
 
     /// The summary, given how many warnings there are to mention: taken apart
@@ -717,11 +958,24 @@ impl Reporter {
         // A count rather than the warnings themselves: what they said is in
         // the log, which `L` opens, and a count cannot go stale the way a line
         // of it repeated here would.
+        if counts.unfinished > 0 {
+            spans.push(span(
+                format!(" · {} unfinished", counts.unfinished),
+                Style::new().yellow(),
+            ));
+        }
         if warnings > 0 {
             spans.push(span(format!(" · ⚠ {warnings}"), Style::new().yellow()));
         }
         if self.ended().is_some() {
-            spans.push(span(" · done", Style::new().bold()));
+            // A run that was killed did not end; it stopped. Saying `done` of
+            // one would be saying the steps it never reached were not going to
+            // be run, which is the opposite of what happened to them.
+            let word = match &self.replay {
+                Some(replay) if !replay.complete => " · interrupted",
+                _ => " · done",
+            };
+            spans.push(span(word, Style::new().bold()));
         }
 
         let text: usize = spans.iter().map(Span::width).sum();
@@ -881,7 +1135,133 @@ impl Paint for Reporter {
             })
             .collect();
         record.sort_by_key(|(at, _)| *at);
-        record.into_iter().map(|(_, line)| line).collect()
+        let mut lines: Vec<Line<'static>> = record.into_iter().map(|(_, line)| line).collect();
+        // A run still going when its display is given up is a run being
+        // abandoned — `^C`, or a terminal that has gone — and it will not reach
+        // the end where this is otherwise said. One that has ended says it
+        // after its summary instead, where it reads as the last word rather
+        // than as an interruption of the record.
+        if self.ended().is_none() {
+            lines.extend(self.reopen());
+        }
+        lines
+    }
+}
+
+/// The line a step keeps once it has stopped, which is both its row in the
+/// list and its line in the record.
+///
+/// Everything it says is passed in rather than read off a running step, so a
+/// run being read back out of its session says exactly what it said at the
+/// time. Built without the record's indent, so that the cursor can go where
+/// the indent goes.
+fn step_record(
+    label: &str,
+    width: usize,
+    outcome: Outcome,
+    elapsed: Duration,
+    detail: Option<&str>,
+    location: Option<&str>,
+    killed: bool,
+) -> Line<'static> {
+    let elapsed = fmt_duration(elapsed);
+    let padded = pad(label, width);
+    match outcome {
+        Outcome::Completed => Line::from(vec![
+            span("✔ ", Style::new().green()),
+            span(padded, Style::new().bold()),
+            span(format!("  {elapsed}"), Style::new().dim()),
+        ]),
+        Outcome::Skipped => Line::from(vec![
+            span("⏭ ", Style::new().yellow()),
+            span(padded, Style::new()),
+            span("  ", Style::new()),
+            span(
+                detail.unwrap_or("skipped").to_string(),
+                Style::new().yellow(),
+            ),
+        ]),
+        Outcome::Failed => {
+            let mut spans = vec![
+                span("✖ ", Style::new().red()),
+                span(padded, Style::new().red().bold()),
+                span(format!("  {elapsed}"), Style::new().dim()),
+            ];
+            // Say where it died, not just that it did. Both halves are
+            // reported: which of them caused the failure is exactly what is
+            // not known here.
+            if let Some(location) = location {
+                spans.push(span(format!("  during {location}"), Style::new().yellow()));
+            }
+            // A step someone killed did not fail of its own accord, and
+            // whatever the tool said on its way out is not the reason it
+            // stopped. That is in the log; the line says who to blame.
+            if killed {
+                spans.push(span("  killed", Style::new().yellow()));
+            } else if let Some(detail) = detail {
+                spans.push(span(
+                    format!("  {}", truncate(&clean(detail), 160)),
+                    Style::new().red(),
+                ));
+            }
+            Line::from(spans)
+        }
+    }
+}
+
+/// The record's line for a step dropped because something it waited for failed.
+fn blocked_record(label: &str, blame: &str, width: usize) -> Line<'static> {
+    Line::from(vec![
+        span("⊘ ", Style::new().yellow()),
+        span(pad(label, width), Style::new()),
+        span("  ", Style::new()),
+        span(format!("blocked by {blame}"), Style::new().yellow()),
+    ])
+}
+
+/// The line for a step that was running when its run was killed.
+///
+/// It never got to say how it went, and nothing about the log it left says
+/// either — a tool cut off mid-sentence looks much like one that finished. So
+/// the line says the one thing that is known: that this is not where the step
+/// got to, only where it was when the run stopped.
+fn unfinished_record(label: &str, width: usize) -> Line<'static> {
+    Line::from(vec![
+        span("⊗ ", Style::new().yellow()),
+        span(pad(label, width), Style::new()),
+        span("  ", Style::new()),
+        span("unfinished", Style::new().yellow()),
+    ])
+}
+
+/// The line a step from a session gets, or `None` for one that never started.
+fn replayed_record(step: &session::Step, width: usize) -> Option<Line<'static>> {
+    let elapsed = Duration::from_secs_f64(step.elapsed.unwrap_or(0.0).max(0.0));
+    let record = |outcome| {
+        step_record(
+            &step.label,
+            width,
+            outcome,
+            elapsed,
+            step.detail.as_deref(),
+            step.location.as_deref(),
+            step.killed,
+        )
+    };
+    match step.state {
+        // A step that never started is still to come, and is drawn waiting for
+        // whatever it was waiting for: the log at its path belongs to some
+        // other run, and offering it would be offering the wrong run's.
+        session::State::Pending => None,
+        session::State::Running => Some(unfinished_record(&step.label, width)),
+        session::State::Completed => Some(record(Outcome::Completed)),
+        session::State::Skipped => Some(pinned_record(&step.label, width)),
+        session::State::Blocked => Some(blocked_record(
+            &step.label,
+            step.detail.as_deref().unwrap_or("a step that failed"),
+            width,
+        )),
+        session::State::Failed => Some(record(Outcome::Failed)),
     }
 }
 
@@ -1391,20 +1771,27 @@ impl Row {
         if self.group() == Group::Pending {
             return (Vec::new(), Vec::new());
         }
-        let state = self.state.lock().unwrap();
-        let mut files: Vec<PathBuf> = state.outputs.clone();
-        for file in state.history.iter().chain(self.log.iter()) {
-            if !files.contains(file) {
-                files.push(file.clone());
-            }
-        }
-        let follow = if state.outputs.is_empty() {
-            self.log.iter().cloned().collect()
-        } else {
-            state.outputs.clone()
-        };
-        (files, follow)
+        step_files(&self.state.lock().unwrap(), self.log.as_deref())
     }
+}
+
+/// What a step has to read, and what of it to follow: see [`Row::files`].
+///
+/// Apart from the row because the session records the same two lists, and they
+/// have to be the same lists: a run read back offers what the run offered.
+fn step_files(state: &StepState, log: Option<&std::path::Path>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut files: Vec<PathBuf> = state.outputs.clone();
+    for file in state.history.iter().map(PathBuf::as_path).chain(log) {
+        if !files.iter().any(|have| have == file) {
+            files.push(file.to_path_buf());
+        }
+    }
+    let follow = if state.outputs.is_empty() {
+        log.map(std::path::Path::to_path_buf).into_iter().collect()
+    } else {
+        state.outputs.clone()
+    };
+    (files, follow)
 }
 
 /// The cursor's column: the marker on the step it is on, blank elsewhere.
@@ -1754,6 +2141,15 @@ impl StepHandle {
             }
         }
         state.outputs = files;
+
+        // Which files a step wrote is exactly what cannot be worked out from
+        // the outside afterwards, so the session is told each time it changes —
+        // which is once per tool the step runs, not once per line it prints.
+        if let Some(session) = &self.reporter.session {
+            let (files, follow) = step_files(&state, self.log.as_ref().map(|log| log.path()));
+            drop(state);
+            session.files(self.id, files, follow);
+        }
     }
 
     /// The files last given to [`StepHandle::set_output_files`].
@@ -2157,7 +2553,7 @@ mod tests {
     }
 
     fn reporter_of(labels: &[&str]) -> Arc<Reporter> {
-        Reporter::new(planned(labels), 1, None, false)
+        Reporter::new(planned(labels), 1, None, false, None)
     }
 
     #[test]
@@ -3136,7 +3532,7 @@ mod tests {
         plan[0].deps = vec![1, 2];
         plan[1].deps = vec![3];
         plan[2].deps = vec![3];
-        let reporter = Reporter::new(plan, 4, Some(PathBuf::from("/build")), false);
+        let reporter = Reporter::new(plan, 4, Some(PathBuf::from("/build")), false, None);
         assert_eq!(
             reporter.about,
             About {
@@ -3144,11 +3540,12 @@ mod tests {
                 steps: 4,
                 workers: 4,
                 log_dir: Some(PathBuf::from("/build")),
+                saved: None,
             }
         );
 
         // Several targets are named in the order they were asked for.
-        let reporter = Reporter::new(planned(&["drc", "lvs"]), 2, None, false);
+        let reporter = Reporter::new(planned(&["drc", "lvs"]), 2, None, false, None);
         assert_eq!(reporter.about.targets, ["drc", "lvs"]);
     }
 
@@ -3156,11 +3553,197 @@ mod tests {
     fn skipping_a_pinned_step_counts_it_once() {
         let mut plan = planned(&["sram", "syn"]);
         plan[0].pinned = true;
-        let reporter = Reporter::new(plan, 1, None, false);
+        let reporter = Reporter::new(plan, 1, None, false, None);
         reporter.skip(0);
         assert_eq!(reporter.counts().skipped, 1);
         assert_eq!(reporter.counts().finished, 1);
         assert_eq!(reporter.counts().executed(), 0);
+    }
+
+    /// The line a run leaves in the terminal on its way out, which is the only
+    /// way anyone finds out that a run can be opened again at all.
+    #[test]
+    fn a_run_says_where_it_was_written_down() {
+        // A directory with a space in it, because the line is to be pasted.
+        let build = std::env::temp_dir().join(format!("rivet reopen {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&build);
+        let reporter = Reporter::new(
+            planned(&["decoder par"]),
+            1,
+            None,
+            false,
+            Some(build.clone()),
+        );
+
+        let said = plain(&reporter.reopen().expect("a run with a session says so"));
+        assert!(said.contains("rivet -C "), "{said}");
+        assert!(
+            said.contains(&format!("'{}'", build.display())),
+            "the log directory, quoted so it pastes: {said}"
+        );
+        // And a run that wrote nothing down has nothing to say.
+        assert!(reporter_of(&["decoder par"]).reopen().is_none());
+        let _ = std::fs::remove_dir_all(&build);
+    }
+
+    // -- a run read back ----------------------------------------------------
+
+    /// One step of a session, with the fields a test is not about left out.
+    fn saved_step(label: &str, state: session::State) -> session::Step {
+        session::Step {
+            label: label.to_string(),
+            state,
+            pinned: false,
+            deps: Vec::new(),
+            log: None,
+            started: Some(1.0),
+            ended: Some(2.0),
+            elapsed: Some(1.5),
+            detail: None,
+            location: None,
+            killed: false,
+            files: Vec::new(),
+            follow: Vec::new(),
+        }
+    }
+
+    fn saved(steps: Vec<session::Step>, elapsed: Option<f64>) -> session::Session {
+        session::Session {
+            version: session::VERSION,
+            started: 1_789_063_331,
+            saved: 1_789_063_431,
+            pid: 31_337,
+            workers: 4,
+            elapsed,
+            warnings: 2,
+            log_dir: Some(PathBuf::from("/build")),
+            targets: vec!["decoder signoff".into()],
+            steps,
+        }
+    }
+
+    /// A run read back says exactly what it said while it was happening: the
+    /// same lines, in the order it said them.
+    #[test]
+    fn a_run_read_back_says_what_it_said() {
+        let mut failed = saved_step("decoder lvs", session::State::Failed);
+        failed.detail = Some("lvs did not match".into());
+        failed.location = Some("compare (2/2)".into());
+        failed.ended = Some(3.0);
+        let mut blocked = saved_step("decoder signoff", session::State::Blocked);
+        blocked.detail = Some("decoder lvs".into());
+        blocked.ended = Some(4.0);
+        let mut pinned = saved_step("sram compile", session::State::Skipped);
+        pinned.pinned = true;
+        pinned.ended = Some(0.5);
+
+        let reporter = Reporter::replay(&saved(
+            vec![
+                blocked,
+                saved_step("decoder par", session::State::Completed),
+                failed,
+                pinned,
+            ],
+            Some(93.0),
+        ));
+        let records: Vec<String> = reporter
+            .replay
+            .as_ref()
+            .expect("a replayed run knows it is one")
+            .records
+            .iter()
+            .map(|line| plain(line))
+            .collect();
+
+        assert_eq!(
+            records,
+            [
+                "⏭ sram compile     pinned",
+                "✔ decoder par      1.5s",
+                "✖ decoder lvs      1.5s  during compare (2/2)  lvs did not match",
+                "⊘ decoder signoff  blocked by decoder lvs",
+            ],
+            "in the order they ended, however they are listed",
+        );
+
+        // And the run itself: over, so the clock has stopped and `q` is a way
+        // out rather than a question.
+        let summary = plain(&reporter.summary(200));
+        assert!(summary.contains("4/4 steps"), "{summary}");
+        assert!(summary.contains("1m33s"), "{summary}");
+        assert!(summary.contains("1 failed"), "{summary}");
+        assert!(summary.contains("1 blocked"), "{summary}");
+        // The run's warnings, which this process did not log and cannot count.
+        assert!(summary.contains("⚠ 2"), "{summary}");
+        assert!(summary.ends_with("· done"), "{summary}");
+        assert!(reporter.done());
+    }
+
+    /// The case sessions are for: a run that was killed, and the steps it was
+    /// in the middle of when it went.
+    #[test]
+    fn a_step_the_run_never_finished_says_so_rather_than_guessing() {
+        let mut par = saved_step("decoder par", session::State::Running);
+        // Still running, so it has no end; the step before it has one.
+        par.ended = None;
+        let mut syn = saved_step("decoder syn", session::State::Completed);
+        syn.ended = Some(1.5);
+        let mut pending = saved_step("decoder drc", session::State::Pending);
+        (pending.started, pending.ended, pending.elapsed) = (None, None, None);
+
+        let reporter = Reporter::replay(&saved(
+            vec![par, syn, pending],
+            // No elapsed: the run never got to say how long it took.
+            None,
+        ));
+
+        let records: Vec<String> = reporter
+            .replay
+            .as_ref()
+            .expect("replayed")
+            .records
+            .iter()
+            .map(|line| plain(line))
+            .collect();
+        // The step that never started has no line at all: it is still drawn
+        // waiting, and there is nothing to say about how it went.
+        assert_eq!(
+            records,
+            ["✔ decoder syn  1.5s", "⊗ decoder par  unfinished"]
+        );
+
+        let summary = plain(&reporter.summary(200));
+        assert!(summary.contains("1/3 steps"), "{summary}");
+        assert!(summary.contains("1 unfinished"), "{summary}");
+        // Not `done`: the run stopped, which is not the same as finishing.
+        assert!(summary.ends_with("· interrupted"), "{summary}");
+        assert_eq!(reporter.counts().unfinished, 1);
+        assert_eq!(reporter.counts().executed(), 1);
+
+        let closing = plain(&reporter.closing());
+        assert!(closing.contains("1 executed · 1 unfinished"), "{closing}");
+        // And nothing to say about reopening: this is the reopening.
+        assert!(reporter.reopen().is_none());
+    }
+
+    /// A step's page offers what the step wrote, which is the whole point of
+    /// having written the run down.
+    #[test]
+    fn a_run_read_back_offers_the_files_the_run_offered() {
+        let out = PathBuf::from("/build/decoder.par.out");
+        let err = PathBuf::from("/build/decoder.par.err");
+        let own = PathBuf::from("/build/decoder par.rivet.log");
+        let mut step = saved_step("decoder par", session::State::Completed);
+        step.log = Some(own.clone());
+        step.files = vec![out.clone(), err.clone(), own.clone()];
+        step.follow = vec![out.clone(), err.clone()];
+
+        let reporter = Reporter::replay(&saved(vec![step], Some(4.0)));
+        let state = reporter.steps[0].state.lock().unwrap();
+        assert_eq!(
+            step_files(&state, Some(&own)),
+            (vec![out.clone(), err.clone(), own], vec![out, err]),
+        );
     }
 
     // -- what a step has to read --------------------------------------------

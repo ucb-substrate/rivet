@@ -6,6 +6,12 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
+# `rivet`, which opens a run that has already happened so its logs can be read
+# again: see `src/session.rs`.
+[[bin]]
+name = "rivet"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -237,6 +237,10 @@ pub(crate) struct About {
     pub workers: usize,
     /// Where `rivet.log` is being written, if it is.
     pub log_dir: Option<PathBuf>,
+    /// When the run happened, for a run being read back out of a session —
+    /// and, by being there at all, that it is one. A run on screen while it
+    /// runs is happening now and does not say so.
+    pub saved: Option<String>,
 }
 
 /// The list page: every step so far, and how the run is going.
@@ -1360,6 +1364,14 @@ fn banner_lines(about: &About, height: u16) -> Vec<Line<'static>> {
     let logs = match &about.log_dir {
         Some(dir) => format!("logs in {}", dir.display()),
         None => "logging off".to_string(),
+    };
+
+    // A saved run says when it was: on a list of steps that are not moving,
+    // that is the difference between a run that has stopped and one that is
+    // being read back long afterwards.
+    let counts = match &about.saved {
+        Some(saved) => format!("{counts} · {saved}"),
+        None => counts,
     };
 
     if height >= BANNER_ROWS {
@@ -2788,7 +2800,7 @@ fn full_path(path: &Path) -> String {
 
 /// Quote a path for a shell: a step's own log is named after the step, and step
 /// labels have spaces in them.
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     let plain = !text.is_empty()
         && text
             .chars()
@@ -3578,6 +3590,7 @@ mod tests {
             steps: 7,
             workers: 4,
             log_dir: Some(PathBuf::from("/build")),
+            saved: None,
         };
 
         // Tall: the wordmark, the facts beside it, and a blank row under.
@@ -3609,6 +3622,7 @@ mod tests {
             steps: 1,
             workers: 1,
             log_dir: None,
+            saved: None,
         };
         let text: Vec<String> = banner_lines(&about, 40).iter().map(plain).collect();
         assert!(text[0].ends_with("drc, lvs"), "{:?}", text[0]);
@@ -3967,6 +3981,7 @@ mod tests {
             steps: 7,
             workers: 4,
             log_dir: Some(PathBuf::from("/build")),
+            saved: None,
         };
         assert_eq!(run_log(&about), Some(PathBuf::from("/build/rivet.log")));
 

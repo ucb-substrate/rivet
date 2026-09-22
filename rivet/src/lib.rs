@@ -13,11 +13,19 @@ pub mod executor;
 pub mod log;
 pub mod progress;
 pub mod rust;
+pub mod session;
 mod tui;
 
 pub use executor::{
     execute, BlockedStep, ExecuteConfig, ExecuteError, Executor, StepFailure, Summary,
 };
+
+/// Tests that run a flow with logging on take turns.
+///
+/// `rivet.log` has one sink for the process, so two runs at once would each be
+/// writing into whichever directory the other started in.
+#[cfg(test)]
+pub(crate) static ONE_RUN_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug)]
 pub struct Dag<F> {

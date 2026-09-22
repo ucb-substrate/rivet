@@ -354,6 +354,81 @@ prints to stdout lands in the file rather than over the screen. A run in CI, or
 with stderr redirected, falls back to plain one-line-per-event logging on
 stderr.
 
+### Coming back to a run
+
+The display lasts exactly as long as the process does. A run that is
+interrupted — `^C`, a dropped ssh session, a machine going down — takes it with
+it, and what is left on disk is a scatter of `.out`, `.err` and `.rivet.log`
+files with nothing to say which step wrote which, which tool wrote them in what
+order, or how any of it ended.
+
+So a run writes itself down as it goes, and `rivet` puts it back on the screen.
+Where to do that from is the last thing a run says, whether it ended or was cut
+short:
+
+```text
+  ↻ reopen this run to read its logs: rivet -C build
+```
+
+```text
+rivet               the run that logged in the current directory
+rivet -C build      the run that logged in build
+```
+
+What comes back is the run as it was: the same list in the same order, every
+step with the line it ended on, the cursor on the first thing that went wrong,
+and every log a keypress away. The pages read the files the run left where it
+left them, so a gigabyte of innovus log is scrolled and searched exactly as it
+was while the tool was writing it. Nothing is re-run and nothing is changed —
+`x` and `q` have nothing to kill or cancel, and `q` simply leaves.
+
+A run that was killed comes back as the run that was killed. The steps that
+finished say how they went, the ones it was in the middle of are `⊗ unfinished`
+— they never got to say, and a tool cut off mid-sentence looks much like one
+that finished — and the ones it never reached are still waiting:
+
+```text
+  ⏭ sram compile     pinned
+  ✔ decoder syn      1m14s
+❯ ⊗ decoder par      unfinished
+  ○ decoder drc      waits for decoder par
+  ○ decoder signoff  waits for decoder drc, decoder lvs, decoder merge
+
+  ━━━━━━╸───────────────── 2/7 steps · 12m08s · 1 unfinished · interrupted
+```
+
+A session is one small file, written beside the run's `rivet.log`:
+
+```text
+build/
+  rivet.log             every run that has logged here, in order
+  rivet.session.toml    the last one, to open again
+```
+
+It is an index, not a copy: the plan, how each step ended, and the paths of the
+files each one wrote. The output itself stays where the tool put it, which is
+what makes writing a session cost nothing however much of it there is — and
+what makes a run whose build directory has since been cleaned come back as the
+shape of a run with nothing behind it, each page saying `no such file`.
+
+There is one, and it is the last run's. The logs it names are the last run's
+too — a step rewrites its `{step}.rivet.log` and its tools' `.out` and `.err`
+every time it runs — so a session kept from the run before would name files that
+have since been written over: it would look like a record of that run and read
+like this one. The session goes the way the logs go, and the next run in the
+directory writes over it as it starts.
+
+The file is rewritten whenever something happens that could not be worked out
+again afterwards — a step starting, a step ending, a step starting a tool and so
+writing somewhere new — and never for progress, which moves several times a
+second and means nothing once the run is over. Each rewrite is a whole file
+renamed over the old one, so a session is never half a run. A run that ends says
+how long it took; one that is killed never gets to, and that is what tells the
+two apart when the file is read back.
+
+`ExecuteConfig::sessions(false)` turns the writing off, and a run that is not
+logging at all (`logging(false)`) writes none either.
+
 
 ## Logging
 
@@ -370,6 +445,7 @@ event is written twice:
 ```text
 build/
   rivet.log                  the whole run, every step, in order
+  rivet.session.toml         the last run, for reopening it afterwards
   decoder/par/
     decoder.par.out          raw innovus stdout
     decoder.par.err          raw innovus stderr

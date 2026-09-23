@@ -404,12 +404,12 @@ mod tests {
     use super::*;
     use crate::{Step, StepRef, StepResult};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
 
-    /// The run sink is process-wide, so these take turns. They still assert on
+    /// The run sink is process-wide, so these take turns with every other test
+    /// that runs a flow; see [`crate::ONE_RUN_AT_A_TIME`]. They still assert on
     /// what a file *contains* rather than on all of it: a flow running in
     /// another test at the same time logs into whatever sink is active.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    use crate::ONE_RUN_AT_A_TIME as SERIAL;
 
     fn temp_dir(name: &str) -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);

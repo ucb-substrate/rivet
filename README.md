@@ -279,7 +279,9 @@ matched is picked out wherever it appears on screen.
 `tab` moves between the files the page can read: the output of the tool the
 step is running now, first — the `.out` and `.err` that `exec::run_logged` is
 writing — then the output of tools it ran earlier, then the step's own
-`{step}.rivet.log`, and the run's `rivet.log` after them. `L` goes straight to
+`{step}.rivet.log`, then whatever else the step says is worth reading
+(`Step::browse_files` — Innovus offers its `par.tcl`, Genus its `syn.tcl`), and
+the run's `rivet.log` after them. `L` goes straight to
 the run's log, from a step's page or from the list, where it opens on a page of
 its own. A step driving a tool some other way says what it is writing with
 `StepHandle::set_output_files`. A pinned or blocked step, which did not run this

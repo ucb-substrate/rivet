@@ -697,15 +697,17 @@ fn run_node(
         return Ok(());
     }
 
-    // Where the step's own log file goes, asked for before it starts so the
-    // read guard is not held while it runs.
-    let log_dir = if logging {
-        node.step.read().log_dir()
-    } else {
-        None
+    // Where the step's own log file goes, and what else its page offers,
+    // asked for before it starts so the read guard is not held while it runs.
+    let (log_dir, browse) = {
+        let step = node.step.read();
+        (
+            if logging { step.log_dir() } else { None },
+            step.browse_files(),
+        )
     };
 
-    let handle = reporter.start(index, log::open_step_log(log_dir, &node.label));
+    let handle = reporter.start(index, log::open_step_log(log_dir, &node.label), browse);
     // Guards, because there are several ways out of this function: the step
     // stops being the current one, and its events stop being logged as its own,
     // whichever one is taken.

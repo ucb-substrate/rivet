@@ -293,6 +293,10 @@ impl Step for GenusStep {
     fn log_dir(&self) -> Option<PathBuf> {
         Some(self.work_dir.clone())
     }
+
+    fn browse_files(&self) -> Vec<PathBuf> {
+        vec![self.work_dir.join("syn.tcl")]
+    }
 }
 
 pub fn set_default_options() -> Substep {

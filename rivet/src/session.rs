@@ -178,7 +178,8 @@ pub struct Step {
     #[serde(default, skip_serializing_if = "is_false")]
     pub killed: bool,
     /// Everything the step wrote, in the order its page offers them: the tool
-    /// it was running last first, then earlier tools, then its own log.
+    /// it was running last first, then earlier tools, then its own log, then
+    /// whatever else it said was worth reading.
     #[serde(default)]
     pub files: Vec<PathBuf>,
     /// The files a command copied from its page would follow: whatever tool it
@@ -387,14 +388,21 @@ impl Recorder {
         &self.path
     }
 
-    /// Record that a step has started, and where its own log is going.
-    pub(crate) fn started(&self, id: usize, log: Option<&Path>) {
+    /// Record that a step has started, where its own log is going, and what
+    /// its page offers to begin with.
+    pub(crate) fn started(
+        &self,
+        id: usize,
+        log: Option<&Path>,
+        files: Vec<PathBuf>,
+        follow: Vec<PathBuf>,
+    ) {
         self.update(id, |step| {
             step.state = State::Running;
             step.started = Some(instant());
             step.log = log.map(Path::to_path_buf);
-            step.files = log.map(Path::to_path_buf).into_iter().collect();
-            step.follow = step.files.clone();
+            step.files = files;
+            step.follow = follow;
         });
     }
 
@@ -745,7 +753,8 @@ mod tests {
         ];
         let recorder = Recorder::start(&dir.join("sessions"), &about, &plan).expect("a recorder");
 
-        recorder.started(0, Some(&dir.join("syn.rivet.log")));
+        let log = dir.join("syn.rivet.log");
+        recorder.started(0, Some(&log), vec![log.clone()], vec![log.clone()]);
         recorder.ended(
             0,
             State::Completed,
@@ -754,7 +763,8 @@ mod tests {
             None,
             false,
         );
-        recorder.started(1, Some(&dir.join("par.rivet.log")));
+        let log = dir.join("par.rivet.log");
+        recorder.started(1, Some(&log), vec![log.clone()], vec![log.clone()]);
         recorder.files(1, vec![dir.join("par.out")], vec![dir.join("par.out")]);
         // And here the process dies: nothing says the run ended.
 
@@ -788,7 +798,7 @@ mod tests {
         }];
         let recorder = Recorder::start(&dir, &about, &plan).expect("a recorder");
 
-        recorder.started(0, None);
+        recorder.started(0, None, Vec::new(), Vec::new());
         recorder.ended(
             0,
             State::Completed,

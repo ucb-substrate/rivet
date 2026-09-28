@@ -155,6 +155,29 @@ pub trait Step: Debug + Any + Send + Sync {
     fn log_dir(&self) -> Option<PathBuf> {
         None
     }
+
+    /// Other files worth reading on this step's page.
+    ///
+    /// The page offers what the step's tools are writing and its own log; this
+    /// is for whatever else explains what the step did — the script it handed
+    /// its tool, say, or a report it leaves behind:
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # struct ParStep { work_dir: PathBuf }
+    /// # impl ParStep {
+    /// fn browse_files(&self) -> Vec<PathBuf> {
+    ///     vec![self.work_dir.join("par.tcl")]
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// Asked for once, as the step starts, so a file need not exist yet: one
+    /// the step goes on to write is read once it appears. They come after the
+    /// step's own log, in the order given. The default is none.
+    fn browse_files(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }
 
 pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)>) -> F) -> Dag<F> {

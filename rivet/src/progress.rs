@@ -567,19 +567,26 @@ impl Reporter {
     ///
     /// `log` is the step's own log file: both where what it logs is written,
     /// and — until it starts a tool of its own — the file the cursor offers to
-    /// read.
+    /// read. `browse` is what else the step offers to read; see
+    /// [`Step::browse_files`](crate::Step::browse_files).
     pub(crate) fn start(
         self: &Arc<Self>,
         id: usize,
         log: Option<Arc<crate::log::LogFile>>,
+        browse: Vec<PathBuf>,
     ) -> StepHandle {
         self.running.fetch_add(1, Ordering::Relaxed);
         let entry = &self.steps[id];
         let started = Instant::now();
 
+        let mut state = entry.state.lock().unwrap();
+        state.browse = browse;
         if let Some(session) = &self.session {
-            session.started(id, log.as_ref().map(|log| log.path()));
+            let log = log.as_ref().map(|log| log.path());
+            let (files, follow) = step_files(&state, log);
+            session.started(id, log, files, follow);
         }
+        drop(state);
 
         match self.display() {
             Some(mut display) => display.cursor.start(
@@ -1760,7 +1767,8 @@ impl Row {
     /// The files this step has to read, and the ones to open elsewhere.
     ///
     /// Everything first, most useful first: what the tool running now is
-    /// writing, then what earlier tools wrote, then the step's own log. Then
+    /// writing, then what earlier tools wrote, then the step's own log, then
+    /// whatever else the step said was worth reading. Then
     /// what someone reading the step's log wants: the output of the tool the
     /// step is driving, which is what the display deliberately never shows, or
     /// the step's own log until a tool has started.
@@ -1781,7 +1789,14 @@ impl Row {
 /// have to be the same lists: a run read back offers what the run offered.
 fn step_files(state: &StepState, log: Option<&std::path::Path>) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files: Vec<PathBuf> = state.outputs.clone();
-    for file in state.history.iter().map(PathBuf::as_path).chain(log) {
+    let browse = state.browse.iter().map(PathBuf::as_path);
+    for file in state
+        .history
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(log)
+        .chain(browse)
+    {
         if !files.iter().any(|have| have == file) {
             files.push(file.to_path_buf());
         }
@@ -2001,6 +2016,9 @@ struct StepState {
     /// were first named, so that an earlier tool's output can still be read
     /// once a later tool has replaced it as what the step is writing.
     history: Vec<PathBuf>,
+    /// What else the step said was worth reading, offered after its own log;
+    /// see [`Step::browse_files`](crate::Step::browse_files).
+    browse: Vec<PathBuf>,
     /// When the tool last wrote a line. `None` until it writes its first.
     last_output: Option<Instant>,
     /// The tool the step is running, while it is running one: what a kill
@@ -2620,7 +2638,7 @@ mod tests {
     #[test]
     fn only_banners_reach_the_display() {
         let reporter = reporter();
-        let handle = reporter.start(0, None);
+        let handle = reporter.start(0, None, Vec::new());
 
         handle.output_line("starting up");
         assert_eq!(handle.substep(), None);
@@ -2635,7 +2653,7 @@ mod tests {
     #[test]
     fn status_and_banners_do_not_disturb_each_other() {
         let reporter = reporter();
-        let handle = reporter.start(0, None);
+        let handle = reporter.start(0, None, Vec::new());
 
         handle.set_status_progress(3, 12, "merging gds");
         handle.output_line(&banner(2, 5, "route_design"));
@@ -2657,18 +2675,18 @@ mod tests {
     fn location_reports_whichever_halves_are_set() {
         let reporter = reporter_of(&["a", "b", "c", "d"]);
 
-        let handle = reporter.start(0, None);
+        let handle = reporter.start(0, None, Vec::new());
         assert_eq!(handle.location(), None);
 
-        let handle = reporter.start(1, None);
+        let handle = reporter.start(1, None, Vec::new());
         handle.set_status("merging");
         assert_eq!(handle.location().as_deref(), Some("merging"));
 
-        let handle = reporter.start(2, None);
+        let handle = reporter.start(2, None, Vec::new());
         handle.output_line(&banner(2, 5, "route"));
         assert_eq!(handle.location().as_deref(), Some("route (2/5)"));
 
-        let handle = reporter.start(3, None);
+        let handle = reporter.start(3, None, Vec::new());
         handle.set_status_progress(7, 12, "merging");
         handle.output_line(&banner(2, 5, "route"));
         assert_eq!(
@@ -2683,7 +2701,7 @@ mod tests {
     #[test]
     fn status_can_be_cleared_on_its_own() {
         let reporter = reporter();
-        let handle = reporter.start(0, None);
+        let handle = reporter.start(0, None, Vec::new());
 
         handle.output_line(&banner(1, 2, "place"));
         handle.set_status("linking");
@@ -2825,7 +2843,7 @@ mod tests {
             .arg("60")
             .spawn()
             .expect("spawn");
-        let handle = reporter.start(0, None);
+        let handle = reporter.start(0, None, Vec::new());
         let guard = handle.watch_child(child.id());
         (handle, child, guard)
     }
@@ -2860,7 +2878,7 @@ mod tests {
         assert!(!killed.contains("signal 15"), "{killed}");
 
         // A step that failed on its own still says why.
-        let other = reporter.start(1, None);
+        let other = reporter.start(1, None, Vec::new());
         let failed = plain(&reporter.record(&other, Outcome::Failed, Some("lvs did not match")));
         assert!(failed.contains("lvs did not match"), "{failed}");
         assert!(!failed.contains("killed"), "{failed}");
@@ -2869,7 +2887,7 @@ mod tests {
     #[test]
     fn a_step_running_no_tool_of_its_own_says_there_is_nothing_to_kill() {
         let reporter = reporter_of(&["one", "two"]);
-        let handle = reporter.start(0, None);
+        let handle = reporter.start(0, None, Vec::new());
         // Nothing spawned: a step doing its work in Rust. Its own thread
         // cannot be stopped from outside, and saying so is better than
         // pretending it was.
@@ -2899,7 +2917,7 @@ mod tests {
     #[test]
     fn a_tool_that_has_gone_is_not_signalled_again() {
         let reporter = reporter_of(&["one", "two"]);
-        let handle = reporter.start(0, None);
+        let handle = reporter.start(0, None, Vec::new());
         let child = std::process::Command::new("sleep")
             .arg("60")
             .spawn()
@@ -3809,5 +3827,24 @@ mod tests {
         let lvs = PathBuf::from("/build/decoder/par/decoder.lvs.out");
         handle.set_output_files(vec![lvs.clone()]);
         assert_eq!(row.files(), (vec![lvs.clone(), out, err, own], vec![lvs]));
+    }
+
+    #[test]
+    fn what_else_a_step_offers_comes_after_its_own_log_and_is_not_followed() {
+        let row = row(1);
+        let own = PathBuf::from("/build/decoder/par/decoder par.rivet.log");
+        let tcl = PathBuf::from("/build/decoder/par/par.tcl");
+        row.state.lock().unwrap().browse = vec![tcl.clone(), own.clone()];
+        assert_eq!(
+            step_files(&row.state.lock().unwrap(), Some(&own)),
+            (vec![own.clone(), tcl.clone()], vec![own.clone()]),
+        );
+
+        let out = PathBuf::from("/build/decoder/par/decoder.par.out");
+        row.state.lock().unwrap().outputs = vec![out.clone()];
+        assert_eq!(
+            step_files(&row.state.lock().unwrap(), Some(&own)),
+            (vec![out.clone(), own, tcl], vec![out]),
+        );
     }
 }

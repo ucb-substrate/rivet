@@ -16,8 +16,12 @@
 //! stay readable. What is recorded there instead is the command a step ran,
 //! where its output went, and how it exited.
 //!
+//! stdin is `/dev/null`, not the terminal: a tool given the terminal can change
+//! its mode, and one that is still exiting after the run has ended changes it
+//! out from under the shell. See [`run_logged`].
+//!
 //! Any `Command` a step runs some other way must have its stdio piped or
-//! redirected for the same reason; if it genuinely needs the terminal, wrap it
+//! redirected for the same reasons; if it genuinely needs the terminal, wrap it
 //! in [`crate::progress::suspend`].
 
 use std::fs::File;
@@ -51,7 +55,16 @@ pub fn run_logged(
         "running"
     );
 
+    // Not the terminal. Innovus, for one, takes the terminal's mode when it
+    // starts and puts it back when it exits — and the mode it takes is the
+    // display's raw one. A tool still exiting when the run ends (an interrupt
+    // ends the run without waiting for them) puts that back after rivet has
+    // restored the terminal, and ignores SIGTTOU, so nothing stops it: the
+    // shell is left without echo or line endings. Nothing run in batch has
+    // anything to read from it anyway, and a tool that did would be taking
+    // keys meant for the display.
     let mut child = command
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -232,6 +245,25 @@ mod tests {
             run_logged(&mut command, dir.join("t.out"), dir.join("t.err")).unwrap();
 
         assert_eq!(status.code(), Some(3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A child is not handed the terminal: reading stdin finds it at its end
+    /// straight away, rather than waiting on whatever the run was started from.
+    #[test]
+    fn a_child_has_nothing_on_stdin() {
+        let dir = scratch("stdin");
+        let mut command = Command::new("bash");
+        command.args(["-c", "[ -t 0 ] && echo tty; read -r line; echo read=$?"]);
+
+        let status =
+            run_logged(&mut command, dir.join("t.out"), dir.join("t.err")).unwrap();
+
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("t.out")).unwrap().trim(),
+            "read=1"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

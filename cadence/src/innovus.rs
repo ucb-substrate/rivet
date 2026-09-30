@@ -438,6 +438,9 @@ impl Step for InnovusStep {
     fn browse_files(&self) -> Vec<PathBuf> {
         vec![self.work_dir.join("par.tcl")]
     }
+    fn scope(&self) -> Option<String> {
+        crate::scope(self.start_checkpoint.as_ref(), self.endpoint.as_deref())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1225,5 +1228,20 @@ mod hook_tests {
             "cannot start from 'fc_route': TopLevel par has no such substep. \
              It has: floorplan, place, route"
         );
+    }
+    /// A step set to run only part of itself says which part beside its label.
+    #[test]
+    fn a_checkpoint_or_an_endpoint_is_named_on_the_step_line() {
+        let mut step = step();
+        assert_eq!(step.scope(), None);
+        step.resume_from("floorplan");
+        assert_eq!(step.scope().as_deref(), Some("after floorplan"));
+        step.add_endpoint("place");
+        assert_eq!(
+            step.scope().as_deref(),
+            Some("after floorplan, until place")
+        );
+        step.start_checkpoint = None;
+        assert_eq!(step.scope().as_deref(), Some("until place"));
     }
 }

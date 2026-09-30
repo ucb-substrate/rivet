@@ -358,6 +358,7 @@ impl Recorder {
                     label: step.label.clone(),
                     state: State::Pending,
                     pinned: step.pinned,
+                    scope: step.scope.clone(),
                     deps: step.deps.clone(),
                     log: step.log.clone(),
                     started: None,
@@ -747,12 +748,14 @@ mod tests {
             Planned {
                 label: "syn".into(),
                 pinned: false,
+                scope: None,
                 deps: Vec::new(),
                 log: None,
             },
             Planned {
                 label: "par".into(),
                 pinned: false,
+                scope: None,
                 deps: vec![0],
                 log: None,
             },
@@ -799,6 +802,7 @@ mod tests {
         let plan = vec![Planned {
             label: "one".into(),
             pinned: false,
+            scope: None,
             deps: Vec::new(),
             log: None,
         }];

@@ -360,6 +360,8 @@ struct Node {
     step: StepRef<dyn Step>,
     label: String,
     pinned: bool,
+    /// See [`Step::scope`]. Always `None` for a pinned step.
+    scope: Option<String>,
     deps: Vec<usize>,
     dependents: Vec<usize>,
 }
@@ -395,9 +397,11 @@ impl Graph {
 
                 // Read the shape of the step once, up front, so the lock is
                 // not touched again until the step runs.
-                let (pinned, label, deps) = {
+                let (pinned, label, scope, deps) = {
                     let guard = step.read();
-                    (guard.pinned(), guard.label(), guard.deps())
+                    let pinned = guard.pinned();
+                    let scope = if pinned { None } else { guard.scope() };
+                    (pinned, guard.label(), scope, guard.deps())
                 };
                 let index = self.nodes.len();
                 self.index.insert(key, index);
@@ -405,6 +409,7 @@ impl Graph {
                     step: step.clone(),
                     label,
                     pinned,
+                    scope,
                     deps: Vec::new(),
                     dependents: Vec::new(),
                 });
@@ -529,6 +534,7 @@ fn run(config: &ExecuteConfig, roots: Vec<StepRef<dyn Step>>) -> Result<Summary,
         .map(|node| progress::Planned {
             label: node.label.clone(),
             pinned: node.pinned,
+            scope: node.scope.clone(),
             deps: node.deps.clone(),
             log: node
                 .step
@@ -714,7 +720,10 @@ fn run_node(
     let _current = progress::enter_step(handle.clone());
     let step_span = tracing::info_span!("step", name = %node.label);
     let _span = step_span.enter();
-    tracing::info!("started");
+    match &node.scope {
+        Some(scope) => tracing::info!(%scope, "started"),
+        None => tracing::info!("started"),
+    }
     take_panic_message();
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| node.step.read().execute()));

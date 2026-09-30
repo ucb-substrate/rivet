@@ -156,6 +156,21 @@ pub(crate) fn substep_index(
         })
 }
 
+<<<<<<< Updated upstream
+=======
+/// [`rivet::Step::scope`] for a step's checkpoint and (inclusive) endpoint.
+pub(crate) fn scope(checkpoint: Option<&Checkpoint>, endpoint: Option<&str>) -> Option<String> {
+    match (checkpoint, endpoint) {
+        (None, None) => None,
+        (Some(checkpoint), None) => Some(format!("after {}", checkpoint.name)),
+        (None, Some(endpoint)) => Some(format!("until {endpoint}")),
+        (Some(checkpoint), Some(endpoint)) => {
+            Some(format!("after {}, until {endpoint}", checkpoint.name))
+        }
+    }
+}
+
+>>>>>>> Stashed changes
 #[derive(Debug, Clone)]
 pub struct Checkpoint {
     pub name: String,

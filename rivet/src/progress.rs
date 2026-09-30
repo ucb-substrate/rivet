@@ -181,6 +181,11 @@ impl Counts {
 pub(crate) struct Planned {
     pub label: String,
     pub pinned: bool,
+<<<<<<< Updated upstream
+=======
+    /// See [`Step::scope`](crate::Step::scope).
+    pub scope: Option<String>,
+>>>>>>> Stashed changes
     /// The steps this one waits for, by index.
     pub deps: Vec<usize>,
     /// Where the step's own log file is, or would be: for a step that does not
@@ -310,6 +315,10 @@ impl Reporter {
         // Before the display, so a run that is killed in its first moments is
         // already a run there is something to open.
         let session = sessions.and_then(|dir| Recorder::start(&dir, &about, &plan));
+<<<<<<< Updated upstream
+=======
+        // The scope shares the label column, so later columns still line up.
+>>>>>>> Stashed changes
         let label_width = plan
             .iter()
             .map(|step| step.label.chars().count())
@@ -1288,6 +1297,40 @@ fn pad(label: &str, width: usize) -> String {
     format!("{label:<width$}")
 }
 
+<<<<<<< Updated upstream
+=======
+/// How a scope is shown after its step's label.
+fn scope_tag(scope: &str) -> String {
+    format!("  [{scope}]")
+}
+
+/// How much of the label column a scope takes up.
+fn scope_width(scope: &str) -> usize {
+    scope_tag(scope).chars().count()
+}
+
+/// A label and its scope, filling the label column `width` wide. When the
+/// column is too narrow, the label is cut rather than the scope.
+fn label_spans(label: &str, scope: Option<&str>, width: usize, style: Style) -> Vec<Span<'static>> {
+    let Some(scope) = scope else {
+        return vec![span(
+            format!("{:<width$}", truncate(label, width.min(MAX_LABEL_WIDTH))),
+            style,
+        )];
+    };
+    let tag = scope_tag(scope);
+    let tag_width = tag.chars().count();
+    let room = width.saturating_sub(tag_width).clamp(1, MAX_LABEL_WIDTH);
+    let label = truncate(label, room);
+    let fill = width.saturating_sub(label.chars().count() + tag_width);
+    vec![
+        span(label, style),
+        span(tag, Style::new().yellow()),
+        span(" ".repeat(fill), Style::new()),
+    ]
+}
+
+>>>>>>> Stashed changes
 /// Where each step comes in the order the run is expected to take, as a rank
 /// per step.
 ///
@@ -3764,6 +3807,77 @@ mod tests {
         );
     }
 
+<<<<<<< Updated upstream
+=======
+    // -- a step that runs only part of itself -------------------------------
+
+    /// The scope is shown whether the step is waiting, running or done.
+    #[test]
+    fn a_scope_is_beside_the_label_on_every_line_the_step_gets() {
+        let mut row = pending(1);
+        row.scope = Some(Arc::from("after place"));
+        let width = 6 + scope_width("after place");
+
+        let waiting = plain(&row.line(false, width, "⠹", &[]));
+        assert_eq!(waiting, "  ○ step 1  [after place]");
+
+        row.started = Some(Instant::now());
+        let running = plain(&row.line(false, width, "⠹", &[]));
+        assert!(
+            running.starts_with("  ⠹ step 1  [after place] "),
+            "{running}"
+        );
+
+        let done = plain(&step_record(
+            "step 1",
+            Some("after place"),
+            width,
+            Outcome::Completed,
+            Duration::from_secs(3),
+            None,
+            None,
+            false,
+        ));
+        assert_eq!(done, "✔ step 1  [after place]  3.0s");
+
+        // A step with no scope is padded past it, so the columns still line up.
+        let other = plain(&step_record(
+            "step 2",
+            None,
+            width,
+            Outcome::Completed,
+            Duration::from_secs(3),
+            None,
+            None,
+            false,
+        ));
+        assert_eq!(other.find("3.0s"), done.find("3.0s"), "{other}\n{done}");
+    }
+
+    #[test]
+    fn a_squeezed_label_column_cuts_the_label_and_keeps_the_scope() {
+        let spans = label_spans("decoder par", Some("until route"), 20, Style::new());
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "deco…  [until route]");
+    }
+
+    #[test]
+    fn a_run_read_back_still_names_its_scopes() {
+        let mut par = saved_step("decoder par", session::State::Completed);
+        par.scope = Some("after place".into());
+        let reporter = Reporter::replay(&saved(vec![par], Some(4.0)));
+        let records: Vec<String> = reporter
+            .replay
+            .as_ref()
+            .expect("replayed")
+            .records
+            .iter()
+            .map(|line| plain(line))
+            .collect();
+        assert_eq!(records, ["✔ decoder par  [after place]  1.5s"]);
+    }
+
+>>>>>>> Stashed changes
     // -- what a step has to read --------------------------------------------
 
     #[test]

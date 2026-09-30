@@ -181,8 +181,7 @@ impl Counts {
 pub(crate) struct Planned {
     pub label: String,
     pub pinned: bool,
-    /// How much of itself the step is set to run, when not all of it; see
-    /// [`Step::scope`](crate::Step::scope).
+    /// See [`Step::scope`](crate::Step::scope).
     pub scope: Option<String>,
     /// The steps this one waits for, by index.
     pub deps: Vec<usize>,
@@ -314,8 +313,7 @@ impl Reporter {
         // Before the display, so a run that is killed in its first moments is
         // already a run there is something to open.
         let session = sessions.and_then(|dir| Recorder::start(&dir, &about, &plan));
-        // The scope goes in the label column, so that it is beside the label
-        // on every line the step gets and the columns after it still line up.
+        // The scope shares the label column, so later columns still line up.
         let label_width = plan
             .iter()
             .map(|step| {
@@ -1326,10 +1324,6 @@ fn pad(label: &str, width: usize) -> String {
 }
 
 /// How a scope is shown after its step's label.
-///
-/// Bracketed, and in the colour a pinned step's line uses: like pinning, it
-/// is a way of not running all of a step, and it wants noticing before the
-/// run is trusted rather than after.
 fn scope_tag(scope: &str) -> String {
     format!("  [{scope}]")
 }
@@ -1339,12 +1333,8 @@ fn scope_width(scope: &str) -> usize {
     scope_tag(scope).chars().count()
 }
 
-/// A label, and its scope if it has one, filling the label column `width`
-/// wide.
-///
-/// The label is what gives way when the column is too narrow for both: the
-/// scope is the one thing on the line that says the step is not doing all of
-/// its job, and a cut that took it would be taking the reason it is there.
+/// A label and its scope, filling the label column `width` wide. When the
+/// column is too narrow, the label is cut rather than the scope.
 fn label_spans(label: &str, scope: Option<&str>, width: usize, style: Style) -> Vec<Span<'static>> {
     let Some(scope) = scope else {
         return vec![span(
@@ -3847,8 +3837,7 @@ mod tests {
 
     // -- a step that runs only part of itself -------------------------------
 
-    /// A step resuming from a checkpoint says so from the moment the run is
-    /// planned, and goes on saying so however it ends.
+    /// The scope is shown whether the step is waiting, running or done.
     #[test]
     fn a_scope_is_beside_the_label_on_every_line_the_step_gets() {
         let mut row = pending(1);

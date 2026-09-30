@@ -145,8 +145,7 @@ pub struct Step {
     /// Whether it was pinned, and so never going to run.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pinned: bool,
-    /// How much of itself it was set to run, when not all of it; see
-    /// [`crate::Step::scope`].
+    /// See [`crate::Step::scope`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// The steps it waits for, by their index in [`Session::steps`].

@@ -179,14 +179,8 @@ pub trait Step: Debug + Any + Send + Sync {
         Vec::new()
     }
 
-    /// How this run of the step falls short of all of it, if it does.
-    ///
-    /// A step set to resume from a checkpoint, or to stop part of the way
-    /// through, does a different job from the one its label names, and one
-    /// left set that way by accident is easy to miss: the run goes fine, it
-    /// just does not include the change it was run for. So whatever this
-    /// says is put beside the label on the step's line, from the moment the
-    /// run starts, where it cannot be missed:
+    /// Which part of the step this run covers, when not all of it — e.g. a
+    /// resume from a checkpoint. Shown beside the step's label:
     ///
     /// ```
     /// # struct ParStep { resume: Option<String> }
@@ -197,8 +191,7 @@ pub trait Step: Debug + Any + Send + Sync {
     /// # }
     /// ```
     ///
-    /// Asked for once, as the run is planned. Not asked of a pinned step,
-    /// which is not run at all. The default is `None`: the whole step.
+    /// Not asked of pinned steps. Defaults to `None`: the whole step.
     fn scope(&self) -> Option<String> {
         None
     }

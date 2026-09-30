@@ -156,8 +156,6 @@ pub(crate) fn substep_index(
         })
 }
 
-<<<<<<< Updated upstream
-=======
 /// [`rivet::Step::scope`] for a step's checkpoint and (inclusive) endpoint.
 pub(crate) fn scope(checkpoint: Option<&Checkpoint>, endpoint: Option<&str>) -> Option<String> {
     match (checkpoint, endpoint) {
@@ -170,7 +168,6 @@ pub(crate) fn scope(checkpoint: Option<&Checkpoint>, endpoint: Option<&str>) -> 
     }
 }
 
->>>>>>> Stashed changes
 #[derive(Debug, Clone)]
 pub struct Checkpoint {
     pub name: String,

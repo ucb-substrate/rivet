@@ -156,6 +156,23 @@ pub(crate) fn substep_index(
         })
 }
 
+/// What a step that resumes from `checkpoint` and stops at `endpoint` says
+/// beside its label; see [`rivet::Step::scope`]. `None` for a step set to
+/// run all of its substeps.
+///
+/// The endpoint is inclusive, as the step runs it: the substep it names is
+/// the last one run.
+pub(crate) fn scope(checkpoint: Option<&Checkpoint>, endpoint: Option<&str>) -> Option<String> {
+    match (checkpoint, endpoint) {
+        (None, None) => None,
+        (Some(checkpoint), None) => Some(format!("after {}", checkpoint.name)),
+        (None, Some(endpoint)) => Some(format!("until {endpoint}")),
+        (Some(checkpoint), Some(endpoint)) => {
+            Some(format!("after {}, until {endpoint}", checkpoint.name))
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Checkpoint {
     pub name: String,

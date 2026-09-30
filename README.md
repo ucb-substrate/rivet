@@ -132,6 +132,12 @@ terminal history the moment it ends. `q` gives the terminal back, and leaves
 the run's record in the ordinary scrollback: one line per step, in the order
 things happened.
 
+A step set to run only part of itself says so beside its label, in yellow,
+from the moment the run starts: a Genus or Innovus step resuming from a
+checkpoint or stopping at an endpoint reads `decoder par  [after place]`,
+`[until route]` or `[after place, until route]`. Steps report this through
+`Step::scope`, which defaults to `None`.
+
 Raw tool output is never drawn on a step's line: it goes to `{step}.out` and
 `{step}.err` in the step's work directory, and the step's own page reads those
 files back (see below). Two things reach the line, and nothing else — a step's

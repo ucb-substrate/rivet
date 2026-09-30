@@ -181,11 +181,8 @@ impl Counts {
 pub(crate) struct Planned {
     pub label: String,
     pub pinned: bool,
-<<<<<<< Updated upstream
-=======
     /// See [`Step::scope`](crate::Step::scope).
     pub scope: Option<String>,
->>>>>>> Stashed changes
     /// The steps this one waits for, by index.
     pub deps: Vec<usize>,
     /// Where the step's own log file is, or would be: for a step that does not
@@ -316,10 +313,7 @@ impl Reporter {
         // Before the display, so a run that is killed in its first moments is
         // already a run there is something to open.
         let session = sessions.and_then(|dir| Recorder::start(&dir, &about, &plan));
-<<<<<<< Updated upstream
-=======
         // The scope shares the label column, so later columns still line up.
->>>>>>> Stashed changes
         let label_width = plan
             .iter()
             .map(|step| {
@@ -1329,8 +1323,6 @@ fn pad(label: &str, width: usize) -> String {
     format!("{label:<width$}")
 }
 
-<<<<<<< Updated upstream
-=======
 /// How a scope is shown after its step's label.
 fn scope_tag(scope: &str) -> String {
     format!("  [{scope}]")
@@ -1362,7 +1354,6 @@ fn label_spans(label: &str, scope: Option<&str>, width: usize, style: Style) -> 
     ]
 }
 
->>>>>>> Stashed changes
 /// Where each step comes in the order the run is expected to take, as a rank
 /// per step.
 ///
@@ -3844,8 +3835,6 @@ mod tests {
         );
     }
 
-<<<<<<< Updated upstream
-=======
     // -- a step that runs only part of itself -------------------------------
 
     /// The scope is shown whether the step is waiting, running or done.
@@ -3914,7 +3903,6 @@ mod tests {
         assert_eq!(records, ["✔ decoder par  [after place]  1.5s"]);
     }
 
->>>>>>> Stashed changes
     // -- what a step has to read --------------------------------------------
 
     #[test]

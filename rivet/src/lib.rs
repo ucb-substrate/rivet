@@ -178,8 +178,6 @@ pub trait Step: Debug + Any + Send + Sync {
     fn browse_files(&self) -> Vec<PathBuf> {
         Vec::new()
     }
-<<<<<<< Updated upstream
-=======
 
     /// Which part of the step this run covers, when not all of it — e.g. a
     /// resume from a checkpoint. Shown beside the step's label:
@@ -197,7 +195,6 @@ pub trait Step: Debug + Any + Send + Sync {
     fn scope(&self) -> Option<String> {
         None
     }
->>>>>>> Stashed changes
 }
 
 pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)>) -> F) -> Dag<F> {

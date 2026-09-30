@@ -181,6 +181,9 @@ impl Counts {
 pub(crate) struct Planned {
     pub label: String,
     pub pinned: bool,
+    /// How much of itself the step is set to run, when not all of it; see
+    /// [`Step::scope`](crate::Step::scope).
+    pub scope: Option<String>,
     /// The steps this one waits for, by index.
     pub deps: Vec<usize>,
     /// Where the step's own log file is, or would be: for a step that does not
@@ -191,6 +194,7 @@ pub(crate) struct Planned {
 /// One step, for as long as the run lasts.
 struct Entry {
     label: Arc<str>,
+    scope: Option<Arc<str>>,
     /// What the step's line is showing, shared with the handle the step
     /// reports through once it is running.
     state: Arc<Mutex<StepState>>,
@@ -310,16 +314,21 @@ impl Reporter {
         // Before the display, so a run that is killed in its first moments is
         // already a run there is something to open.
         let session = sessions.and_then(|dir| Recorder::start(&dir, &about, &plan));
+        // The scope goes in the label column, so that it is beside the label
+        // on every line the step gets and the columns after it still line up.
         let label_width = plan
             .iter()
-            .map(|step| step.label.chars().count())
+            .map(|step| {
+                step.label.chars().count().min(MAX_LABEL_WIDTH)
+                    + step.scope.as_deref().map_or(0, scope_width)
+            })
             .max()
-            .unwrap_or(0)
-            .min(MAX_LABEL_WIDTH);
+            .unwrap_or(0);
         let steps: Vec<Entry> = plan
             .iter()
             .map(|step| Entry {
                 label: Arc::from(truncate(&step.label, MAX_LABEL_WIDTH)),
+                scope: step.scope.as_deref().map(Arc::from),
                 state: Arc::new(Mutex::new(StepState::default())),
             })
             .collect();
@@ -334,6 +343,7 @@ impl Reporter {
                 cursor.insert(Row {
                     id,
                     label: Arc::clone(&entry.label),
+                    scope: entry.scope.clone(),
                     rank: ranks[id],
                     pinned: step.pinned,
                     deps: step.deps.clone(),
@@ -390,6 +400,7 @@ impl Reporter {
             .map(|step| Planned {
                 label: step.label.clone(),
                 pinned: step.pinned,
+                scope: step.scope.clone(),
                 deps: step.deps.clone(),
                 log: step.log.clone(),
             })
@@ -594,10 +605,19 @@ impl Reporter {
                 started,
                 log.as_ref().map(|log| log.path().to_path_buf()),
             ),
-            None => self.print(Line::from(vec![
-                span("  ▶ ", Style::new().cyan()),
-                span(entry.label.to_string(), Style::new()),
-            ])),
+            None => {
+                let mut spans = vec![
+                    span("  ▶ ", Style::new().cyan()),
+                    span(entry.label.to_string(), Style::new()),
+                ];
+                spans.extend(
+                    entry
+                        .scope
+                        .as_deref()
+                        .map(|scope| span(scope_tag(scope), Style::new().yellow())),
+                );
+                self.print(Line::from(spans));
+            }
         }
 
         StepHandle {
@@ -646,7 +666,13 @@ impl Reporter {
     pub(crate) fn block(&self, id: usize, blame: &str) {
         self.blocked.fetch_add(1, Ordering::Relaxed);
         self.finished.fetch_add(1, Ordering::Relaxed);
-        let record = blocked_record(&self.steps[id].label, blame, self.label_width);
+        let entry = &self.steps[id];
+        let record = blocked_record(
+            &entry.label,
+            entry.scope.as_deref(),
+            blame,
+            self.label_width,
+        );
         if let Some(session) = &self.session {
             session.ended(
                 id,
@@ -715,6 +741,7 @@ impl Reporter {
         let location = handle.location();
         step_record(
             &handle.label,
+            self.steps[handle.id].scope.as_deref(),
             self.label_width,
             outcome,
             handle.started.elapsed(),
@@ -1162,8 +1189,10 @@ impl Paint for Reporter {
 /// run being read back out of its session says exactly what it said at the
 /// time. Built without the record's indent, so that the cursor can go where
 /// the indent goes.
+#[allow(clippy::too_many_arguments)]
 fn step_record(
     label: &str,
+    scope: Option<&str>,
     width: usize,
     outcome: Outcome,
     elapsed: Duration,
@@ -1172,28 +1201,34 @@ fn step_record(
     killed: bool,
 ) -> Line<'static> {
     let elapsed = fmt_duration(elapsed);
-    let padded = pad(label, width);
+    let label = |style| label_spans(label, scope, width, style);
     match outcome {
-        Outcome::Completed => Line::from(vec![
-            span("✔ ", Style::new().green()),
-            span(padded, Style::new().bold()),
-            span(format!("  {elapsed}"), Style::new().dim()),
-        ]),
-        Outcome::Skipped => Line::from(vec![
-            span("⏭ ", Style::new().yellow()),
-            span(padded, Style::new()),
-            span("  ", Style::new()),
-            span(
-                detail.unwrap_or("skipped").to_string(),
-                Style::new().yellow(),
-            ),
-        ]),
+        Outcome::Completed => Line::from(
+            [
+                vec![span("✔ ", Style::new().green())],
+                label(Style::new().bold()),
+                vec![span(format!("  {elapsed}"), Style::new().dim())],
+            ]
+            .concat(),
+        ),
+        Outcome::Skipped => Line::from(
+            [
+                vec![span("⏭ ", Style::new().yellow())],
+                label(Style::new()),
+                vec![
+                    span("  ", Style::new()),
+                    span(
+                        detail.unwrap_or("skipped").to_string(),
+                        Style::new().yellow(),
+                    ),
+                ],
+            ]
+            .concat(),
+        ),
         Outcome::Failed => {
-            let mut spans = vec![
-                span("✖ ", Style::new().red()),
-                span(padded, Style::new().red().bold()),
-                span(format!("  {elapsed}"), Style::new().dim()),
-            ];
+            let mut spans = vec![span("✖ ", Style::new().red())];
+            spans.extend(label(Style::new().red().bold()));
+            spans.push(span(format!("  {elapsed}"), Style::new().dim()));
             // Say where it died, not just that it did. Both halves are
             // reported: which of them caused the failure is exactly what is
             // not known here.
@@ -1217,13 +1252,12 @@ fn step_record(
 }
 
 /// The record's line for a step dropped because something it waited for failed.
-fn blocked_record(label: &str, blame: &str, width: usize) -> Line<'static> {
-    Line::from(vec![
-        span("⊘ ", Style::new().yellow()),
-        span(pad(label, width), Style::new()),
-        span("  ", Style::new()),
-        span(format!("blocked by {blame}"), Style::new().yellow()),
-    ])
+fn blocked_record(label: &str, scope: Option<&str>, blame: &str, width: usize) -> Line<'static> {
+    let mut spans = vec![span("⊘ ", Style::new().yellow())];
+    spans.extend(label_spans(label, scope, width, Style::new()));
+    spans.push(span("  ", Style::new()));
+    spans.push(span(format!("blocked by {blame}"), Style::new().yellow()));
+    Line::from(spans)
 }
 
 /// The line for a step that was running when its run was killed.
@@ -1232,13 +1266,12 @@ fn blocked_record(label: &str, blame: &str, width: usize) -> Line<'static> {
 /// either — a tool cut off mid-sentence looks much like one that finished. So
 /// the line says the one thing that is known: that this is not where the step
 /// got to, only where it was when the run stopped.
-fn unfinished_record(label: &str, width: usize) -> Line<'static> {
-    Line::from(vec![
-        span("⊗ ", Style::new().yellow()),
-        span(pad(label, width), Style::new()),
-        span("  ", Style::new()),
-        span("unfinished", Style::new().yellow()),
-    ])
+fn unfinished_record(label: &str, scope: Option<&str>, width: usize) -> Line<'static> {
+    let mut spans = vec![span("⊗ ", Style::new().yellow())];
+    spans.extend(label_spans(label, scope, width, Style::new()));
+    spans.push(span("  ", Style::new()));
+    spans.push(span("unfinished", Style::new().yellow()));
+    Line::from(spans)
 }
 
 /// The line a step from a session gets, or `None` for one that never started.
@@ -1247,6 +1280,7 @@ fn replayed_record(step: &session::Step, width: usize) -> Option<Line<'static>> 
     let record = |outcome| {
         step_record(
             &step.label,
+            step.scope.as_deref(),
             width,
             outcome,
             elapsed,
@@ -1260,11 +1294,14 @@ fn replayed_record(step: &session::Step, width: usize) -> Option<Line<'static>> 
         // whatever it was waiting for: the log at its path belongs to some
         // other run, and offering it would be offering the wrong run's.
         session::State::Pending => None,
-        session::State::Running => Some(unfinished_record(&step.label, width)),
+        session::State::Running => {
+            Some(unfinished_record(&step.label, step.scope.as_deref(), width))
+        }
         session::State::Completed => Some(record(Outcome::Completed)),
         session::State::Skipped => Some(pinned_record(&step.label, width)),
         session::State::Blocked => Some(blocked_record(
             &step.label,
+            step.scope.as_deref(),
             step.detail.as_deref().unwrap_or("a step that failed"),
             width,
         )),
@@ -1286,6 +1323,45 @@ fn pinned_record(label: &str, width: usize) -> Line<'static> {
 fn pad(label: &str, width: usize) -> String {
     let label = truncate(label, MAX_LABEL_WIDTH);
     format!("{label:<width$}")
+}
+
+/// How a scope is shown after its step's label.
+///
+/// Bracketed, and in the colour a pinned step's line uses: like pinning, it
+/// is a way of not running all of a step, and it wants noticing before the
+/// run is trusted rather than after.
+fn scope_tag(scope: &str) -> String {
+    format!("  [{scope}]")
+}
+
+/// How much of the label column a scope takes up.
+fn scope_width(scope: &str) -> usize {
+    scope_tag(scope).chars().count()
+}
+
+/// A label, and its scope if it has one, filling the label column `width`
+/// wide.
+///
+/// The label is what gives way when the column is too narrow for both: the
+/// scope is the one thing on the line that says the step is not doing all of
+/// its job, and a cut that took it would be taking the reason it is there.
+fn label_spans(label: &str, scope: Option<&str>, width: usize, style: Style) -> Vec<Span<'static>> {
+    let Some(scope) = scope else {
+        return vec![span(
+            format!("{:<width$}", truncate(label, width.min(MAX_LABEL_WIDTH))),
+            style,
+        )];
+    };
+    let tag = scope_tag(scope);
+    let tag_width = tag.chars().count();
+    let room = width.saturating_sub(tag_width).clamp(1, MAX_LABEL_WIDTH);
+    let label = truncate(label, room);
+    let fill = width.saturating_sub(label.chars().count() + tag_width);
+    vec![
+        span(label, style),
+        span(tag, Style::new().yellow()),
+        span(" ".repeat(fill), Style::new()),
+    ]
 }
 
 /// Where each step comes in the order the run is expected to take, as a rank
@@ -1439,6 +1515,8 @@ struct Cursor {
 struct Row {
     id: usize,
     label: Arc<str>,
+    /// See [`Step::scope`](crate::Step::scope).
+    scope: Option<Arc<str>>,
     /// Where the step comes in the plan; see [`plan_order`].
     rank: usize,
     pinned: bool,
@@ -1718,17 +1796,16 @@ impl Row {
         spinner: &str,
         bars: bool,
     ) -> Line<'static> {
-        let label = format!("{:<width$}", truncate(&self.label, width));
         let started = self.started.unwrap_or_else(Instant::now);
         let mut spans = vec![
             cursor_span(selected),
             span(format!("{spinner} "), Style::new().cyan()),
-            span(label, Style::new().bold()),
-            span(
-                format!(" {:>5}  ", fmt_duration(started.elapsed())),
-                Style::new().dim(),
-            ),
         ];
+        spans.extend(self.label_spans(width, Style::new().bold()));
+        spans.push(span(
+            format!(" {:>5}  ", fmt_duration(started.elapsed())),
+            Style::new().dim(),
+        ));
 
         // Left: what the step says it is doing. Right: what its tool says.
         let state = self.state.lock().unwrap();
@@ -1748,12 +1825,8 @@ impl Row {
     /// The line of a step that has not started: greyed, with what it is
     /// waiting for.
     fn pending_line(&self, selected: bool, width: usize, waiting: &[Arc<str>]) -> Line<'static> {
-        let label = format!("{:<width$}", truncate(&self.label, width));
-        let mut spans = vec![
-            cursor_span(selected),
-            span("○ ", Style::new().dim()),
-            span(label, Style::new().dim()),
-        ];
+        let mut spans = vec![cursor_span(selected), span("○ ", Style::new().dim())];
+        spans.extend(self.label_spans(width, Style::new().dim()));
         if !waiting.is_empty() {
             let names: Vec<&str> = waiting.iter().map(|label| &**label).collect();
             spans.push(span(
@@ -1762,6 +1835,11 @@ impl Row {
             ));
         }
         Line::from(spans)
+    }
+
+    /// This step's label and scope, filling the label column `width` wide.
+    fn label_spans(&self, width: usize, style: Style) -> Vec<Span<'static>> {
+        label_spans(&self.label, self.scope.as_deref(), width, style)
     }
 
     /// The files this step has to read, and the ones to open elsewhere.
@@ -2559,6 +2637,7 @@ mod tests {
             .map(|label| Planned {
                 label: label.to_string(),
                 pinned: false,
+                scope: None,
                 deps: Vec::new(),
                 log: None,
             })
@@ -3092,6 +3171,7 @@ mod tests {
         Row {
             id,
             label: Arc::from(format!("step {id}")),
+            scope: None,
             rank: id,
             pinned: false,
             deps: Vec::new(),
@@ -3612,6 +3692,7 @@ mod tests {
             label: label.to_string(),
             state,
             pinned: false,
+            scope: None,
             deps: Vec::new(),
             log: None,
             started: Some(1.0),
@@ -3762,6 +3843,75 @@ mod tests {
             step_files(&state, Some(&own)),
             (vec![out.clone(), err.clone(), own], vec![out, err]),
         );
+    }
+
+    // -- a step that runs only part of itself -------------------------------
+
+    /// A step resuming from a checkpoint says so from the moment the run is
+    /// planned, and goes on saying so however it ends.
+    #[test]
+    fn a_scope_is_beside_the_label_on_every_line_the_step_gets() {
+        let mut row = pending(1);
+        row.scope = Some(Arc::from("after place"));
+        let width = 6 + scope_width("after place");
+
+        let waiting = plain(&row.line(false, width, "⠹", &[]));
+        assert_eq!(waiting, "  ○ step 1  [after place]");
+
+        row.started = Some(Instant::now());
+        let running = plain(&row.line(false, width, "⠹", &[]));
+        assert!(
+            running.starts_with("  ⠹ step 1  [after place] "),
+            "{running}"
+        );
+
+        let done = plain(&step_record(
+            "step 1",
+            Some("after place"),
+            width,
+            Outcome::Completed,
+            Duration::from_secs(3),
+            None,
+            None,
+            false,
+        ));
+        assert_eq!(done, "✔ step 1  [after place]  3.0s");
+
+        // A step with no scope is padded past it, so the columns still line up.
+        let other = plain(&step_record(
+            "step 2",
+            None,
+            width,
+            Outcome::Completed,
+            Duration::from_secs(3),
+            None,
+            None,
+            false,
+        ));
+        assert_eq!(other.find("3.0s"), done.find("3.0s"), "{other}\n{done}");
+    }
+
+    #[test]
+    fn a_squeezed_label_column_cuts_the_label_and_keeps_the_scope() {
+        let spans = label_spans("decoder par", Some("until route"), 20, Style::new());
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "deco…  [until route]");
+    }
+
+    #[test]
+    fn a_run_read_back_still_names_its_scopes() {
+        let mut par = saved_step("decoder par", session::State::Completed);
+        par.scope = Some("after place".into());
+        let reporter = Reporter::replay(&saved(vec![par], Some(4.0)));
+        let records: Vec<String> = reporter
+            .replay
+            .as_ref()
+            .expect("replayed")
+            .records
+            .iter()
+            .map(|line| plain(line))
+            .collect();
+        assert_eq!(records, ["✔ decoder par  [after place]  1.5s"]);
     }
 
     // -- what a step has to read --------------------------------------------

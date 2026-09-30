@@ -297,6 +297,9 @@ impl Step for GenusStep {
     fn browse_files(&self) -> Vec<PathBuf> {
         vec![self.work_dir.join("syn.tcl")]
     }
+    fn scope(&self) -> Option<String> {
+        crate::scope(self.start_checkpoint.as_ref(), self.endpoint.as_deref())
+    }
 }
 
 pub fn set_default_options() -> Substep {

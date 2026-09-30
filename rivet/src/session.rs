@@ -145,6 +145,10 @@ pub struct Step {
     /// Whether it was pinned, and so never going to run.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pinned: bool,
+    /// How much of itself it was set to run, when not all of it; see
+    /// [`crate::Step::scope`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// The steps it waits for, by their index in [`Session::steps`].
     #[serde(default)]
     pub deps: Vec<usize>,
@@ -352,6 +356,7 @@ impl Recorder {
                     label: step.label.clone(),
                     state: State::Pending,
                     pinned: step.pinned,
+                    scope: step.scope.clone(),
                     deps: step.deps.clone(),
                     log: step.log.clone(),
                     started: None,
@@ -741,12 +746,14 @@ mod tests {
             Planned {
                 label: "syn".into(),
                 pinned: false,
+                scope: None,
                 deps: Vec::new(),
                 log: None,
             },
             Planned {
                 label: "par".into(),
                 pinned: false,
+                scope: None,
                 deps: vec![0],
                 log: None,
             },
@@ -793,6 +800,7 @@ mod tests {
         let plan = vec![Planned {
             label: "one".into(),
             pinned: false,
+            scope: None,
             deps: Vec::new(),
             log: None,
         }];

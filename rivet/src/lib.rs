@@ -178,6 +178,30 @@ pub trait Step: Debug + Any + Send + Sync {
     fn browse_files(&self) -> Vec<PathBuf> {
         Vec::new()
     }
+
+    /// How this run of the step falls short of all of it, if it does.
+    ///
+    /// A step set to resume from a checkpoint, or to stop part of the way
+    /// through, does a different job from the one its label names, and one
+    /// left set that way by accident is easy to miss: the run goes fine, it
+    /// just does not include the change it was run for. So whatever this
+    /// says is put beside the label on the step's line, from the moment the
+    /// run starts, where it cannot be missed:
+    ///
+    /// ```
+    /// # struct ParStep { resume: Option<String> }
+    /// # impl ParStep {
+    /// fn scope(&self) -> Option<String> {
+    ///     self.resume.as_ref().map(|substep| format!("after {substep}"))
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// Asked for once, as the run is planned. Not asked of a pinned step,
+    /// which is not run at all. The default is `None`: the whole step.
+    fn scope(&self) -> Option<String> {
+        None
+    }
 }
 
 pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)>) -> F) -> Dag<F> {

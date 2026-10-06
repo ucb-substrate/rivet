@@ -111,9 +111,22 @@ impl GenusStep {
                 writeln!(tcl_file, "write_db -to_file {}", checkpoint_file.display())?;
             }
         }
+        // Only a script that got here wrote the marker; see `finished_marker_tcl`.
+        writeln!(
+            tcl_file,
+            "{}",
+            crate::finished_marker_tcl(&self.finished_marker_path())
+        )?;
         writeln!(tcl_file, "quit")?;
 
         Ok(())
+    }
+
+    /// The file `syn.tcl` writes once it has run to its end, without which an
+    /// exit status of 0 does not count as success; see
+    /// [`crate::finished_marker_tcl`].
+    pub fn finished_marker_path(&self) -> PathBuf {
+        self.work_dir.join(format!("{}.syn.done", self.module))
     }
 
     /// The index of the substep named `substep`, or an [`UnknownSubstep`]
@@ -232,6 +245,12 @@ impl Step for GenusStep {
             substeps = substeps[..=slice_index].to_vec();
         }
 
+        // A marker left by an earlier run would pass this one off as finished.
+        let finished = self.finished_marker_path();
+        if finished.exists() {
+            fs::remove_file(&finished)?;
+        }
+
         progress::status("writing syn.tcl");
         self.make_tcl_file(&self.work_dir, substeps)?;
 
@@ -271,6 +290,11 @@ impl Step for GenusStep {
             )
             .into());
         }
+        crate::check_finished(
+            "genus",
+            &finished,
+            &self.work_dir.join(format!("{}.syn.out", self.module)),
+        )?;
         Ok(())
     }
 
@@ -635,6 +659,22 @@ mod hook_tests {
         step.add_hook("dont_use", "set_dont_use", "init_design", false)?;
         let names: Vec<&str> = step.substeps.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["init_design", "dont_use", "syn_generic", "syn_map"]);
+        Ok(())
+    }
+
+    /// The finished marker is the last thing `syn.tcl` does before `quit`.
+    #[test]
+    fn syn_tcl_writes_the_finished_marker_right_before_quit() -> io::Result<()> {
+        let dir = std::env::temp_dir().join(format!("rivet_finished_syn_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let step = step();
+        step.make_tcl_file(&dir, step.substeps.clone())?;
+        let tcl = std::fs::read_to_string(dir.join("syn.tcl"))?;
+        std::fs::remove_dir_all(&dir)?;
+        assert!(
+            tcl.ends_with("close [open {/tmp/hook_tests/TopLevel.syn.done} w]\nquit\n"),
+            "{tcl}"
+        );
         Ok(())
     }
 

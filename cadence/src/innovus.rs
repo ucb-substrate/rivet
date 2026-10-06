@@ -191,6 +191,12 @@ impl InnovusStep {
 
         writeln!(catch_fatal, "exit 1")?;
         writeln!(catch_fatal, "}}")?;
+        // Only a script that got here wrote the marker; see `finished_marker_tcl`.
+        writeln!(
+            catch_fatal,
+            "{}",
+            crate::finished_marker_tcl(&self.finished_marker_path())
+        )?;
         writeln!(catch_fatal, "exit")?;
 
         Ok(())
@@ -306,6 +312,13 @@ impl InnovusStep {
         self.checkpoint_path(FAIL_CHECKPOINT)
     }
 
+    /// The file `catch_fatal.tcl` writes once `par.tcl` has run to its end
+    /// with no error, without which an exit status of 0 does not count as
+    /// success; see [`crate::finished_marker_tcl`].
+    pub fn finished_marker_path(&self) -> PathBuf {
+        self.work_dir.join(format!("{}.par.done", self.module))
+    }
+
     /// Restore the db `substep` wrote on an earlier run and continue with the
     /// substeps after it. `substep` must be checkpointed, or there is nothing
     /// to restore.
@@ -351,6 +364,12 @@ impl Step for InnovusStep {
         let fail_db = self.fail_db_path();
         if fail_db.exists() {
             fs::remove_dir_all(&fail_db)?;
+        }
+        // Likewise the marker, whose presence afterwards has to mean that
+        // this run, not an earlier one, got to the end of its script.
+        let finished = self.finished_marker_path();
+        if finished.exists() {
+            fs::remove_file(&finished)?;
         }
 
         progress::status("writing par.tcl");
@@ -412,6 +431,11 @@ impl Step for InnovusStep {
             }
             return Err(message.into());
         }
+        crate::check_finished(
+            "innovus",
+            &finished,
+            &self.work_dir.join(format!("{}.par.out", self.module)),
+        )?;
         Ok(())
     }
 
@@ -1213,6 +1237,27 @@ mod hook_tests {
                 assert!(at < tcl.find("read_db /tmp").expect("the read_db"));
             }
         }
+        Ok(())
+    }
+
+    /// `catch_fatal.tcl` writes the finished marker after the error branch,
+    /// which ends in `exit 1`, and right before the clean `exit`: only a
+    /// `par.tcl` that ran to its end with no error gets there.
+    #[test]
+    fn only_a_script_that_ran_to_its_end_writes_the_finished_marker() -> io::Result<()> {
+        let dir = std::env::temp_dir().join(format!("rivet_finished_par_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let step = step();
+        step.make_tcl_file(&dir, step.substeps.clone())?;
+        let tcl = std::fs::read_to_string(dir.join("catch_fatal.tcl"))?;
+        std::fs::remove_dir_all(&dir)?;
+
+        let marker = "close [open {/tmp/hook_tests/TopLevel.par.done} w]\n";
+        assert!(
+            tcl.ends_with(&format!("exit 1\n}}\n{marker}exit\n")),
+            "{tcl}"
+        );
+        assert_eq!(tcl.matches("TopLevel.par.done").count(), 1);
         Ok(())
     }
 

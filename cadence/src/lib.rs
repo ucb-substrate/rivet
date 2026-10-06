@@ -84,6 +84,59 @@ pub fn kill_on_fatal_signal(command: &mut Command, work_dir: &Path) -> io::Resul
     Ok(())
 }
 
+/// Tcl that records a script got to its end: the last thing a generated script
+/// runs on its way to a clean exit, so that [`check_finished`] can tell a run
+/// that finished from one that merely exited 0.
+///
+/// The exit status alone cannot. A Cadence tool interrupted in batch (SIGINT)
+/// exits 0 either way it handles it. Interrupted between commands, Innovus
+/// prints "Batch mode Innovus terminated by user interrupt." and exits at once.
+/// Interrupted inside a long command, it lets the command wind down and then
+/// offers its interrupt menu on stdin. Under rivet stdin is `/dev/null`
+/// ([`rivet::exec`]), and after twenty answers it cannot read, the tool quits.
+/// A ShuttleTile par that failed in `clock_tree` went out the second way. Its
+/// catch handler had printed the error and was about to write `post_fail` and
+/// `exit 1` when the menu came up. The step was reported done, and fill, DRC
+/// and LVS ran on the GDS of an earlier run.
+pub(crate) fn finished_marker_tcl(marker: &Path) -> String {
+    format!("close [open {{{}}} w]", marker.display())
+}
+
+/// Fails a step whose tool exited 0 without its script writing `marker`
+/// ([`finished_marker_tcl`]). `out_log` is the tool's stdout, which says why if
+/// the reason was an interrupt.
+pub(crate) fn check_finished(tool: &str, marker: &Path, out_log: &Path) -> Result<(), String> {
+    if marker.exists() {
+        return Ok(());
+    }
+    // Either sign of an interrupt is among the last things the tool prints, so
+    // the end of the log is enough, and a multi-gigabyte log is not read in
+    // full to find it.
+    let interrupted = tail(out_log, 64 * 1024)
+        .map(|end| end.contains("INFO(INTERRUPT)") || end.contains("terminated by user interrupt"))
+        .unwrap_or(false);
+    let why = if interrupted {
+        "it was interrupted (SIGINT), which a Cadence tool in batch answers with exit 0"
+    } else {
+        "something ended it before the end of its script"
+    };
+    Err(format!(
+        "{tool} exited 0 but did not finish: {why}. See {}",
+        out_log.display()
+    ))
+}
+
+/// The last `bytes` of a file, or less if it is shorter.
+fn tail(path: &Path, bytes: u64) -> io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(bytes)))?;
+    let mut end = Vec::new();
+    file.read_to_end(&mut end)?;
+    Ok(String::from_utf8_lossy(&end).into_owned())
+}
+
 #[derive(Debug, Clone)]
 pub struct Substep {
     pub name: String,
@@ -303,4 +356,62 @@ pub fn mmmc(config: MmmcConfig) -> String {
     .unwrap();
 
     mmmc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rivet_finished_{name}_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_written_marker_is_a_finished_run() {
+        let dir = dir("written");
+        let marker = dir.join("top.par.done");
+        fs::write(&marker, "").unwrap();
+        assert_eq!(
+            check_finished("innovus", &marker, &dir.join("top.par.out")),
+            Ok(())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The case that got through: exit 0 after an interrupt, no marker. Both
+    /// of the ways Innovus reports one, each at the end of a long log.
+    #[test]
+    fn exit_0_after_an_interrupt_is_a_failure_that_says_so() {
+        let dir = dir("interrupted");
+        let log = dir.join("top.par.out");
+        for last in [
+            "**INFO(INTERRUPT): The interrupted design can be viewed in its current \
+             state but should not be used to continue the flow.\n",
+            "Batch mode Innovus terminated by user interrupt.\n",
+        ] {
+            fs::write(&log, format!("{}{last}", "padding\n".repeat(20_000))).unwrap();
+            let err = check_finished("innovus", &dir.join("top.par.done"), &log).unwrap_err();
+            assert!(
+                err.starts_with("innovus exited 0 but did not finish: it was interrupted"),
+                "{err}"
+            );
+            assert!(err.ends_with(&log.display().to_string()), "{err}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn exit_0_without_the_marker_is_a_failure_even_with_no_log() {
+        let dir = dir("unexplained");
+        let err = check_finished("genus", &dir.join("top.syn.done"), &dir.join("top.syn.out"))
+            .unwrap_err();
+        assert!(
+            err.starts_with("genus exited 0 but did not finish: something ended it"),
+            "{err}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

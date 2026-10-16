@@ -6,12 +6,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use crate::{
-    Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, Tool, UnknownSubstep, mmmc,
-};
+use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, UnknownSubstep, mmmc};
 use fs::File;
 use indoc::formatdoc;
-use rivet::exec;
+use rivet::exec::{self, Tool};
 use rivet::progress;
 use rivet::{Step, StepRef, StepResult};
 
@@ -73,6 +71,9 @@ impl GenusStep {
     }
 
     /// Sets `key` to `value` in Genus's environment; see [`Tool::env`].
+    /// `GDB` and `NO_GDB` are the exception: [`crate::kill_on_fatal_signal`]
+    /// sets them after these, because a crashed tool does not reliably die
+    /// without them.
     pub fn set_env(&mut self, key: impl Into<OsString>, value: impl Into<OsString>) {
         self.tool.env.insert(key.into(), value.into());
     }

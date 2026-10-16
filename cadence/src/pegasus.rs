@@ -4,9 +4,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::{fs, io};
 
-use crate::{Substep, Tool};
+use crate::Substep;
 use fs::File;
-use rivet::exec;
+use rivet::exec::{self, Tool};
 use rivet::progress;
 use rivet::{Step, StepRef, StepResult};
 

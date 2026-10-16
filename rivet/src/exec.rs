@@ -24,9 +24,12 @@
 //! redirected for the same reasons; if it genuinely needs the terminal, wrap it
 //! in [`crate::progress::suspend`].
 
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -164,6 +167,65 @@ pub fn run_logged_in(
         log_dir.join(format!("{basename}.out")),
         log_dir.join(format!("{basename}.err")),
     )
+}
+
+/// The executable a step runs, and what it adds to that executable's
+/// environment.
+///
+/// By default a step runs its tool by its bare name, looked up on `PATH` when
+/// the step runs, so which build runs is whichever the shell rivet was started
+/// from finds first. Set `binary` to a path to pin one install regardless.
+#[derive(Debug, Clone)]
+pub struct Tool {
+    /// Run as it is if it is a path, which should be absolute: a step runs
+    /// its tool in its work directory. A bare name is looked up on the `PATH`
+    /// in `env` if that sets one, and on rivet's own otherwise.
+    pub binary: PathBuf,
+    /// Set for the tool on top of the environment rivet runs in, replacing
+    /// any variable of the same name. A step that sets variables of its own
+    /// sets them after these, and says which.
+    pub env: BTreeMap<OsString, OsString>,
+}
+
+impl Tool {
+    pub fn new(binary: impl Into<PathBuf>) -> Self {
+        Tool {
+            binary: binary.into(),
+            env: BTreeMap::new(),
+        }
+    }
+
+    /// A command that runs `binary` with `env` set, for the caller to add
+    /// arguments to.
+    pub fn command(&self) -> Command {
+        let mut command = Command::new(&self.binary);
+        command.envs(&self.env);
+        command
+    }
+
+    /// [`Tool::command`] as lines of a shell script: an `export` for each
+    /// variable, then `binary` followed by `args`, which go in as they are.
+    pub fn script(&self, args: &str) -> String {
+        let mut script = String::new();
+        for (key, value) in &self.env {
+            writeln!(script, "export {}={}", shell_word(key), shell_word(value)).unwrap();
+        }
+        writeln!(script, "{} {args}", shell_word(self.binary.as_os_str())).unwrap();
+        script
+    }
+}
+
+/// `word` as one shell word: as it is if the shell would read it that way
+/// anyway, otherwise in single quotes. `=` counts as special, so that a binary
+/// with one in its path is not read as an assignment.
+fn shell_word(word: &OsStr) -> String {
+    let word = word.to_string_lossy();
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:@%+,".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        word.into_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
 }
 
 /// How often a waiting [`run_logged`] looks up from the child to check whether

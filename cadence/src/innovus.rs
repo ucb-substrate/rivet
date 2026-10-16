@@ -1,12 +1,12 @@
+use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::{fs, io};
 
 use crate::MmmcCorner;
-use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, UnknownSubstep, mmmc};
+use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, Tool, UnknownSubstep, mmmc};
 use fs::File;
 use indoc::formatdoc;
 use rivet::exec;
@@ -44,6 +44,9 @@ pub struct InnovusStep {
     /// Whether `read_db` verifies that the saved db's files are unchanged;
     /// see [`InnovusStep::set_checkpoint_file_check`].
     pub checkpoint_file_check: bool,
+    /// The `innovus` that runs, and that `open_chip.sh` opens the dbs with,
+    /// and its environment; see [`Tool`].
+    pub tool: Tool,
 }
 
 impl InnovusStep {
@@ -68,6 +71,7 @@ impl InnovusStep {
             synthesis,
             preamble: None,
             checkpoint_file_check: true,
+            tool: Tool::new("innovus"),
         }
     }
 
@@ -88,6 +92,16 @@ impl InnovusStep {
     /// changed collateral.
     pub fn set_checkpoint_file_check(&mut self, check: bool) {
         self.checkpoint_file_check = check;
+    }
+
+    /// Runs `binary` instead of the `innovus` on `PATH`; see [`Tool::binary`].
+    pub fn set_binary(&mut self, binary: impl Into<PathBuf>) {
+        self.tool.binary = binary.into();
+    }
+
+    /// Sets `key` to `value` in Innovus's environment; see [`Tool::env`].
+    pub fn set_env(&mut self, key: impl Into<OsString>, value: impl Into<OsString>) {
+        self.tool.env.insert(key.into(), value.into());
     }
 
     /// Generates the tcl file for place and route
@@ -377,7 +391,7 @@ impl Step for InnovusStep {
         // Viewer for the run's dbs: `latest` is repointed at each checkpoint
         // the run writes, so the script is valid as soon as the first
         // checkpointed substep completes.
-        generate_open_chip_script(&self.work_dir, "latest", self.synthesis)?;
+        generate_open_chip_script(&self.work_dir, "latest", self.synthesis, &self.tool)?;
 
         let tcl_file = self.work_dir.join("catch_fatal.tcl");
         let mut args = vec![
@@ -391,7 +405,7 @@ impl Step for InnovusStep {
             args.push("-synthesis");
         }
 
-        let mut command = Command::new("innovus");
+        let mut command = self.tool.command();
         command.args(args).current_dir(self.work_dir.clone());
 
         crate::kill_on_fatal_signal(&mut command, &self.work_dir)?;
@@ -1126,13 +1140,20 @@ pub struct Floorplan {
     pub obstructs: Vec<ObstructionConstraint>,
 }
 
-pub fn generate_open_chip_script(work_dir: &Path, db: &str, synthesis: bool) -> io::Result<()> {
+/// Writes `open_chip.sh`, which opens `db` in `tool` — the same build and
+/// environment as the step that wrote it, since another may not read the db.
+pub fn generate_open_chip_script(
+    work_dir: &Path,
+    db: &str,
+    synthesis: bool,
+    tool: &Tool,
+) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let script_path = work_dir.join("open_chip.sh");
     let mut f = File::create(&script_path)?;
     let flag = if synthesis { " -synthesis" } else { "" };
     writeln!(f, "#!/bin/bash")?;
-    writeln!(f, "innovus -stylus{flag} -db {db}")?;
+    write!(f, "{}", tool.script(&format!("-stylus{flag} -db {db}")))?;
     let mut perms = fs::metadata(&script_path)?.permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&script_path, perms)?;
@@ -1258,6 +1279,34 @@ mod hook_tests {
             "{tcl}"
         );
         assert_eq!(tcl.matches("TopLevel.par.done").count(), 1);
+        Ok(())
+    }
+
+    /// `open_chip.sh` opens the db in the step's own binary and environment,
+    /// quoted so that each reaches the tool exactly as it was given.
+    #[test]
+    fn open_chip_runs_the_steps_binary_in_its_environment() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rivet_open_chip_{}", std::process::id()));
+        let bin = dir.join("INNOVUS 21.1/bin");
+        fs::create_dir_all(&bin)?;
+        let innovus = bin.join("innovus");
+        fs::write(&innovus, "#!/bin/sh\necho \"$LM_LICENSE_FILE|$NOTE|$*\"\n")?;
+        fs::set_permissions(&innovus, fs::Permissions::from_mode(0o755))?;
+
+        let mut step = step();
+        step.set_binary(&innovus);
+        step.set_env("LM_LICENSE_FILE", "5280@license");
+        step.set_env("NOTE", "it's $HOME");
+        generate_open_chip_script(&dir, "latest", true, &step.tool)?;
+        let output = std::process::Command::new("bash")
+            .arg(dir.join("open_chip.sh"))
+            .output()?;
+        fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "5280@license|it's $HOME|-stylus -synthesis -db latest\n"
+        );
         Ok(())
     }
 

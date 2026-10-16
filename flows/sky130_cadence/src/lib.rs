@@ -80,7 +80,8 @@ impl Sram22 {
     }
 }
 
-pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyhow::Result<()> {
+/// Writes the script that compiles `srams`, returning its path.
+pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyhow::Result<PathBuf> {
     let sram22_root =
         std::env::var("SRAM22_ROOT").expect("SRAM22_ROOT environment variable must be set");
 
@@ -129,7 +130,7 @@ pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyho
         writeln!(script, "fi")?;
     }
 
-    Ok(())
+    Ok(script_path)
 }
 
 pub fn sky130_syn_read_design_files(files: GenusDesignFiles<'_>, srams: &[Sram22]) -> Substep {
@@ -358,12 +359,12 @@ pub fn sky130_scl_cadence_syn(config: SclSynConfig<'_>) -> GenusStep {
 
     if !missing_srams.is_empty() {
         fs::create_dir_all(sram_work_dir).expect("Failed to create sram directory");
-        generate_compiler_script(&missing_srams, sram_work_dir)
+        let script = generate_compiler_script(&missing_srams, sram_work_dir)
             .expect("Failed to generate SRAM compiler script");
         let sram_compiler = StepRef::new(BashStep::new(
-            sram_work_dir.to_path_buf(),
-            "generate_sram",
-            module.as_str(),
+            sram_work_dir,
+            format!("{module} generate_sram"),
+            script,
             vec![],
         ));
         deps.push(sram_compiler.into_dyn());
@@ -954,12 +955,12 @@ pub fn sky130_os_cadence_syn(config: OsSynConfig<'_>) -> GenusStep {
 
     if !missing_srams.is_empty() {
         fs::create_dir_all(sram_work_dir).expect("Failed to create sram directory");
-        generate_compiler_script(&missing_srams, sram_work_dir)
+        let script = generate_compiler_script(&missing_srams, sram_work_dir)
             .expect("Failed to generate SRAM compiler script");
         let sram_compiler = StepRef::new(BashStep::new(
-            sram_work_dir.to_path_buf(),
-            "generate_sram",
-            module.as_str(),
+            sram_work_dir,
+            format!("{module} generate_sram"),
+            script,
             vec![],
         ));
         deps.push(sram_compiler.into_dyn());

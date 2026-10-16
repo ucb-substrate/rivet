@@ -5,6 +5,8 @@ pub mod pegasus;
 use indoc::formatdoc;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fmt::Write as FmtWrite;
 use std::fs;
@@ -12,6 +14,65 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// The executable a step runs for its tool, and what it adds to that
+/// executable's environment.
+///
+/// By default `binary` is the tool's bare name, looked up on `PATH` when the
+/// step runs, so which build runs is whichever the shell rivet was started
+/// from finds first. Set it to a path to pin one install regardless.
+#[derive(Debug, Clone)]
+pub struct Tool {
+    /// Run as it is if it is a path, which should be absolute: the tool runs
+    /// in the step's work directory. A bare name is looked up on `PATH`.
+    pub binary: PathBuf,
+    /// Set for the tool on top of the environment rivet runs in, replacing
+    /// any variable of the same name. The exceptions are `GDB` and `NO_GDB`,
+    /// which [`kill_on_fatal_signal`] sets after these because a crashed tool
+    /// does not reliably die without them.
+    pub env: BTreeMap<OsString, OsString>,
+}
+
+impl Tool {
+    pub fn new(binary: impl Into<PathBuf>) -> Self {
+        Tool {
+            binary: binary.into(),
+            env: BTreeMap::new(),
+        }
+    }
+
+    /// A command that runs `binary` with `env` set, for the caller to add
+    /// arguments to.
+    pub fn command(&self) -> Command {
+        let mut command = Command::new(&self.binary);
+        command.envs(&self.env);
+        command
+    }
+
+    /// [`Tool::command`] as lines of a shell script: an `export` for each
+    /// variable, then `binary` followed by `args`, which go in as they are.
+    pub(crate) fn script(&self, args: &str) -> String {
+        let mut script = String::new();
+        for (key, value) in &self.env {
+            writeln!(script, "export {}={}", shell_word(key), shell_word(value)).unwrap();
+        }
+        writeln!(script, "{} {args}", shell_word(self.binary.as_os_str())).unwrap();
+        script
+    }
+}
+
+/// `word` as one shell word: as it is if the shell would read it that way
+/// anyway, otherwise in single quotes. `=` counts as special, so that a binary
+/// with one in its path is not read as an assignment.
+fn shell_word(word: &OsStr) -> String {
+    let word = word.to_string_lossy();
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:@%+,".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        word.into_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
 
 /// The script `GDB` is pointed at. Written into the step's work directory,
 /// beside the tcl, so it needs no packaging and no path known ahead of time.

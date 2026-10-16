@@ -1,12 +1,14 @@
 use regex::Regex;
+use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::{fs, io};
 
-use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, UnknownSubstep, mmmc};
+use crate::{
+    Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, Tool, UnknownSubstep, mmmc,
+};
 use fs::File;
 use indoc::formatdoc;
 use rivet::exec;
@@ -32,6 +34,8 @@ pub struct GenusStep {
     /// at the tool's default CPU count. Put those settings here, not in a
     /// substep.
     pub preamble: Option<String>,
+    /// The `genus` that runs and its environment; see [`Tool`].
+    pub tool: Tool,
 }
 
 impl GenusStep {
@@ -53,6 +57,7 @@ impl GenusStep {
             endpoint: None,
             dependencies: deps,
             preamble: None,
+            tool: Tool::new("genus"),
         }
     }
 
@@ -60,6 +65,16 @@ impl GenusStep {
     /// [`GenusStep::preamble`].
     pub fn set_preamble(&mut self, tcl: impl Into<String>) {
         self.preamble = Some(tcl.into());
+    }
+
+    /// Runs `binary` instead of the `genus` on `PATH`; see [`Tool::binary`].
+    pub fn set_binary(&mut self, binary: impl Into<PathBuf>) {
+        self.tool.binary = binary.into();
+    }
+
+    /// Sets `key` to `value` in Genus's environment; see [`Tool::env`].
+    pub fn set_env(&mut self, key: impl Into<OsString>, value: impl Into<OsString>) {
+        self.tool.env.insert(key.into(), value.into());
     }
 
     /// Generates the tcl file for synthesis
@@ -254,7 +269,7 @@ impl Step for GenusStep {
         progress::status("writing syn.tcl");
         self.make_tcl_file(&self.work_dir, substeps)?;
 
-        let mut command = Command::new("genus");
+        let mut command = self.tool.command();
         command
             .args([
                 "-f",
@@ -674,6 +689,41 @@ mod hook_tests {
         assert!(
             tcl.ends_with("close [open {/tmp/hook_tests/TopLevel.syn.done} w]\nquit\n"),
             "{tcl}"
+        );
+        Ok(())
+    }
+
+    /// The step runs the binary it was given with the variables it was given,
+    /// except that `GDB` stays the crash handler's.
+    #[test]
+    fn genus_runs_the_given_binary_in_the_given_environment() -> rivet::StepResult {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rivet_genus_tool_{}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+        // Stands in for genus: says what it was run with, and finishes the way
+        // syn.tcl would.
+        let genus = dir.join("genus");
+        fs::write(
+            &genus,
+            "#!/bin/sh\necho \"$LM_LICENSE_FILE|$GDB|$*\" > ran\ntouch TopLevel.syn.done\n",
+        )?;
+        fs::set_permissions(&genus, fs::Permissions::from_mode(0o755))?;
+
+        let mut step = step();
+        step.work_dir = dir.clone();
+        step.set_binary(&genus);
+        step.set_env("LM_LICENSE_FILE", "5280@license");
+        step.set_env("GDB", "/usr/bin/gdb");
+        step.execute()?;
+        let ran = fs::read_to_string(dir.join("ran"))?;
+        fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            ran,
+            format!(
+                "5280@license|{}|-f {} -no_gui -batch\n",
+                dir.join("kill_on_crash.sh").display(),
+                dir.join("syn.tcl").display()
+            )
         );
         Ok(())
     }

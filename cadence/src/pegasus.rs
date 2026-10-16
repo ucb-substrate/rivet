@@ -1,10 +1,10 @@
+use std::ffi::OsString;
 use std::fmt::Debug;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
 use std::{fs, io};
 
-use crate::Substep;
+use crate::{Substep, Tool};
 use fs::File;
 use rivet::exec;
 use rivet::progress;
@@ -17,6 +17,8 @@ pub struct PegasusStep {
     pub module: String,
     pub pinned: bool,
     pub dependencies: Vec<StepRef<dyn Step>>,
+    /// The `pegasus` that runs and its environment; see [`Tool`].
+    pub tool: Tool,
 }
 
 impl PegasusStep {
@@ -34,7 +36,18 @@ impl PegasusStep {
             module,
             pinned,
             dependencies: deps,
+            tool: Tool::new("pegasus"),
         }
+    }
+
+    /// Runs `binary` instead of the `pegasus` on `PATH`; see [`Tool::binary`].
+    pub fn set_binary(&mut self, binary: impl Into<PathBuf>) {
+        self.tool.binary = binary.into();
+    }
+
+    /// Sets `key` to `value` in Pegasus's environment; see [`Tool::env`].
+    pub fn set_env(&mut self, key: impl Into<OsString>, value: impl Into<OsString>) {
+        self.tool.env.insert(key.into(), value.into());
     }
 
     #[allow(dead_code)]
@@ -90,7 +103,7 @@ impl Step for PegasusStep {
         let layout = format!("./{}.gds", self.module);
 
         if self.func == "lvs" {
-            let mut ctl = Command::new("pegasus");
+            let mut ctl = self.tool.command();
             ctl.args(["-f", ctl_path.to_str().unwrap()])
                 .current_dir(self.work_dir.clone());
             let status = exec::run_logged_in(
@@ -102,7 +115,7 @@ impl Step for PegasusStep {
                 return Err(format!("pegasus ctl run exited with {status}").into());
             }
 
-            let mut lvs = Command::new("pegasus");
+            let mut lvs = self.tool.command();
             lvs.args([
                 "-lvs",
                 "-dp",
@@ -142,7 +155,7 @@ impl Step for PegasusStep {
         }
 
         if self.func == "drc" {
-            let mut drc = Command::new("pegasus");
+            let mut drc = self.tool.command();
             drc.args([
                 "-drc",
                 "-dp",

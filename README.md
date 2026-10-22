@@ -11,6 +11,16 @@ For the sake of simplicity, Rivet does **not** include features that other flow 
 - Intermediate representations for portability between tools and technologies
 - Automatic caching
 
+## Installation
+
+The `rivet` binary, which reopens a run so its logs can be read again (see
+[Coming back to a run](#coming-back-to-a-run)), is installed from the
+repository; the trailing `rivet` picks its package out of the workspace:
+
+```text
+cargo install --git https://github.com/ucb-substrate/rivet rivet
+```
+
 ## Execution
 
 `rivet::execute` runs a target step and everything it depends on. The graph is

@@ -818,7 +818,7 @@ pub fn sky130_cadence_reference_flow(
         &|block: &ModuleInfo, sub_blocks: Vec<(&ModuleInfo, &Sky130FlatFlow)>| -> Sky130FlatFlow {
             sky130_cadence_flat_flow(
                 &pdk,
-                &work_dir.join(format!("build-{}", &block.module_name)),
+                &work_dir.join(format!("build-{}", block.module_name)),
                 block,
                 &sub_blocks,
             )

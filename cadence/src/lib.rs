@@ -5,14 +5,220 @@ pub mod pegasus;
 use indoc::formatdoc;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fmt::Write as FmtWrite;
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// The script `GDB` is pointed at. Written into the step's work directory,
+/// beside the tcl, so it needs no packaging and no path known ahead of time.
+const KILL_ON_CRASH: &str = r#"#!/bin/sh
+# Stand-in for `gdb`, pointed at by $GDB when a Cadence tool runs. See
+# `kill_on_fatal_signal` for why this exists and why here.
+#
+# The tool's crash handler forks `.pstk`, which runs `/bin/pstack <pid>`, which
+# runs us: tool -> .pstk (csh) -> pstack (bash) -> here. So the tool is our
+# great-grandparent, and `.pstk`'s live PPid names it.
+ppid() { awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
+tool=$(ppid "$(ppid "$PPID")")
+told=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | awk '{ print $NF }')
+
+# Kill only if the live parent of `.pstk` is the very pid pstack was told to
+# trace. While the tool lives it is blocked in wait4() on this chain, so it
+# cannot exit, so its pid cannot be reused, and the two agree. If it has
+# already died -- a second collector run after the first one killed it --
+# `.pstk` has been reparented and they do not, whoever holds the pid now.
+# Any other shape of chain also fails this test, and we do nothing, which
+# leaves the tool to carry on exactly as it would without us.
+if [ -n "$tool" ] && [ "$tool" = "$told" ] && [ "$tool" -gt 1 ] 2>/dev/null; then
+    kill -9 "$tool"
+fi
+exit 0
+"#;
+
+/// Make a fatal signal actually end a Cadence tool.
+///
+/// On a fatal signal the tool prints its own stack trace and then forks
+/// `etc/innovus/.pstk`, which runs `/bin/pstack <pid>` — on RHEL a shell script
+/// that runs whatever `$GDB` names, unchecked. Two things follow.
+///
+/// The first is that the collector must not be a real debugger. `gstack`'s gdb
+/// attaches by ptrace, stopping every one of the tool's threads including the
+/// one draining its own stdout pipe, and gdb then blocks writing the backtrace
+/// into that pipe — a deadlock leaving the process alive with the run waiting
+/// on it.
+///
+/// The second is that being `$GDB` is a precise signal. `.pstk` is forked from
+/// the crash handler and nowhere else, so a script in that position is called
+/// exactly once, at the moment the tool has decided it is dying. That matters
+/// more than not deadlocking, because the tool does not reliably die on its
+/// own: its handler calls `exit()`, and the atexit path runs `seiCleanupLog`
+/// into `mm_fre_rare`, the tool's own allocator, which after a crash that
+/// damaged the heap can spin on one core indefinitely with every other thread
+/// parked behind it. That, not the debugger, is why a crashed step could hang
+/// for hours.
+///
+/// So `GDB` names a script that SIGKILLs the tool. It runs before the handler
+/// reaches `exit()`, so that loop is never entered: 192ms to a status of 137,
+/// against 5s for a small design that unwinds cleanly and forever for one that
+/// does not. What is given up is the tail of the tool's own shutdown — the AAE
+/// memory dump and the license summary — which a crash of this kind never
+/// reaches anyway. The stack trace is already printed by then.
+///
+/// `NO_GDB` covers `.pstk`'s second half, which runs only on a machine with no
+/// `pstack` at all; there `.pstk` picks its own debugger with a csh `set`,
+/// shadowing the environment, so `NO_GDB` is the only lever there.
+///
+/// Neither variable is documented, and both are read by shell scripts inside
+/// the tool's own installation, so a version that stops consulting them stops
+/// being covered here. Nothing depends on it having worked: a tool that hangs
+/// anyway is still reported by the quiet-output warning in `rivet::exec`.
+pub fn kill_on_fatal_signal(command: &mut Command, work_dir: &Path) -> io::Result<()> {
+    let script = work_dir.join("kill_on_crash.sh");
+    fs::write(&script, KILL_ON_CRASH)?;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+    command.env("GDB", &script).env("NO_GDB", "1");
+    Ok(())
+}
+
+/// Tcl that records a script got to its end: the last thing a generated script
+/// runs on its way to a clean exit, so that [`check_finished`] can tell a run
+/// that finished from one that merely exited 0.
+///
+/// The exit status alone cannot. A Cadence tool interrupted in batch (SIGINT)
+/// exits 0 either way it handles it. Interrupted between commands, Innovus
+/// prints "Batch mode Innovus terminated by user interrupt." and exits at once.
+/// Interrupted inside a long command, it lets the command wind down and then
+/// offers its interrupt menu on stdin. Under rivet stdin is `/dev/null`
+/// ([`rivet::exec`]), and after twenty answers it cannot read, the tool quits.
+/// A ShuttleTile par that failed in `clock_tree` went out the second way. Its
+/// catch handler had printed the error and was about to write `post_fail` and
+/// `exit 1` when the menu came up. The step was reported done, and fill, DRC
+/// and LVS ran on the GDS of an earlier run.
+pub(crate) fn finished_marker_tcl(marker: &Path) -> String {
+    format!("close [open {{{}}} w]", marker.display())
+}
+
+/// Fails a step whose tool exited 0 without its script writing `marker`
+/// ([`finished_marker_tcl`]). `out_log` is the tool's stdout, which says why if
+/// the reason was an interrupt.
+pub(crate) fn check_finished(tool: &str, marker: &Path, out_log: &Path) -> Result<(), String> {
+    if marker.exists() {
+        return Ok(());
+    }
+    // Either sign of an interrupt is among the last things the tool prints, so
+    // the end of the log is enough, and a multi-gigabyte log is not read in
+    // full to find it.
+    let interrupted = tail(out_log, 64 * 1024)
+        .map(|end| end.contains("INFO(INTERRUPT)") || end.contains("terminated by user interrupt"))
+        .unwrap_or(false);
+    let why = if interrupted {
+        "it was interrupted (SIGINT), which a Cadence tool in batch answers with exit 0"
+    } else {
+        "something ended it before the end of its script"
+    };
+    Err(format!(
+        "{tool} exited 0 but did not finish: {why}. See {}",
+        out_log.display()
+    ))
+}
+
+/// The last `bytes` of a file, or less if it is shorter.
+fn tail(path: &Path, bytes: u64) -> io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(bytes)))?;
+    let mut end = Vec::new();
+    file.read_to_end(&mut end)?;
+    Ok(String::from_utf8_lossy(&end).into_owned())
+}
 
 #[derive(Debug, Clone)]
 pub struct Substep {
     pub name: String,
     pub command: String,
     pub checkpoint: bool,
+}
+
+/// A substep name that the flow it was looked for in does not have.
+///
+/// Every hook is anchored on a substep that is already in the flow: one is
+/// inserted after it, replaces it, or deletes it. A name that is not there
+/// used to be a no-op, which is the worst of the options — the hook is
+/// dropped, nothing says so, and the tool runs the whole flow through
+/// without the step the author asked for. So it is an error instead, and
+/// because hooks are added while the flow is being built rather than while
+/// it runs, it is returned to whoever is building the flow rather than
+/// reported as a step failure hours later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSubstep {
+    /// The substep name that was asked for.
+    pub name: String,
+    /// What the caller was trying to do with it, e.g. `"add a hook after"`.
+    pub action: String,
+    /// The flow it was looked for in, as [`rivet::Step::label`] gives it,
+    /// e.g. `"decoder par"`.
+    pub flow: String,
+    /// The substeps the flow does have, in the order it runs them.
+    pub available: Vec<String>,
+}
+
+impl fmt::Display for UnknownSubstep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cannot {} '{}': {} has ",
+            self.action, self.name, self.flow
+        )?;
+        if self.available.is_empty() {
+            write!(f, "no substeps at all")
+        } else {
+            write!(f, "no such substep. It has: {}", self.available.join(", "))
+        }
+    }
+}
+
+impl std::error::Error for UnknownSubstep {}
+
+/// The index of the substep named `name`, or an [`UnknownSubstep`] naming the
+/// substeps that are there instead.
+///
+/// `action` completes "cannot {action} '{name}'" in the message, and `flow`
+/// is the step's label; the step types wrap this so callers pass neither.
+pub(crate) fn substep_index(
+    substeps: &[Substep],
+    name: &str,
+    action: &str,
+    flow: &str,
+) -> Result<usize, UnknownSubstep> {
+    substeps
+        .iter()
+        .position(|substep| substep.name == name)
+        .ok_or_else(|| UnknownSubstep {
+            name: name.to_string(),
+            action: action.to_string(),
+            flow: flow.to_string(),
+            available: substeps
+                .iter()
+                .map(|substep| substep.name.clone())
+                .collect(),
+        })
+}
+
+/// [`rivet::Step::scope`] for a step's checkpoint and (inclusive) endpoint.
+pub(crate) fn scope(checkpoint: Option<&Checkpoint>, endpoint: Option<&str>) -> Option<String> {
+    match (checkpoint, endpoint) {
+        (None, None) => None,
+        (Some(checkpoint), None) => Some(format!("after {}", checkpoint.name)),
+        (None, Some(endpoint)) => Some(format!("until {endpoint}")),
+        (Some(checkpoint), Some(endpoint)) => {
+            Some(format!("after {}, until {endpoint}", checkpoint.name))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -150,4 +356,62 @@ pub fn mmmc(config: MmmcConfig) -> String {
     .unwrap();
 
     mmmc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rivet_finished_{name}_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_written_marker_is_a_finished_run() {
+        let dir = dir("written");
+        let marker = dir.join("top.par.done");
+        fs::write(&marker, "").unwrap();
+        assert_eq!(
+            check_finished("innovus", &marker, &dir.join("top.par.out")),
+            Ok(())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The case that got through: exit 0 after an interrupt, no marker. Both
+    /// of the ways Innovus reports one, each at the end of a long log.
+    #[test]
+    fn exit_0_after_an_interrupt_is_a_failure_that_says_so() {
+        let dir = dir("interrupted");
+        let log = dir.join("top.par.out");
+        for last in [
+            "**INFO(INTERRUPT): The interrupted design can be viewed in its current \
+             state but should not be used to continue the flow.\n",
+            "Batch mode Innovus terminated by user interrupt.\n",
+        ] {
+            fs::write(&log, format!("{}{last}", "padding\n".repeat(20_000))).unwrap();
+            let err = check_finished("innovus", &dir.join("top.par.done"), &log).unwrap_err();
+            assert!(
+                err.starts_with("innovus exited 0 but did not finish: it was interrupted"),
+                "{err}"
+            );
+            assert!(err.ends_with(&log.display().to_string()), "{err}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn exit_0_without_the_marker_is_a_failure_even_with_no_log() {
+        let dir = dir("unexplained");
+        let err = check_finished("genus", &dir.join("top.syn.done"), &dir.join("top.syn.out"))
+            .unwrap_err();
+        assert!(
+            err.starts_with("genus exited 0 but did not finish: something ended it"),
+            "{err}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

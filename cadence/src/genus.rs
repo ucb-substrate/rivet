@@ -1,16 +1,17 @@
 use regex::Regex;
+use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::{fs, io};
 
-use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, mmmc};
+use crate::{Checkpoint, MmmcConfig, MmmcCorner, SubmoduleInfo, Substep, UnknownSubstep, mmmc};
 use fs::File;
 use indoc::formatdoc;
-use rivet::Step;
-use std::sync::Arc;
+use rivet::exec::{self, Tool};
+use rivet::progress;
+use rivet::{Step, StepRef, StepResult};
 
 /// Defines the Genus synthesis step subflow
 #[derive(Debug, Clone)]
@@ -21,7 +22,18 @@ pub struct GenusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
-    pub dependencies: Vec<Arc<dyn Step>>,
+    pub dependencies: Vec<StepRef<dyn Step>>,
+    /// Session-level TCL emitted at the top of every generated script,
+    /// resumes included.
+    ///
+    /// A checkpoint db restores `set_db` state, but per-session settings such
+    /// as `set_multi_cpu_usage` are not stored in the db — and resuming from a
+    /// checkpoint slices off the substeps that set them, leaving the session
+    /// at the tool's default CPU count. Put those settings here, not in a
+    /// substep.
+    pub preamble: Option<String>,
+    /// The `genus` that runs and its environment; see [`Tool`].
+    pub tool: Tool,
 }
 
 impl GenusStep {
@@ -30,7 +42,7 @@ impl GenusStep {
         module: impl Into<String>,
         steps: Vec<Substep>,
         pinned: bool,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
     ) -> Self {
         let dir = work_dir.into();
         let modul = module.into();
@@ -42,100 +54,183 @@ impl GenusStep {
             start_checkpoint: None,
             endpoint: None,
             dependencies: deps,
+            preamble: None,
+            tool: Tool::new("genus"),
         }
+    }
+
+    /// Sets the session-level TCL prepended to every generated script; see
+    /// [`GenusStep::preamble`].
+    pub fn set_preamble(&mut self, tcl: impl Into<String>) {
+        self.preamble = Some(tcl.into());
+    }
+
+    /// Runs `binary` instead of the `genus` on `PATH`; see [`Tool::binary`].
+    pub fn set_binary(&mut self, binary: impl Into<PathBuf>) {
+        self.tool.binary = binary.into();
+    }
+
+    /// Sets `key` to `value` in Genus's environment; see [`Tool::env`].
+    /// `GDB` and `NO_GDB` are the exception: [`crate::kill_on_fatal_signal`]
+    /// sets them after these, because a crashed tool does not reliably die
+    /// without them.
+    pub fn set_env(&mut self, key: impl Into<OsString>, value: impl Into<OsString>) {
+        self.tool.env.insert(key.into(), value.into());
     }
 
     /// Generates the tcl file for synthesis
     fn make_tcl_file(&self, path: &Path, steps: Vec<Substep>) -> io::Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create syn.tcl parent directory");
+            std::fs::create_dir_all(parent)?;
         }
 
-        let mut tcl_file =
-            File::create(path.join("syn.tcl")).expect("failed to create syn.tcl file");
+        let mut tcl_file = File::create(path.join("syn.tcl"))?;
 
-        File::create(path.join("rivet_error.log")).expect("failed to create par.tcl file");
+        File::create(path.join("rivet_error.log"))?;
+        if let Some(preamble) = &self.preamble {
+            writeln!(tcl_file, "{preamble}")?;
+        }
         writeln!(
             tcl_file,
             "set_db super_thread_debug_directory super_thread_debug"
         )?;
 
         if let Some(checkpoint) = &self.start_checkpoint {
-            writeln!(tcl_file, "read_db {}", checkpoint.path.display()).expect("Failed to write");
+            // Restoring a large db takes minutes; without a banner the display
+            // shows nothing for all of it. Un-numbered so the substep counts
+            // still cover exactly the substeps.
+            let db = checkpoint
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| checkpoint.name.clone());
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner_named(&format!("read_db {db}"))
+            )?;
+            writeln!(tcl_file, "read_db {}", checkpoint.path.display())?;
         }
 
-        for step in steps.into_iter() {
-            println!("\n--> Parsing step: {}\n", step.name);
-
+        let total = steps.len();
+        for (index, step) in steps.into_iter().enumerate() {
+            // Braces rather than quotes: TCL performs no substitution inside them.
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner(index + 1, total, &step.name)
+            )?;
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
-                let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
+                let checkpoint_file = self.checkpoint_path(&step.name);
 
                 writeln!(tcl_file, "write_db -to_file {}", checkpoint_file.display())?;
             }
         }
+        // Only a script that got here wrote the marker; see `finished_marker_tcl`.
+        writeln!(
+            tcl_file,
+            "{}",
+            crate::finished_marker_tcl(&self.finished_marker_path())
+        )?;
         writeln!(tcl_file, "quit")?;
 
-        println!("\nFinished creating tcl file\n");
         Ok(())
     }
 
-    /// Inserts a custom command as a substep in the synthesis flow
-    pub fn add_hook(&mut self, name: &str, tcl: &str, after_substep: &str, checkpointed: bool) {
-        if let Some(index) = self.substeps.iter().position(|s| s.name == after_substep) {
-            self.substeps.insert(
-                index + 1,
-                Substep {
-                    name: name.to_string(),
-                    command: tcl.to_string(),
-                    checkpoint: checkpointed,
-                },
-            );
-        }
+    /// The file `syn.tcl` writes once it has run to its end, without which an
+    /// exit status of 0 does not count as success; see
+    /// [`crate::finished_marker_tcl`].
+    pub fn finished_marker_path(&self) -> PathBuf {
+        self.work_dir.join(format!("{}.syn.done", self.module))
+    }
+
+    /// The index of the substep named `substep`, or an [`UnknownSubstep`]
+    /// naming the substeps the flow does have.
+    fn substep_index(&self, substep: &str, action: &str) -> Result<usize, UnknownSubstep> {
+        crate::substep_index(&self.substeps, substep, action, &self.label())
+    }
+
+    /// Inserts a custom command as a substep in the synthesis flow, directly
+    /// after the substep named `after_substep`.
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep by that name,
+    /// leaving the flow untouched.
+    pub fn add_hook(
+        &mut self,
+        name: &str,
+        tcl: &str,
+        after_substep: &str,
+        checkpointed: bool,
+    ) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(after_substep, "add a hook after")?;
+        self.substeps.insert(
+            index + 1,
+            Substep {
+                name: name.to_string(),
+                command: tcl.to_string(),
+                checkpoint: checkpointed,
+            },
+        );
+        Ok(())
     }
 
     /// Replaces a specfic substep in the synthesis flow with a new command
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep named
+    /// `replaced_substep_name`, leaving the flow untouched.
     pub fn replace_hook(
         &mut self,
         new_substep_name: &str,
         tcl: &str,
         replaced_substep_name: &str,
         checkpointed: bool,
-    ) {
-        if let Some(index) = self
-            .substeps
-            .iter()
-            .position(|s| s.name == replaced_substep_name)
-        {
-            self.substeps[index] = Substep {
-                name: new_substep_name.to_string(),
-                command: tcl.to_string(),
-                checkpoint: checkpointed,
-            };
-        }
+    ) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(replaced_substep_name, "replace")?;
+        self.substeps[index] = Substep {
+            name: new_substep_name.to_string(),
+            command: tcl.to_string(),
+            checkpoint: checkpointed,
+        };
+        Ok(())
     }
 
     /// Deletes a specfic substep in the synthesis flow
-    pub fn delete_hook(&mut self, deleted_substep_name: &str) {
-        if let Some(index) = self
-            .substeps
-            .iter()
-            .position(|s| s.name == deleted_substep_name)
-        {
-            self.substeps.remove(index);
-        }
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep by that name,
+    /// leaving the flow untouched.
+    pub fn delete_hook(&mut self, deleted_substep_name: &str) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(deleted_substep_name, "delete")?;
+        self.substeps.remove(index);
+        Ok(())
     }
 
     pub fn netlist(&self) -> PathBuf {
         self.work_dir.join(format!("{}.mapped.v", self.module))
     }
 
-    /// Assigns the starting checkpoint of the synthesis flow
+    /// Restore `checkpoint_path` at the start of the run and continue with the
+    /// substeps after `name`; see [`GenusStep::resume_from`] for the case
+    /// where the two correspond.
     pub fn add_checkpoint(&mut self, name: &str, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
             name: name.to_string(),
             path: checkpoint_path,
         });
+    }
+
+    /// The db a checkpointed substep writes: `post_<substep>` in the work
+    /// directory.
+    pub fn checkpoint_path(&self, substep: &str) -> PathBuf {
+        self.work_dir.join(format!("post_{substep}"))
+    }
+
+    /// Restore the db `substep` wrote on an earlier run and continue with the
+    /// substeps after it. `substep` must be checkpointed, or there is nothing
+    /// to restore.
+    pub fn resume_from(&mut self, substep: &str) {
+        let path = self.checkpoint_path(substep);
+        self.add_checkpoint(substep, path);
     }
 
     pub fn add_endpoint(&mut self, name: &str) {
@@ -144,50 +239,106 @@ impl GenusStep {
 }
 
 impl Step for GenusStep {
-    fn execute(&self) {
+    fn execute(&self) -> StepResult {
         let mut substeps = self.substeps.clone();
+        // A checkpoint or an endpoint can be set before the hooks that name
+        // it are added, so neither is checked until here, where the flow is
+        // whatever it ended up being. The endpoint is looked for in what the
+        // resume left, so one before the resume point reads as absent, which
+        // is what it is: there is no run that both starts and stops there.
         if let Some(checkpoint) = &self.start_checkpoint {
-            let slice_index = self
-                .substeps
-                .iter()
-                .position(|s| s.name == checkpoint.name)
-                .expect("Failed to find checkpoint name");
+            let slice_index = crate::substep_index(
+                &self.substeps,
+                &checkpoint.name,
+                "start from",
+                &self.label(),
+            )?;
             substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
         if let Some(endpoint_name) = &self.endpoint {
-            let slice_index = substeps
-                .iter()
-                .position(|s| s.name == *endpoint_name)
-                .expect("Failed to find endpoint name");
+            let slice_index =
+                crate::substep_index(&substeps, endpoint_name, "stop at", &self.label())?;
             substeps = substeps[..=slice_index].to_vec();
         }
 
-        self.make_tcl_file(&self.work_dir, substeps)
-            .expect("Failed to create syn.tcl");
+        // A marker left by an earlier run would pass this one off as finished.
+        let finished = self.finished_marker_path();
+        if finished.exists() {
+            fs::remove_file(&finished)?;
+        }
 
-        let status = Command::new("genus")
+        progress::status("writing syn.tcl");
+        self.make_tcl_file(&self.work_dir, substeps)?;
+
+        let mut command = self.tool.command();
+        command
             .args([
                 "-f",
                 self.work_dir.join("syn.tcl").to_str().unwrap(),
                 "-no_gui",
                 "-batch",
             ])
-            .current_dir(self.work_dir.clone())
-            .status()
-            .expect("Failed to execute syn.tcl");
+            .current_dir(self.work_dir.clone());
+
+        crate::kill_on_fatal_signal(&mut command, &self.work_dir)?;
+
+        progress::status(format!("running genus (log: {}.syn.out)", self.module));
+        let status = exec::run_logged_in(
+            &mut command,
+            &self.work_dir,
+            &format!("{}.syn", self.module),
+        )?;
 
         if !status.success() {
-            eprintln!("Failed to execute syn.tcl");
-            panic!("Stopped flow");
+            return Err(format!(
+                "genus exited with {status}; see {}",
+                self.work_dir
+                    // Which log holds the reason depends on how it died. A
+                    // fatal signal is reported by the tool's own handler on
+                    // stdout and never reaches `.syn.err`, which a crash
+                    // leaves empty: `catch_fatal.tcl` can see a Tcl error, not
+                    // a signal.
+                    .join(match status.code() {
+                        None => format!("{}.syn.out", self.module),
+                        Some(_) => format!("{}.syn.err", self.module),
+                    })
+                    .display()
+            )
+            .into());
         }
+        crate::check_finished(
+            "genus",
+            &finished,
+            &self.work_dir.join(format!("{}.syn.out", self.module)),
+        )?;
+        Ok(())
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn label(&self) -> String {
+        format!("{} syn", self.module)
+    }
+
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.dependencies.clone()
     }
 
     fn pinned(&self) -> bool {
         self.pinned
+    }
+
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
+
+    fn log_dir(&self) -> Option<PathBuf> {
+        Some(self.work_dir.clone())
+    }
+
+    fn browse_files(&self) -> Vec<PathBuf> {
+        vec![self.work_dir.join("syn.tcl")]
+    }
+    fn scope(&self) -> Option<String> {
+        crate::scope(self.start_checkpoint.as_ref(), self.endpoint.as_deref())
     }
 }
 
@@ -501,4 +652,97 @@ pub fn remove_hierarchical_submodules(
     fs::write(&new_path, new_content)?;
 
     Ok(new_path)
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    fn step() -> GenusStep {
+        let substeps = ["init_design", "syn_generic", "syn_map"]
+            .map(|name| Substep {
+                name: name.into(),
+                command: String::new(),
+                checkpoint: false,
+            })
+            .to_vec();
+        GenusStep::new("/tmp/hook_tests", "TopLevel", substeps, false, vec![])
+    }
+
+    #[test]
+    fn a_hook_lands_after_its_anchor() -> Result<(), UnknownSubstep> {
+        let mut step = step();
+        step.add_hook("dont_use", "set_dont_use", "init_design", false)?;
+        let names: Vec<&str> = step.substeps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["init_design", "dont_use", "syn_generic", "syn_map"]);
+        Ok(())
+    }
+
+    /// The finished marker is the last thing `syn.tcl` does before `quit`.
+    #[test]
+    fn syn_tcl_writes_the_finished_marker_right_before_quit() -> io::Result<()> {
+        let dir = std::env::temp_dir().join(format!("rivet_finished_syn_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let step = step();
+        step.make_tcl_file(&dir, step.substeps.clone())?;
+        let tcl = std::fs::read_to_string(dir.join("syn.tcl"))?;
+        std::fs::remove_dir_all(&dir)?;
+        assert!(
+            tcl.ends_with("close [open {/tmp/hook_tests/TopLevel.syn.done} w]\nquit\n"),
+            "{tcl}"
+        );
+        Ok(())
+    }
+
+    /// The step runs the binary it was given with the variables it was given,
+    /// except that `GDB` stays the crash handler's.
+    #[test]
+    fn genus_runs_the_given_binary_in_the_given_environment() -> rivet::StepResult {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rivet_genus_tool_{}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+        // Stands in for genus: says what it was run with, and finishes the way
+        // syn.tcl would.
+        let genus = dir.join("genus");
+        fs::write(
+            &genus,
+            "#!/bin/sh\necho \"$LM_LICENSE_FILE|$GDB|$*\" > ran\ntouch TopLevel.syn.done\n",
+        )?;
+        fs::set_permissions(&genus, fs::Permissions::from_mode(0o755))?;
+
+        let mut step = step();
+        step.work_dir = dir.clone();
+        step.set_binary(&genus);
+        step.set_env("LM_LICENSE_FILE", "5280@license");
+        step.set_env("GDB", "/usr/bin/gdb");
+        step.execute()?;
+        let ran = fs::read_to_string(dir.join("ran"))?;
+        fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            ran,
+            format!(
+                "5280@license|{}|-f {} -no_gui -batch\n",
+                dir.join("kill_on_crash.sh").display(),
+                dir.join("syn.tcl").display()
+            )
+        );
+        Ok(())
+    }
+
+    /// As in [`crate::innovus`]: an anchor that is not there used to drop the
+    /// hook silently, and synthesis would run without it.
+    #[test]
+    fn a_hook_on_a_missing_anchor_is_an_error() {
+        let mut step = step();
+        let err = step
+            .add_hook("dont_use", "set_dont_use", "int_design", false)
+            .expect_err("hook anchored on a substep that does not exist");
+        assert_eq!(
+            err.to_string(),
+            "cannot add a hook after 'int_design': TopLevel syn has no such substep. \
+             It has: init_design, syn_generic, syn_map"
+        );
+        let names: Vec<&str> = step.substeps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["init_design", "syn_generic", "syn_map"]);
+    }
 }

@@ -1,19 +1,25 @@
+use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::{fs, io};
 
 use crate::MmmcCorner;
-use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, mmmc};
+use crate::{Checkpoint, MmmcConfig, SubmoduleInfo, Substep, UnknownSubstep, mmmc};
 use fs::File;
 use indoc::formatdoc;
-use rivet::Step;
+use rivet::exec::{self, Tool};
+use rivet::progress;
+use rivet::{Step, StepRef, StepResult};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
-use std::sync::Arc;
+
+/// Substep name the post-failure db is filed under, so that it lands beside
+/// the checkpoints as `post_fail` and every path to it goes through
+/// [`InnovusStep::checkpoint_path`]. No substep may share it.
+const FAIL_CHECKPOINT: &str = "fail";
 
 /// Defines the Innovus place and route step subflow
 #[derive(Debug, Clone)]
@@ -24,8 +30,23 @@ pub struct InnovusStep {
     pub pinned: bool,
     pub start_checkpoint: Option<Checkpoint>,
     pub endpoint: Option<String>,
-    pub deps: Vec<Arc<dyn Step>>,
+    pub deps: Vec<StepRef<dyn Step>>,
     pub synthesis: bool,
+    /// Session-level TCL emitted at the top of every generated script,
+    /// resumes included.
+    ///
+    /// A checkpoint db restores `set_db` state, but per-session settings such
+    /// as `set_multi_cpu_usage` are not stored in the db — and resuming from a
+    /// checkpoint slices off the substeps that set them, leaving the session
+    /// at the tool's default CPU count. Put those settings here, not in a
+    /// substep.
+    pub preamble: Option<String>,
+    /// Whether `read_db` verifies that the saved db's files are unchanged;
+    /// see [`InnovusStep::set_checkpoint_file_check`].
+    pub checkpoint_file_check: bool,
+    /// The `innovus` that runs, and that `open_chip.sh` opens the dbs with,
+    /// and its environment; see [`Tool`].
+    pub tool: Tool,
 }
 
 impl InnovusStep {
@@ -34,7 +55,7 @@ impl InnovusStep {
         module: impl Into<String>,
         substeps: Vec<Substep>,
         pinned: bool,
-        deps: Vec<Arc<dyn Step>>,
+        deps: Vec<StepRef<dyn Step>>,
         synthesis: bool,
     ) -> Self {
         let dir = work_dir.into();
@@ -48,7 +69,42 @@ impl InnovusStep {
             endpoint: None,
             deps,
             synthesis,
+            preamble: None,
+            checkpoint_file_check: true,
+            tool: Tool::new("innovus"),
         }
+    }
+
+    /// Sets the session-level TCL prepended to every generated script; see
+    /// [`InnovusStep::preamble`].
+    pub fn set_preamble(&mut self, tcl: impl Into<String>) {
+        self.preamble = Some(tcl.into());
+    }
+
+    /// Whether `read_db` checks that the files inside the saved db are
+    /// unchanged. On by default, as Innovus has it.
+    ///
+    /// The check errors out if any file in the db directory has been edited,
+    /// renamed or deleted. That is the right default, but it also rejects a
+    /// checkpoint whose children's LEFs have legitimately been rebuilt since
+    /// it was written -- which is exactly when reusing one is worth doing.
+    /// Turning it off says the db is being restored deliberately against
+    /// changed collateral.
+    pub fn set_checkpoint_file_check(&mut self, check: bool) {
+        self.checkpoint_file_check = check;
+    }
+
+    /// Runs `binary` instead of the `innovus` on `PATH`; see [`Tool::binary`].
+    pub fn set_binary(&mut self, binary: impl Into<PathBuf>) {
+        self.tool.binary = binary.into();
+    }
+
+    /// Sets `key` to `value` in Innovus's environment; see [`Tool::env`].
+    /// `GDB` and `NO_GDB` are the exception: [`crate::kill_on_fatal_signal`]
+    /// sets them after these, because a crashed tool does not reliably die
+    /// without them.
+    pub fn set_env(&mut self, key: impl Into<OsString>, value: impl Into<OsString>) {
+        self.tool.env.insert(key.into(), value.into());
     }
 
     /// Generates the tcl file for place and route
@@ -56,16 +112,54 @@ impl InnovusStep {
         let mut tcl_file = File::create(path.join("par.tcl"))?;
         let mut catch_fatal = File::create(path.join("catch_fatal.tcl"))?;
 
+        if let Some(preamble) = &self.preamble {
+            writeln!(tcl_file, "{preamble}")?;
+        }
+
         if let Some(checkpoint) = &self.start_checkpoint {
+            if !self.checkpoint_file_check {
+                writeln!(tcl_file, "set_db read_db_file_check false")?;
+            }
+            // Restoring a large db takes minutes; without a banner the display
+            // shows nothing for all of it. Un-numbered so the substep counts
+            // still cover exactly the substeps.
+            let db = checkpoint
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| checkpoint.name.clone());
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner_named(&format!("read_db {db}"))
+            )?;
             writeln!(tcl_file, "read_db {}", checkpoint.path.display())?;
         }
 
-        for step in substeps.into_iter() {
+        let total = substeps.len();
+        for (index, step) in substeps.into_iter().enumerate() {
+            // Braces rather than quotes: TCL performs no substitution inside them.
+            writeln!(
+                tcl_file,
+                "puts {{{}}}",
+                progress::banner(index + 1, total, &step.name)
+            )?;
             writeln!(tcl_file, "{}", step.command)?;
             if step.checkpoint {
-                let checkpoint_file = self.work_dir.join(format!("post_{}", step.name.clone()));
+                let checkpoint_file = self.checkpoint_path(&step.name);
 
                 writeln!(tcl_file, "write_db {}", checkpoint_file.display())?;
+                // Hammer-style pointer to the newest db: `latest` is repointed
+                // after every checkpoint write, so a viewer (open_chip.sh)
+                // always finds the most recent db no matter where the run
+                // stopped. `ln -sfn` replaces the old link rather than
+                // creating the new one inside the db directory it points to.
+                writeln!(
+                    tcl_file,
+                    "exec ln -sfn post_{} {}",
+                    step.name,
+                    self.work_dir.join("latest").display()
+                )?;
             }
         }
 
@@ -74,58 +168,115 @@ impl InnovusStep {
         writeln!(catch_fatal, "}} err]}} {{")?;
         writeln!(catch_fatal, "puts stderr \"FATAL: $err\"")?;
         writeln!(catch_fatal, "puts stderr $::errorInfo")?;
+
+        // The newest db a failed run leaves behind is whatever checkpoint it
+        // last got past, which can be a long way back, and the state the
+        // error actually happened in dies with the process. So write it out
+        // and repoint `latest` at it, exactly as a checkpointed substep
+        // would: the state at the failure is now the most recent db, and
+        // `open_chip.sh` opens it.
+        //
+        // Under its own catch, because this runs with the design in whatever
+        // state the error left it. A write that fails must not replace the
+        // error that is the real reason the run stopped, nor keep the exit
+        // status from being 1 — and it does fail, harmlessly, when the run
+        // died before there was a design to write at all. `latest` is moved
+        // only once the write has returned, so it never names a half-written
+        // db.
+        let fail_db = self.fail_db_path();
+        writeln!(catch_fatal, "if {{[catch {{")?;
+        writeln!(catch_fatal, "write_db {}", fail_db.display())?;
+        writeln!(
+            catch_fatal,
+            "exec ln -sfn post_{} {}",
+            FAIL_CHECKPOINT,
+            self.work_dir.join("latest").display()
+        )?;
+        writeln!(catch_fatal, "}} db_err]}} {{")?;
+        writeln!(
+            catch_fatal,
+            "puts stderr \"could not write {}: $db_err\"",
+            fail_db.display()
+        )?;
+        writeln!(catch_fatal, "}} else {{")?;
+        writeln!(
+            catch_fatal,
+            "puts stderr \"wrote state at the failure to {}\"",
+            fail_db.display()
+        )?;
+        writeln!(catch_fatal, "}}")?;
+
         writeln!(catch_fatal, "exit 1")?;
         writeln!(catch_fatal, "}}")?;
+        // Only a script that got here wrote the marker; see `finished_marker_tcl`.
+        writeln!(
+            catch_fatal,
+            "{}",
+            crate::finished_marker_tcl(&self.finished_marker_path())
+        )?;
         writeln!(catch_fatal, "exit")?;
 
-        println!("\nFinished creating tcl file\n");
         Ok(())
     }
 
-    /// Inserts a custom command as a substep in the par flow
-    pub fn add_hook(&mut self, name: &str, tcl: &str, after_substep: &str, checkpointed: bool) {
-        if let Some(index) = self.substeps.iter().position(|s| s.name == after_substep) {
-            self.substeps.insert(
-                index + 1,
-                Substep {
-                    name: name.to_string(),
-                    command: tcl.to_string(),
-                    checkpoint: checkpointed,
-                },
-            );
-        }
+    /// The index of the substep named `substep`, or an [`UnknownSubstep`]
+    /// naming the substeps the flow does have.
+    fn substep_index(&self, substep: &str, action: &str) -> Result<usize, UnknownSubstep> {
+        crate::substep_index(&self.substeps, substep, action, &self.label())
+    }
+
+    /// Inserts a custom command as a substep in the par flow, directly after
+    /// the substep named `after_substep`.
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep by that name,
+    /// leaving the flow untouched.
+    pub fn add_hook(
+        &mut self,
+        name: &str,
+        tcl: &str,
+        after_substep: &str,
+        checkpointed: bool,
+    ) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(after_substep, "add a hook after")?;
+        self.substeps.insert(
+            index + 1,
+            Substep {
+                name: name.to_string(),
+                command: tcl.to_string(),
+                checkpoint: checkpointed,
+            },
+        );
+        Ok(())
     }
 
     /// Replaces a specfic substep in the par flow with a new command
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep named
+    /// `replaced_substep_name`, leaving the flow untouched.
     pub fn replace_hook(
         &mut self,
         new_substep_name: &str,
         tcl: &str,
         replaced_substep_name: &str,
         checkpointed: bool,
-    ) {
-        if let Some(index) = self
-            .substeps
-            .iter()
-            .position(|s| s.name == replaced_substep_name)
-        {
-            self.substeps[index] = Substep {
-                name: new_substep_name.to_string(),
-                command: tcl.to_string(),
-                checkpoint: checkpointed,
-            };
-        }
+    ) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(replaced_substep_name, "replace")?;
+        self.substeps[index] = Substep {
+            name: new_substep_name.to_string(),
+            command: tcl.to_string(),
+            checkpoint: checkpointed,
+        };
+        Ok(())
     }
 
     /// Deletes a specfic substep in the par flow
-    pub fn delete_hook(&mut self, deleted_substep_name: &str) {
-        if let Some(index) = self
-            .substeps
-            .iter()
-            .position(|s| s.name == deleted_substep_name)
-        {
-            self.substeps.remove(index);
-        }
+    ///
+    /// Fails with [`UnknownSubstep`] if the flow has no substep by that name,
+    /// leaving the flow untouched.
+    pub fn delete_hook(&mut self, deleted_substep_name: &str) -> Result<(), UnknownSubstep> {
+        let index = self.substep_index(deleted_substep_name, "delete")?;
+        self.substeps.remove(index);
+        Ok(())
     }
 
     pub fn ilm_path(&self) -> PathBuf {
@@ -144,12 +295,53 @@ impl InnovusStep {
         self.work_dir.join(format!("{}.gds", self.module))
     }
 
-    /// Assigns the starting checkpoint of the par flow
+    /// Restore `checkpoint_path` at the start of the run and continue with the
+    /// substeps after `name`.
+    ///
+    /// The db and the substep need not correspond: restoring `post_syn` and
+    /// naming `init_design` re-runs the floorplan on the synthesized design
+    /// without re-synthesizing. For the plain case — pick up right where a
+    /// substep left off — see [`InnovusStep::resume_from`].
     pub fn add_checkpoint(&mut self, name: &str, checkpoint_path: PathBuf) {
         self.start_checkpoint = Some(Checkpoint {
             name: name.to_string(),
             path: checkpoint_path,
         });
+    }
+
+    /// The db a checkpointed substep writes: `post_<substep>` in the work
+    /// directory, the same place `latest` points at after it.
+    pub fn checkpoint_path(&self, substep: &str) -> PathBuf {
+        self.work_dir.join(format!("post_{substep}"))
+    }
+
+    /// The db written when a run dies on a Tcl error: the state the tool was
+    /// in at the moment it failed, which is otherwise lost when the process
+    /// exits. It is there only if the last run of this step failed that way —
+    /// a run killed by a signal never reaches the error path, and so leaves
+    /// none — and a stale one from an earlier run is removed before each run.
+    ///
+    /// No substep wrote it, so there is nothing to resume "after" it: pass it
+    /// to [`InnovusStep::add_checkpoint`] along with the substep to pick up
+    /// from, which is the case that method's `name` and `checkpoint_path`
+    /// arguments are separate for.
+    pub fn fail_db_path(&self) -> PathBuf {
+        self.checkpoint_path(FAIL_CHECKPOINT)
+    }
+
+    /// The file `catch_fatal.tcl` writes once `par.tcl` has run to its end
+    /// with no error, without which an exit status of 0 does not count as
+    /// success; see [`crate::finished_marker_tcl`].
+    pub fn finished_marker_path(&self) -> PathBuf {
+        self.work_dir.join(format!("{}.par.done", self.module))
+    }
+
+    /// Restore the db `substep` wrote on an earlier run and continue with the
+    /// substeps after it. `substep` must be checkpointed, or there is nothing
+    /// to restore.
+    pub fn resume_from(&mut self, substep: &str) {
+        let path = self.checkpoint_path(substep);
+        self.add_checkpoint(substep, path);
     }
 
     pub fn add_endpoint(&mut self, name: &str) {
@@ -158,29 +350,53 @@ impl InnovusStep {
 }
 
 impl Step for InnovusStep {
-    fn execute(&self) {
+    fn execute(&self) -> StepResult {
         let mut substeps = self.substeps.clone();
+        // A checkpoint or an endpoint can be set before the hooks that name
+        // it are added, so neither is checked until here, where the flow is
+        // whatever it ended up being. The endpoint is looked for in what the
+        // resume left, so one before the resume point reads as absent, which
+        // is what it is: there is no run that both starts and stops there.
         if let Some(checkpoint) = &self.start_checkpoint {
-            let slice_index = self
-                .substeps
-                .iter()
-                .position(|s| s.name == checkpoint.name)
-                .expect("Failed to find checkpoint name");
+            let slice_index = crate::substep_index(
+                &self.substeps,
+                &checkpoint.name,
+                "start from",
+                &self.label(),
+            )?;
             substeps = self.substeps[(slice_index + 1)..].to_vec();
         }
         if let Some(endpoint_name) = &self.endpoint {
-            let slice_index = substeps
-                .iter()
-                .position(|s| s.name == *endpoint_name)
-                .expect("Failed to find endpoint name");
+            let slice_index =
+                crate::substep_index(&substeps, endpoint_name, "stop at", &self.label())?;
             substeps = substeps[..=slice_index].to_vec();
         }
 
-        self.make_tcl_file(&self.work_dir, substeps)
-            .expect("Failed to create par.tcl");
+        // A `post_fail` from an earlier run would be reported below as this
+        // run's failure state and opened as if it were. Only the error path
+        // writes one, so clearing it here makes its presence afterwards mean
+        // exactly that this run failed on a Tcl error. `latest` may be left
+        // naming it until the first checkpoint of this run repoints it, which
+        // is a window in which the run itself is what is holding the db.
+        let fail_db = self.fail_db_path();
+        if fail_db.exists() {
+            fs::remove_dir_all(&fail_db)?;
+        }
+        // Likewise the marker, whose presence afterwards has to mean that
+        // this run, not an earlier one, got to the end of its script.
+        let finished = self.finished_marker_path();
+        if finished.exists() {
+            fs::remove_file(&finished)?;
+        }
+
+        progress::status("writing par.tcl");
+        self.make_tcl_file(&self.work_dir, substeps)?;
+        // Viewer for the run's dbs: `latest` is repointed at each checkpoint
+        // the run writes, so the script is valid as soon as the first
+        // checkpointed substep completes.
+        generate_open_chip_script(&self.work_dir, "latest", self.synthesis, &self.tool)?;
 
         let tcl_file = self.work_dir.join("catch_fatal.tcl");
-
         let mut args = vec![
             "-file",
             tcl_file.to_str().unwrap(),
@@ -192,24 +408,79 @@ impl Step for InnovusStep {
             args.push("-synthesis");
         }
 
-        let status = Command::new("innovus")
-            .args(args)
-            .current_dir(self.work_dir.clone())
-            .status()
-            .expect("Failed to execute par.tcl");
+        let mut command = self.tool.command();
+        command.args(args).current_dir(self.work_dir.clone());
+
+        crate::kill_on_fatal_signal(&mut command, &self.work_dir)?;
+
+        progress::status(format!("running innovus (log: {}.par.out)", self.module));
+        let status = exec::run_logged_in(
+            &mut command,
+            &self.work_dir,
+            &format!("{}.par", self.module),
+        )?;
 
         if !status.success() {
-            eprintln!("Failed to execute par.tcl");
-            panic!("Stopped flow");
+            let mut message = format!(
+                "innovus exited with {status}; see {}",
+                self.work_dir
+                    // Which log holds the reason depends on how it died. A
+                    // fatal signal is reported by the tool's own handler on
+                    // stdout and never reaches `.par.err`, which a crash
+                    // leaves empty: `catch_fatal.tcl` can see a Tcl error, not
+                    // a signal.
+                    .join(match status.code() {
+                        None => format!("{}.par.out", self.module),
+                        Some(_) => format!("{}.par.err", self.module),
+                    })
+                    .display()
+            );
+            // There only if this run's error path got far enough to write it,
+            // which is worth saying: it is the difference between the last
+            // checkpoint and the state the failure happened in.
+            if fail_db.exists() {
+                write!(
+                    message,
+                    "; state at the failure in {} (open_chip.sh)",
+                    fail_db.display()
+                )
+                .unwrap();
+            }
+            return Err(message.into());
         }
+        crate::check_finished(
+            "innovus",
+            &finished,
+            &self.work_dir.join(format!("{}.par.out", self.module)),
+        )?;
+        Ok(())
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
+    fn label(&self) -> String {
+        format!("{} par", self.module)
+    }
+
+    fn deps(&self) -> Vec<StepRef<dyn Step>> {
         self.deps.clone()
     }
 
     fn pinned(&self) -> bool {
         self.pinned
+    }
+
+    fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
+
+    fn log_dir(&self) -> Option<PathBuf> {
+        Some(self.work_dir.clone())
+    }
+
+    fn browse_files(&self) -> Vec<PathBuf> {
+        vec![self.work_dir.join("par.tcl")]
+    }
+    fn scope(&self) -> Option<String> {
+        crate::scope(self.start_checkpoint.as_ref(), self.endpoint.as_deref())
     }
 }
 
@@ -872,14 +1143,202 @@ pub struct Floorplan {
     pub obstructs: Vec<ObstructionConstraint>,
 }
 
-pub fn generate_open_chip_script(work_dir: &Path, db: &str) -> io::Result<()> {
+/// Writes `open_chip.sh`, which opens `db` in `tool` — the same build and
+/// environment as the step that wrote it, since another may not read the db.
+pub fn generate_open_chip_script(
+    work_dir: &Path,
+    db: &str,
+    synthesis: bool,
+    tool: &Tool,
+) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let script_path = work_dir.join("open_chip.sh");
     let mut f = File::create(&script_path)?;
+    let flag = if synthesis { " -synthesis" } else { "" };
     writeln!(f, "#!/bin/bash")?;
-    writeln!(f, "innovus -db {db}")?;
+    write!(f, "{}", tool.script(&format!("-stylus{flag} -db {db}")))?;
     let mut perms = fs::metadata(&script_path)?.permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&script_path, perms)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    fn step() -> InnovusStep {
+        let substeps = ["floorplan", "place", "route"]
+            .map(|name| Substep {
+                name: name.into(),
+                command: String::new(),
+                checkpoint: false,
+            })
+            .to_vec();
+        InnovusStep::new(
+            "/tmp/hook_tests",
+            "TopLevel",
+            substeps,
+            false,
+            vec![],
+            false,
+        )
+    }
+
+    fn substep_names(step: &InnovusStep) -> Vec<&str> {
+        step.substeps.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_hook_lands_after_its_anchor() -> Result<(), UnknownSubstep> {
+        let mut step = step();
+        step.add_hook("bumps", "create_bump", "floorplan", false)?;
+        assert_eq!(
+            substep_names(&step),
+            ["floorplan", "bumps", "place", "route"]
+        );
+        Ok(())
+    }
+
+    /// The whole point: a mistyped or since-deleted anchor used to drop the
+    /// hook silently, and the run would go through place-and-route without it.
+    #[test]
+    fn a_hook_on_a_missing_anchor_is_an_error() {
+        let mut step = step();
+        let err = step
+            .add_hook("rdl_route", "read_def", "fc_route", false)
+            .expect_err("hook anchored on a substep that does not exist");
+        assert_eq!(err.name, "fc_route");
+        assert_eq!(substep_names(&step), ["floorplan", "place", "route"]);
+    }
+
+    #[test]
+    fn the_error_names_the_flow_and_the_substeps_that_do_exist() {
+        let err = step()
+            .add_hook("rdl_route", "read_def", "fc_route", false)
+            .expect_err("hook anchored on a substep that does not exist");
+        assert_eq!(
+            err.to_string(),
+            "cannot add a hook after 'fc_route': TopLevel par has no such substep. \
+             It has: floorplan, place, route"
+        );
+    }
+
+    #[test]
+    fn replacing_a_missing_substep_is_an_error() {
+        let err = step()
+            .replace_hook("resyn", "syn_generic", "syn", false)
+            .expect_err("replacing a substep that does not exist");
+        assert_eq!(err.action, "replace");
+        assert_eq!(err.name, "syn");
+    }
+
+    #[test]
+    fn deleting_a_missing_substep_is_an_error() {
+        let err = step()
+            .delete_hook("syn")
+            .expect_err("deleting a substep that does not exist");
+        assert_eq!(err.action, "delete");
+        assert_eq!(err.name, "syn");
+    }
+
+    /// `read_db` skips its file check only when asked, and the `set_db` has
+    /// to precede the `read_db` it applies to.
+    #[test]
+    fn the_checkpoint_file_check_can_be_turned_off() -> io::Result<()> {
+        for (check, expect_disabled) in [(true, false), (false, true)] {
+            let dir = std::env::temp_dir().join(format!("rivet_ckpt_check_{check}"));
+            std::fs::create_dir_all(&dir)?;
+            let mut step = step();
+            step.add_checkpoint("floorplan", "/tmp/post_floorplan".into());
+            step.set_checkpoint_file_check(check);
+            step.make_tcl_file(&dir, step.substeps.clone())?;
+
+            let tcl = std::fs::read_to_string(dir.join("par.tcl"))?;
+            let disabled = tcl.find("set_db read_db_file_check false");
+            assert_eq!(disabled.is_some(), expect_disabled, "file_check = {check}");
+            if let Some(at) = disabled {
+                assert!(at < tcl.find("read_db /tmp").expect("the read_db"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `catch_fatal.tcl` writes the finished marker after the error branch,
+    /// which ends in `exit 1`, and right before the clean `exit`: only a
+    /// `par.tcl` that ran to its end with no error gets there.
+    #[test]
+    fn only_a_script_that_ran_to_its_end_writes_the_finished_marker() -> io::Result<()> {
+        let dir = std::env::temp_dir().join(format!("rivet_finished_par_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let step = step();
+        step.make_tcl_file(&dir, step.substeps.clone())?;
+        let tcl = std::fs::read_to_string(dir.join("catch_fatal.tcl"))?;
+        std::fs::remove_dir_all(&dir)?;
+
+        let marker = "close [open {/tmp/hook_tests/TopLevel.par.done} w]\n";
+        assert!(
+            tcl.ends_with(&format!("exit 1\n}}\n{marker}exit\n")),
+            "{tcl}"
+        );
+        assert_eq!(tcl.matches("TopLevel.par.done").count(), 1);
+        Ok(())
+    }
+
+    /// `open_chip.sh` opens the db in the step's own binary and environment,
+    /// quoted so that each reaches the tool exactly as it was given.
+    #[test]
+    fn open_chip_runs_the_steps_binary_in_its_environment() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rivet_open_chip_{}", std::process::id()));
+        let bin = dir.join("INNOVUS 21.1/bin");
+        fs::create_dir_all(&bin)?;
+        let innovus = bin.join("innovus");
+        fs::write(&innovus, "#!/bin/sh\necho \"$LM_LICENSE_FILE|$NOTE|$*\"\n")?;
+        fs::set_permissions(&innovus, fs::Permissions::from_mode(0o755))?;
+
+        let mut step = step();
+        step.set_binary(&innovus);
+        step.set_env("LM_LICENSE_FILE", "5280@license");
+        step.set_env("NOTE", "it's $HOME");
+        generate_open_chip_script(&dir, "latest", true, &step.tool)?;
+        let output = std::process::Command::new("bash")
+            .arg(dir.join("open_chip.sh"))
+            .output()?;
+        fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "5280@license|it's $HOME|-stylus -synthesis -db latest\n"
+        );
+        Ok(())
+    }
+
+    /// The checkpoint and endpoint names are not checked until the step runs,
+    /// so that a flow may set either before adding the hook it names.
+    #[test]
+    fn a_resume_from_a_missing_substep_fails_the_step() {
+        let mut step = step();
+        step.resume_from("fc_route");
+        let err = step.execute().expect_err("resume from a missing substep");
+        assert_eq!(
+            err.to_string(),
+            "cannot start from 'fc_route': TopLevel par has no such substep. \
+             It has: floorplan, place, route"
+        );
+    }
+    /// A step set to run only part of itself says which part beside its label.
+    #[test]
+    fn a_checkpoint_or_an_endpoint_is_named_on_the_step_line() {
+        let mut step = step();
+        assert_eq!(step.scope(), None);
+        step.resume_from("floorplan");
+        assert_eq!(step.scope().as_deref(), Some("after floorplan"));
+        step.add_endpoint("place");
+        assert_eq!(
+            step.scope().as_deref(),
+            Some("after floorplan, until place")
+        );
+        step.start_checkpoint = None;
+        assert_eq!(step.scope().as_deref(), Some("until place"));
+    }
 }

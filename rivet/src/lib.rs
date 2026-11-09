@@ -1,10 +1,31 @@
 use by_address::ByAddress;
-use std::collections::{HashMap, HashSet};
+use std::any::Any;
+use std::collections::HashSet;
 use std::fmt::Debug;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::ops::Deref;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub mod bash;
+mod clipboard;
+pub mod exec;
+pub mod executor;
+pub mod log;
+pub mod progress;
 pub mod rust;
+pub mod session;
+mod tui;
+
+pub use executor::{
+    execute, BlockedStep, ExecuteConfig, ExecuteError, Executor, StepFailure, Summary,
+};
+
+/// Tests that run a flow with logging on take turns.
+///
+/// `rivet.log` has one sink for the process, so two runs at once would each be
+/// writing into whichever directory the other started in.
+#[cfg(test)]
+pub(crate) static ONE_RUN_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug)]
 pub struct Dag<F> {
@@ -60,45 +81,120 @@ impl<F: NamedNode> Dag<F> {
     }
 }
 
-pub trait Step: Debug + Send + Sync {
-    fn deps(&self) -> Vec<Arc<dyn Step>>;
+/// Why a step failed.
+///
+/// Any error type converts with `?`, and a message can be turned into one with
+/// `.into()`:
+///
+/// ```
+/// # use rivet::StepResult;
+/// fn check(clean: bool) -> StepResult {
+///     if !clean {
+///         return Err("LVS mismatch: 3 unmatched nets".into());
+///     }
+///     Ok(())
+/// }
+/// # assert!(check(false).is_err());
+/// ```
+pub type StepError = Box<dyn std::error::Error + Send + Sync>;
+
+/// What [`Step::execute`] returns.
+pub type StepResult = Result<(), StepError>;
+
+pub trait Step: Debug + Any + Send + Sync {
+    fn deps(&self) -> Vec<StepRef<dyn Step>>;
+
+    /// Whether the step is pinned: taken to be up to date, so neither it nor
+    /// anything it depends on is run.
     fn pinned(&self) -> bool;
-    fn execute(&self);
-}
 
-pub fn execute(target: impl Step + 'static) {
-    let target = Arc::new(target) as Arc<dyn Step>;
+    /// Pin or unpin the step; see [`Step::pinned`].
+    ///
+    /// Once a step is in a flow it is reached through a [`StepRef`], where
+    /// [`StepRef::pin`] calls this without the lock dance.
+    fn set_pinned(&mut self, pinned: bool);
 
-    let mut executed = HashMap::<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>::new();
-    execute_inner(target, &mut executed);
-}
+    /// Do the step's work.
+    ///
+    /// Return `Err` for an expected failure — a tool exiting non-zero, LVS not
+    /// matching, a missing input. Panicking is for bugs; the executor catches
+    /// panics so they do not take down the run, but reports them as such.
+    fn execute(&self) -> StepResult;
 
-fn execute_inner(
-    step: Arc<dyn Step>,
-    executed: &mut HashMap<ByAddress<Arc<dyn Step>>, Arc<dyn Step>>,
-) {
-    println!("Checking status of step {step:?}");
-    let step_addr = ByAddress(step.clone());
-    if executed.contains_key(&step_addr) {
-        println!("Step has already been executed, skipping");
-        return;
+    /// Short name for this step in progress output.
+    ///
+    /// Defaults to the step's type name; implementations that know what they
+    /// are working on should say so instead (`"decoder par"` beats
+    /// `"InnovusStep"`).
+    fn label(&self) -> String {
+        let name = std::any::type_name::<Self>();
+        name.rsplit("::").next().unwrap_or(name).to_string()
     }
 
-    if step.pinned() {
-        println!("Step is pinned, skipping");
-        executed.insert(step_addr, Arc::clone(&step));
-        return;
+    /// Directory this step's own log file goes in.
+    ///
+    /// Whatever the step logs with `tracing` while it runs is written to
+    /// `{label}.rivet.log` here, next to the `.out` and `.err` files of the
+    /// tools it drove. A step with a working directory should say so:
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # struct ParStep { work_dir: PathBuf }
+    /// # impl ParStep {
+    /// fn log_dir(&self) -> Option<PathBuf> {
+    ///     Some(self.work_dir.clone())
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// Returning `None`, the default, is not a way to turn logging off: the
+    /// step's events still reach the run-wide
+    /// [`rivet.log`](crate::log::RUN_LOG), they just have nowhere of their own
+    /// to go. Steps that do no work on disk have no reason to leave a file
+    /// somewhere.
+    fn log_dir(&self) -> Option<PathBuf> {
+        None
     }
 
-    println!("Executing step dependencies: {:?}", step.deps());
-    for dependency in step.deps() {
-        execute_inner(dependency, executed);
+    /// Other files worth reading on this step's page.
+    ///
+    /// The page offers what the step's tools are writing and its own log; this
+    /// is for whatever else explains what the step did — the script it handed
+    /// its tool, say, or a report it leaves behind:
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # struct ParStep { work_dir: PathBuf }
+    /// # impl ParStep {
+    /// fn browse_files(&self) -> Vec<PathBuf> {
+    ///     vec![self.work_dir.join("par.tcl")]
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// Asked for once, as the step starts, so a file need not exist yet: one
+    /// the step goes on to write is read once it appears. They come after the
+    /// step's own log, in the order given. The default is none.
+    fn browse_files(&self) -> Vec<PathBuf> {
+        Vec::new()
     }
 
-    println!("Executing step {step:?}");
-    step.execute();
-
-    executed.insert(ByAddress(step.clone()), Arc::clone(&step));
+    /// Which part of the step this run covers, when not all of it — e.g. a
+    /// resume from a checkpoint. Shown beside the step's label:
+    ///
+    /// ```
+    /// # struct ParStep { resume: Option<String> }
+    /// # impl ParStep {
+    /// fn scope(&self) -> Option<String> {
+    ///     self.resume.as_ref().map(|substep| format!("after {substep}"))
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// Not asked of pinned steps. Defaults to `None`: the whole step.
+    fn scope(&self) -> Option<String> {
+        None
+    }
 }
 
 pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)>) -> F) -> Dag<F> {
@@ -123,42 +219,72 @@ pub fn hierarchical<M, F>(dag: &Dag<M>, flat_flow_gen: &impl Fn(&M, Vec<(&M, &F)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct StepRef<T: Step> {
-    inner: Arc<Mutex<T>>,
+#[derive(Debug)]
+pub struct StepRef<T: ?Sized> {
+    inner: Arc<RwLock<T>>,
 }
 
-impl<T: Step> StepRef<T> {
-    pub fn new(data: T) -> Self {
+impl<T: ?Sized> Clone for StepRef<T> {
+    fn clone(&self) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(data)),
+            inner: self.inner.clone(),
         }
     }
+}
 
-    pub fn lock(&self) -> MutexGuard<'_, T> {
-        self.inner.lock().unwrap()
+impl<T: ?Sized> Deref for StepRef<T> {
+    type Target = RwLock<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T> StepRef<T> {
+    pub fn new(data: T) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(data)),
+        }
+    }
+}
+
+impl<T: ?Sized> StepRef<T> {
+    pub fn read(&self) -> RwLockReadGuard<'_, T> {
+        self.inner.read().unwrap()
+    }
+
+    pub fn write(&self) -> RwLockWriteGuard<'_, T> {
+        self.inner.write().unwrap()
     }
 
     pub fn get<R>(&self, get_fn: impl FnOnce(&T) -> R) -> R {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
         get_fn(&inner)
     }
 
     pub fn update<R>(&self, update_fn: impl FnOnce(&mut T) -> R) -> R {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         update_fn(&mut inner)
     }
 }
-impl<T: Step> Step for StepRef<T> {
-    fn execute(&self) {
-        self.lock().execute();
+
+impl<T: Step + ?Sized> StepRef<T> {
+    /// Pin the step: it is taken to be up to date, so neither it nor anything
+    /// it depends on runs. Shorthand for `update(|step| step.set_pinned(true))`.
+    pub fn pin(&self) {
+        self.update(|step| step.set_pinned(true));
     }
 
-    fn deps(&self) -> Vec<Arc<dyn Step>> {
-        self.lock().deps()
+    /// Undo [`StepRef::pin`].
+    pub fn unpin(&self) {
+        self.update(|step| step.set_pinned(false));
     }
+}
 
-    fn pinned(&self) -> bool {
-        self.lock().pinned()
+impl<T: Step + 'static> StepRef<T> {
+    pub fn into_dyn(self) -> StepRef<dyn Step> {
+        StepRef {
+            inner: self.inner as Arc<RwLock<dyn Step>>,
+        }
     }
 }

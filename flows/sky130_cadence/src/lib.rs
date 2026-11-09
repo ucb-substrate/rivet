@@ -80,7 +80,8 @@ impl Sram22 {
     }
 }
 
-pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyhow::Result<()> {
+/// Writes the script that compiles `srams`, returning its path.
+pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyhow::Result<PathBuf> {
     let sram22_root =
         std::env::var("SRAM22_ROOT").expect("SRAM22_ROOT environment variable must be set");
 
@@ -129,7 +130,7 @@ pub fn generate_compiler_script(srams: &[Sram22], sram_work_dir: &Path) -> anyho
         writeln!(script, "fi")?;
     }
 
-    Ok(())
+    Ok(script_path)
 }
 
 pub fn sky130_syn_read_design_files(files: GenusDesignFiles<'_>, srams: &[Sram22]) -> Substep {
@@ -432,9 +433,9 @@ pub fn sky130_cadence_syn(config: Sky130SynConfig<'_>, pdk: &Sky130PdkConfig) ->
         })
         .collect();
 
-    let mut deps: Vec<Arc<dyn Step>> = dep_info
+    let mut deps: Vec<StepRef<dyn Step>> = dep_info
         .iter()
-        .map(|(_module, flow)| Arc::new(flow.par.clone()) as Arc<dyn Step>)
+        .map(|(_module, flow)| flow.par.clone().into_dyn())
         .collect();
 
     let is_hierarchical = !submodules.is_empty();
@@ -447,15 +448,15 @@ pub fn sky130_cadence_syn(config: Sky130SynConfig<'_>, pdk: &Sky130PdkConfig) ->
 
     if !missing_srams.is_empty() {
         fs::create_dir_all(sram_work_dir).expect("Failed to create sram directory");
-        generate_compiler_script(&missing_srams, sram_work_dir)
+        let script = generate_compiler_script(&missing_srams, sram_work_dir)
             .expect("Failed to generate SRAM compiler script");
-        let sram_compiler = Arc::new(BashStep::new(
-            sram_work_dir.to_path_buf(),
-            "generate_sram",
-            module.as_str(),
+        let sram_compiler = StepRef::new(BashStep::new(
+            sram_work_dir,
+            format!("{module} generate_sram"),
+            script,
             vec![],
         ));
-        deps.push(sram_compiler);
+        deps.push(sram_compiler.into_dyn());
     }
 
     let mut substeps = vec![set_default_options()];
@@ -622,7 +623,7 @@ pub fn sky130_cadence_par(config: Sky130ParConfig<'_>, pdk: &Sky130PdkConfig) ->
         module,
         substeps,
         matches!(pin_info, FlatPinInfo::PinPar(_)),
-        vec![Arc::new(syn_step) as Arc<dyn Step>],
+        vec![syn_step.into_dyn()],
         false,
     )
 }
@@ -1037,7 +1038,7 @@ pub fn hierarchical_flow() -> anyhow::Result<()> {
     flow.get("fourbitadder")
         .unwrap()
         .syn
-        .update(|syn| syn.replace_hook("syn_opt", "syn_opt", "syn_map", false));
+        .update(|syn| syn.replace_hook("syn_opt", "syn_opt", "syn_map", false))?;
 
     execute(flow.node.par);
     Ok(())

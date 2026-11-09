@@ -10,3 +10,509 @@ Rivet core contains a minimal feature set for constructing and executing flows w
 For the sake of simplicity, Rivet does **not** include features that other flow managers may provide, such as:
 - Intermediate representations for portability between tools and technologies
 - Automatic caching
+
+## Installation
+
+The `rivet` binary, which reopens a run so its logs can be read again (see
+[Coming back to a run](#coming-back-to-a-run)), is installed from the
+repository; the trailing `rivet` picks its package out of the workspace:
+
+```text
+cargo install --git https://github.com/ucb-substrate/rivet rivet
+```
+
+## Execution
+
+`rivet::execute` runs a target step and everything it depends on. The graph is
+walked once up front, then executed by a pool of worker threads: a step starts
+as soon as all of its dependencies have finished, so independent branches run
+concurrently.
+
+```text
+  syn ──▶ par ──┬──▶ drc ──┐
+                └──▶ lvs ──┴──▶ signoff
+```
+
+Here `drc` and `lvs` both wait for `par`, then run at the same time, and
+`signoff` waits for both. Steps are identified by the address of their
+`StepRef`, so a step reached by several paths runs exactly once.
+
+```rust
+rivet::execute(signoff);                          // panics if a step fails
+
+rivet::ExecuteConfig::new()                       // or handle failures yourself
+    .concurrency(2)
+    .run(signoff)?;
+```
+
+Several targets can be queued on an `Executor`. They are flattened into one
+graph, so work shared between them still happens once and independent branches
+of either still overlap:
+
+```rust
+rivet::Executor::new()
+    .concurrency(2)
+    .target(drc)
+    .target(lvs)
+    .run()?;
+```
+
+Concurrency defaults to the core count and is set in code, not by the
+environment. Tools that hold licences or saturate a machine on their own are
+usually worth capping explicitly.
+
+A pinned step is treated as up to date: it is skipped, and its dependencies are
+neither walked nor run. Steps are held in `StepRef`s, shared handles that can
+be configured after the flow is built, so pinning is `sram.pin()`; a flow that
+hands out several steps at once can queue them together with
+`Executor::targets`:
+
+```rust
+flow.sram.pin();                                  // already compiled
+rivet::Executor::new()
+    .targets(flow.signoff())                      // e.g. [drc, lvs]
+    .run()?;
+```
+
+### Failure
+
+`Step::execute` returns `StepResult`. A step reports an expected failure — a
+tool exiting non-zero, LVS not matching, a missing input — by returning `Err`;
+`?` converts any error type, and a message becomes one with `.into()`:
+
+```rust
+fn execute(&self) -> StepResult {
+    let status = exec::run_logged_in(&mut command, &self.work_dir, "lvs")?;
+    if !status.success() {
+        return Err(format!("LVS did not match for {}", self.module).into());
+    }
+    Ok(())
+}
+```
+
+Panicking is for bugs. The executor catches panics so one cannot take down the
+run, but reports them separately (`StepFailure::panicked`) because a panic means
+something is wrong with the step itself rather than with the design.
+
+Either way the rule is *drop the branch, not the run*: a failure takes down the
+steps that depended on it and nothing else. Steps already in flight are left to
+finish, every other branch keeps going, and steps that have not started yet are
+still dispatched as long as they do not depend on anything that failed — so a
+run gets as far as it can before it stops. Dependents of a failed step can never
+become runnable, so they are dropped as `⊘` and named, transitively.
+
+The run ends with `ExecuteError::Failed`, listing every step that failed and
+where it was when it failed, plus the steps that never ran as a result:
+
+```text
+  ✔ decoder merge    0.9s
+  ✖ decoder lvs      1.2s  during compare (2/2)  LVS mismatch: 3 unmatched nets
+  ⊘ decoder signoff  blocked by decoder lvs
+  ✔ decoder drc      2.8s
+  ✖ 4 executed · 1 skipped · 1 blocked · 1 failed · 6.9s
+```
+
+`decoder drc` and `decoder merge` do not depend on LVS, so they run to
+completion; `decoder signoff` does, so it is dropped rather than left to look
+stalled.
+
+"Where" is both halves of the step's line when both are set — which of them
+caused the failure is exactly what is not known at that point:
+
+```text
+  ✖ decoder par  2m14s  during merging gds (7/12) │ add_fillers (5/5)  innovus exited with 1
+```
+
+A tool that exits cleanly has its substep cleared, so a step that then fails in
+its own post-processing is not blamed on a substep that finished fine. A tool
+that exits non-zero keeps it, because that is the substep you want named.
+
+A dependency cycle is reported as `ExecuteError::Cycle` rather than hanging.
+
+While a flow runs, every step gets a line: a spinner, its elapsed time and
+whatever progress it reports (see below) while it runs, and afterwards how it
+ended — `✔` (executed), `⏭` (pinned), `⊘` (blocked by a failure) or `✖`
+(failed). The lines are a list on a screen of their own, the terminal's
+alternate screen, the way an editor takes it: the list holds every step in the
+run and scrolls under the cursor once there are more than fit, with the run's
+summary and the key hints at the bottom. The screen stays up
+when the run is over, so a finished run can be looked through — every step
+under the cursor, a failure's log a keypress away — instead of turning into
+terminal history the moment it ends. `q` gives the terminal back, and leaves
+the run's record in the ordinary scrollback: one line per step, in the order
+things happened.
+
+A step set to run only part of itself says so beside its label, in yellow,
+from the moment the run starts: a Genus or Innovus step resuming from a
+checkpoint or stopping at an endpoint reads `decoder par  [after place]`,
+`[until route]` or `[after place, until route]`. Steps report this through
+`Step::scope`, which defaults to `None`.
+
+Raw tool output is never drawn on a step's line: it goes to `{step}.out` and
+`{step}.err` in the step's work directory, and the step's own page reads those
+files back (see below). Two things reach the line, and nothing else — a step's
+`status`, set from Rust, and the substep banners a tool is told to print. Which
+stream a tool chose means nothing; plenty put all their chatter on stderr. When
+stderr is not a terminal the display degrades to plain one-line-per-event
+logging.
+
+### Substep banners
+
+A step such as P&R is one node to the scheduler but a long sequence of substeps
+to the tool driving it. A tool can say which substep it is on by printing a
+marker line, which rivet picks out of the output stream:
+
+```text
+<<rivet:substep 3/5 place_opt_design>>
+```
+
+Build one with `progress::banner(current, total, name)`. `GenusStep`,
+`InnovusStep` and `PegasusStep` emit one per substep into the TCL they generate:
+
+```tcl
+puts {<<rivet:substep 3/5 place_opt_design>>}
+```
+
+The marker is matched anywhere in a line, so tools that prefix output with a
+severity or timestamp still work, and banner lines never show up as output.
+`progress::banner_named` omits the counts for tools that do not know how many
+substeps they will run.
+
+Banners are the only way to fill this half of the line: it is reached by parsing
+the tool's output and nothing else, so what it shows always reflects what the
+tool actually said. Progress the Rust side knows about goes in the status
+instead.
+
+### The step's line
+
+A running step has two independent halves, either of which can carry its own
+bar:
+
+```text
+  ⠹ decoder par  12s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+                     └──────── status ────────┘   └──────── banner ────────┘
+```
+
+The **left** half is the step's own status, and the only half Rust writes. Set
+it with `progress::status(msg)` or `progress::status_progress(current, total,
+msg)` — useful for work a step does itself, where there is no tool output to
+parse:
+
+```rust
+for (index, file) in gds_files.iter().enumerate() {
+    progress::status_progress(index + 1, gds_files.len(), format!("merging {file}"));
+    merge(file)?;
+}
+```
+
+The **right** half is the substep banner picked out of the tool's output, and
+only ever comes from there.
+
+The two never interfere: a banner cannot clear the status, and a status cannot
+clear the banner. Each half is omitted entirely until something fills it.
+
+### Reading a step's log
+
+Every step in the run has a line from the start, and is under a cursor, moved
+between them with `↑`/`↓` or `j`/`k` (and `PgUp`/`PgDn`, `g`/`G` for the ends).
+Over the list, a banner says what the run is: its targets, how many steps and
+workers it has, and where its logs go — shrunk to a line on a short terminal,
+and gone on a very short one:
+
+```text
+  █▀▄ █ █ █ █▀▀ ▀█▀   decoder signoff
+  █▀▄ █ ▀▄▀ █▀▀  █    7 steps · 4 workers
+  ▀ ▀ ▀  ▀  ▀▀▀  ▀    logs in build
+
+  ⏭ sram compile     pinned
+  ✔ decoder syn      1m14s
+❯ ⠹ decoder par     12m08s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+  ⠹ decoder drc      1m02s ━━━╸────── 1/3 density
+  ✖ decoder lvs      2m01s  during compare (2/2)  lvs did not match; see build/decoder.lvs.out
+  ○ decoder merge    waits for decoder par
+  ⊘ decoder signoff  blocked by decoder lvs
+
+  ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed · ⚠ 3
+  ↑/↓ or j/k move · enter open a step · x kill it · L run log · q cancel the run
+```
+
+The list is every step in the run, in the order the run is expected to take
+them: a step below everything it waits for, and beside the steps that will be
+running when it is. That order is worked out from the plan before the run
+starts — by how deep into it each step can begin — and it never changes. A step
+becomes what it becomes where it is: greyed with what it is waiting for, then a
+spinner, then how it went. Nothing moves for having started or stopped, and
+nothing else shifts to make room, so a run can be watched by looking at the
+same row of the screen, or left and come back to.
+
+That is worth more than collecting the finished work in one place, on a list
+someone is going to be looking at for hours. Steps that run at the same time
+are neighbours anyway, being the same depth into the plan, so what is running
+is not scattered through it.
+
+A finished step keeps its colour: it is as much there to be opened as a
+running one. A failure carries the substep it died in and its message, and
+that line wraps onto further rows rather than being cut at the edge of the
+screen, so the whole of it can be read; a running step's line stays on one row,
+so the list does not jump about as its status changes length.
+
+The cursor stays on the step it is on. Steps starting never move it; the one
+thing that does is the step under it finishing, when it goes to the newest step
+still running — so someone watching the run keeps watching the run, and is not
+left on what the step turned into. Put on a step that has already finished, it
+stays there until you move it. With nothing else running when its step
+finishes, it waits there and takes the next step to start.
+
+`enter` opens the step under the cursor. Its page is the step's log as it is
+written, with the step's own line — in full, wrapped — and the run's summary
+underneath:
+
+```text
+ decoder par  build/decoder/par/decoder.par.out ────────────────────────────────────────────
+<<rivet:substep 2/5 route_design>>
+#% Begin route_design (date=09/02 14:12:08, mem=4.2G)
+#Routing layer 4 of 6 ...
+ ...
+──────────────────────────────────────── 1/4 files (tab)  line 84,201 of 1,204,880
+  ⠹ decoder par     12m08s ━━╸─────── 3/12 merging gds │ ━━━╸────── 2/5 route_design
+  ━━━━━━╸───────────────── 4/7 steps · 12m08s · 2 running · 1 blocked · 1 failed · ⚠ 3
+  esc back · ↑/↓ scroll · / search · G follow · tab file · L run log · q quit
+```
+
+The page is a pager over the whole file, however long it is — a gigabyte of
+innovus log is scrolled back through to its first line as readily as its last,
+because none of it is held in memory. It follows the end as the file grows, the
+way `tail -F` does, until it is scrolled off it; `G` (or `F`) goes back to
+following, `g` goes to the top, `↑`/`↓`, `PgUp`/`PgDn`, `space` and `b` move
+about, and long lines wrap by column so the end of one is there to be read.
+
+`/` searches, `?` searches backwards, and `n` and `N` go on to the next match
+and back. A search covers the whole file rather than what is on screen, wraps
+round the end, and says in the footer while it is still looking — a long log
+takes more than a frame, and the display goes on drawing while it does. What
+matched is picked out wherever it appears on screen.
+
+`tab` moves between the files the page can read: the output of the tool the
+step is running now, first — the `.out` and `.err` that `exec::run_logged` is
+writing — then the output of tools it ran earlier, then the step's own
+`{step}.rivet.log`, then whatever else the step says is worth reading
+(`Step::browse_files` — Innovus offers its `par.tcl`, Genus its `syn.tcl`), and
+the run's `rivet.log` after them. `L` goes straight to
+the run's log, from a step's page or from the list, where it opens on a page of
+its own. A step driving a tool some other way says what it is writing with
+`StepHandle::set_output_files`. A pinned or blocked step, which did not run this
+time, offers its `{step}.rivet.log` from the run that last ran it; a step that
+has not started yet offers nothing until it does, since the log at its path is
+the last run's and about to be replaced. `esc` comes back to the list, on the
+step that was open.
+
+`y` copies a `less` command for the same files to the clipboard, for a terminal
+of your own — the whole log, since the tail of it is what the page already
+shows:
+
+```text
+less /build/decoder/par/decoder.par.out /build/decoder/par/decoder.par.err
+```
+
+The copy is asked for with OSC 52, which is the terminal's own way of doing it
+and therefore the one that works over ssh: the clipboard that matters is on the
+machine the person is watching from, not the compute server the flow is running
+on. A local `wl-copy`, `xclip`, `xsel` or `pbcopy` is asked as well, if the
+environment suggests one would work.
+
+On a terminal too narrow for a line, the line gives up what it can best spare
+before anything is cut: the hint is said more tersely, the summary's bar is
+squeezed before its counts are, a running step's line drops its bars (the
+`3/12` beside each says as much) and is then cut with an ellipsis, the label
+column is squeezed only if a running line still has no room, and a long path on
+a step's page is cut from the left so its file name stays. A terminal wide
+enough for everything draws everything, exactly as it would have.
+
+Because the display owns the whole screen, it can be redrawn from nothing at
+any time: resizing the terminal redraws it, and so does `^L`, for when
+something has written over it — a stray `println!` in flow code lands on the
+alternate screen, and is gone with it.
+
+A single step can be stopped without stopping the run: `x` kills the tool the
+step under the cursor is running, or the one whose page is open. It is asked
+about by name first, because it cannot be taken back. What dies is
+the process the step spawned, not the step itself: its own thread goes on, sees
+the tool exit, and ends the step as it would end any tool that failed, so the
+line reads `✖ decoder par  1.8s  during place_opt_design (3/5)  killed` and the
+steps waiting on it are blocked. Everything else in the run carries on. A tool
+is asked to stop with `SIGTERM` and made to with `SIGKILL` five seconds later
+if it has not, because a Cadence tool that traps a fatal signal can sit in its
+own crash handler instead of dying. A step doing its work in Rust rather than
+in a tool has nothing to kill, and says so.
+
+While the run is going, the display is where it is controlled from. `q` cancels
+the run — after asking, since the answer kills every tool the run has going —
+by sending the same interrupt `^C` would, to the whole process group; the run
+ends as an interrupted one, exit code `130`, with its record so far left in the
+terminal. `^C` itself cancels at once, without asking: it is a signal, not a
+key, so it works whatever the display is doing. Once the run is over, `q`
+simply quits. A run that is not wanted on screen at all is started with the
+display turned off, `ExecuteConfig::progress(false)`, and reports plainly
+instead.
+
+While the display is up, the terminal hands over keys as they are typed rather
+than collecting whole lines, and stops echoing them. The signal keys are put
+back afterwards, so `^C` and `^Z` mean exactly what they always did — `^C` in
+particular has to keep reaching the tools a step is running, which are in the
+same process group, and has to keep working when the display itself is not
+answering. An interrupt is caught only so that the terminal can be handed back
+before the run ends, and the run exits `130`; a second one gives up on being
+tidy and exits at once. `^Z` is caught the same way, so that the screen is put
+away before the process stops and taken again when it is continued.
+
+Only stderr has to be a terminal, since that is the stream the display draws
+on; the keys and the terminal's size come from the controlling terminal itself.
+A run whose stdout is redirected still gets the display, and anything flow code
+prints to stdout lands in the file rather than over the screen. A run in CI, or
+with stderr redirected, falls back to plain one-line-per-event logging on
+stderr.
+
+### Coming back to a run
+
+The display lasts exactly as long as the process does. A run that is
+interrupted — `^C`, a dropped ssh session, a machine going down — takes it with
+it, and what is left on disk is a scatter of `.out`, `.err` and `.rivet.log`
+files with nothing to say which step wrote which, which tool wrote them in what
+order, or how any of it ended.
+
+So a run writes itself down as it goes, and `rivet` puts it back on the screen.
+Where to do that from is the last thing a run says, whether it ended or was cut
+short:
+
+```text
+  ↻ reopen this run to read its logs: rivet -C build
+```
+
+```text
+rivet               the run that logged in the current directory
+rivet -C build      the run that logged in build
+```
+
+What comes back is the run as it was: the same list in the same order, every
+step with the line it ended on, the cursor on the first thing that went wrong,
+and every log a keypress away. The pages read the files the run left where it
+left them, so a gigabyte of innovus log is scrolled and searched exactly as it
+was while the tool was writing it. Nothing is re-run and nothing is changed —
+`x` and `q` have nothing to kill or cancel, and `q` simply leaves.
+
+A run that was killed comes back as the run that was killed. The steps that
+finished say how they went, the ones it was in the middle of are `⊗ unfinished`
+— they never got to say, and a tool cut off mid-sentence looks much like one
+that finished — and the ones it never reached are still waiting:
+
+```text
+  ⏭ sram compile     pinned
+  ✔ decoder syn      1m14s
+❯ ⊗ decoder par      unfinished
+  ○ decoder drc      waits for decoder par
+  ○ decoder signoff  waits for decoder drc, decoder lvs, decoder merge
+
+  ━━━━━━╸───────────────── 2/7 steps · 12m08s · 1 unfinished · interrupted
+```
+
+A session is one small file, written beside the run's `rivet.log`:
+
+```text
+build/
+  rivet.log             every run that has logged here, in order
+  rivet.session.toml    the last one, to open again
+```
+
+It is an index, not a copy: the plan, how each step ended, and the paths of the
+files each one wrote. The output itself stays where the tool put it, which is
+what makes writing a session cost nothing however much of it there is — and
+what makes a run whose build directory has since been cleaned come back as the
+shape of a run with nothing behind it, each page saying `no such file`.
+
+There is one, and it is the last run's. The logs it names are the last run's
+too — a step rewrites its `{step}.rivet.log` and its tools' `.out` and `.err`
+every time it runs — so a session kept from the run before would name files that
+have since been written over: it would look like a record of that run and read
+like this one. The session goes the way the logs go, and the next run in the
+directory writes over it as it starts.
+
+The file is rewritten whenever something happens that could not be worked out
+again afterwards — a step starting, a step ending, a step starting a tool and so
+writing somewhere new — and never for progress, which moves several times a
+second and means nothing once the run is over. Each rewrite is a whole file
+renamed over the old one, so a session is never half a run. A run that ends says
+how long it took; one that is killed never gets to, and that is what tells the
+two apart when the file is read back.
+
+`ExecuteConfig::sessions(false)` turns the writing off, and a run that is not
+logging at all (`logging(false)`) writes none either.
+
+
+## Logging
+
+The display owns stderr while a flow runs, so a log line printed to a stream
+would corrupt it. Logging goes to files instead, through `tracing`:
+
+```rust
+tracing::info!(unmatched, "LVS did not match");
+```
+
+There is nothing to set up — the executor installs the subscriber — and an
+event is written twice:
+
+```text
+build/
+  rivet.log                  the whole run, every step, in order
+  rivet.session.toml         the last run, for reopening it afterwards
+  decoder/par/
+    decoder.par.out          raw innovus stdout
+    decoder.par.err          raw innovus stderr
+    decoder par.rivet.log    what this step logged, and nothing else
+```
+
+`rivet.log` goes in `ExecuteConfig::log_dir` (the current directory by default)
+and is appended to, with a blank line between runs. A step's own log goes
+wherever `Step::log_dir` says the step lives, next to the output of the tools it
+drove, and is rewritten each time the step runs, like the `.out` and `.err`
+beside it. A step that returns `None` — the default — still reaches `rivet.log`;
+it just has nowhere of its own to go.
+
+Events are tagged with the step that emitted them, so `rivet.log` reads as one
+narrative even with several steps in flight:
+
+```text
+18:02:11.401Z  INFO step{name=decoder par}: rivet::executor: started
+18:02:11.402Z  INFO step{name=decoder par}: rivet::exec: running command="innovus" "-files" "par.tcl" stdout=…/decoder.par.out stderr=…/decoder.par.err
+18:06:12.884Z  INFO step{name=decoder par}: rivet::exec: exited code=0 success=true
+18:06:13.002Z  INFO step{name=decoder par}: rivet::executor: completed elapsed=4m1.6s
+```
+
+`RIVET_LOG` sets what is kept, in the usual `EnvFilter` syntax — `RIVET_LOG=debug`,
+or `RIVET_LOG=rivet=info,cadence=debug` to turn one plugin up. It defaults to
+`info`.
+
+Tool output is not folded in: there is far too much of it for a log meant to
+stay readable, and it is already captured in full next door. What rivet records
+is which command a step ran, where that output went, and how it ended.
+
+Anything a step wants to say that is not a step — `progress::note`, or
+`progress::warn` for something worth noticing — goes here too, and only here:
+the display never puts a line on screen that it cannot then take back, because
+one that is still there long after it stopped being true is worse than one that
+was never said. What it does instead is count the warnings, and say how many on
+the summary row (`⚠ 3`); `L` opens the log they are in. Not the ones the
+summary already gives in its own words — a step that failed, or one blocked
+because another did, is on the list in red and counted there — so the `⚠` is
+only ever something the display could not otherwise have shown you. With no display up — a
+run in CI, or one piped somewhere — there is nothing to take back, and both go
+to stderr as they happen.
+
+So there are three channels, and nothing writes to two of them:
+
+| | goes to | written by |
+|---|---|---|
+| raw tool output | `{step}.out` / `.err` | the tool, captured by `exec` |
+| the live display | stderr | `progress::status` and substep banners |
+| the run's own record | `rivet.log`, `{step}.rivet.log` | `tracing` |
+
+Run `cargo run -p rivet --example parallel` to see it against a mock flow.

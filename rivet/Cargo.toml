@@ -6,13 +6,43 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
+# `rivet`, which opens a run that has already happened so its logs can be read
+# again: see `src/session.rs`.
+[[bin]]
+name = "rivet"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8.12"
-colored = "2"
 indoc = "2"
 rust_decimal = "1"
 rust_decimal_macros = "1"
 by_address = "1.2.1"
+# The live display, on the terminal's alternate screen. `crossterm` comes with
+# it, and is used through `ratatui::crossterm` so there is only ever one.
+ratatui = "0.29"
+# For wrapping a log's lines by column. The same version ratatui pins, so it
+# adds nothing to the build.
+unicode-width = "0.2"
+tracing = "0.1"
+# No `ansi`: these layers write to files, never to a terminal. `tracing-log`
+# catches anything a dependency logs through the `log` crate, which would
+# otherwise land on stderr and corrupt the display.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "std",
+    "env-filter",
+    "tracing-log",
+] }
+tracing-appender = "0.2"
+
+# Both already come with `ratatui`'s crossterm, so neither adds a crate to the
+# build. `rustix` puts back the signal keys that raw mode turns off and sends
+# the interrupt that cancels a run, and `signal-hook` catches the interrupt so
+# the terminal can be handed back before the run ends. See `src/tui.rs`.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "0.38", features = ["termios", "process"] }
+signal-hook = "0.3"
 
